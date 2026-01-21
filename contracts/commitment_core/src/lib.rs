@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec, Map, i128};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec, Map, i128, symbol_short, Symbol};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,15 +26,191 @@ pub struct Commitment {
     pub status: String, // "active", "settled", "violated", "early_exit"
 }
 
+// Storage keys for access control
+const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
+const NFT_CONTRACT_KEY: Symbol = symbol_short!("NFT_CT");
+const AUTHORIZED_ALLOCATOR_KEY: Symbol = symbol_short!("AUTH_AL");
+const INITIALIZED_KEY: Symbol = symbol_short!("INIT");
+
+// Events
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminChangedEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizedAllocatorAddedEvent {
+    pub allocator_address: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizedAllocatorRemovedEvent {
+    pub allocator_address: Address,
+}
+
 #[contract]
 pub struct CommitmentCoreContract;
+
+// Access control helper functions
+impl CommitmentCoreContract {
+    /// Get the admin address from storage
+    fn get_admin(e: &Env) -> Address {
+        e.storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("Contract not initialized")
+    }
+
+    /// Set the admin address in storage
+    fn set_admin(e: &Env, admin: &Address) {
+        e.storage().instance().set(&ADMIN_KEY, admin);
+    }
+
+    /// Get the NFT contract address
+    fn get_nft_contract(e: &Env) -> Address {
+        e.storage()
+            .instance()
+            .get(&NFT_CONTRACT_KEY)
+            .expect("NFT contract not set")
+    }
+
+    /// Set the NFT contract address
+    fn set_nft_contract(e: &Env, nft_contract: &Address) {
+        e.storage().instance().set(&NFT_CONTRACT_KEY, nft_contract);
+    }
+
+    /// Check if contract is initialized
+    fn is_initialized(e: &Env) -> bool {
+        e.storage().instance().has(&INITIALIZED_KEY)
+    }
+
+    /// Mark contract as initialized
+    fn set_initialized(e: &Env) {
+        e.storage().instance().set(&INITIALIZED_KEY, &true);
+    }
+
+    /// Check if caller is admin
+    fn require_admin(e: &Env) {
+        let admin = Self::get_admin(e);
+        let caller = e.invoker();
+        if caller != admin {
+            panic!("Unauthorized: admin access required");
+        }
+    }
+
+    /// Check if an address is authorized allocator
+    fn is_authorized_allocator(e: &Env, address: &Address) -> bool {
+        let admin = Self::get_admin(e);
+        if *address == admin {
+            return true;
+        }
+        
+        // Check whitelist
+        let key = (AUTHORIZED_ALLOCATOR_KEY, address);
+        e.storage().instance().has(&key)
+    }
+
+    /// Require that caller is authorized allocator
+    fn require_authorized_allocator(e: &Env) {
+        let caller = e.invoker();
+        if !Self::is_authorized_allocator(e, &caller) {
+            panic!("Unauthorized: admin or authorized allocator access required");
+        }
+    }
+
+    /// Add an authorized allocator to whitelist
+    fn add_authorized_allocator(e: &Env, allocator_address: &Address) {
+        let key = (AUTHORIZED_ALLOCATOR_KEY, allocator_address);
+        e.storage().instance().set(&key, &true);
+        
+        // Emit event
+        e.events().publish(
+            (symbol_short!("alloc_add"), allocator_address),
+            AuthorizedAllocatorAddedEvent {
+                allocator_address: allocator_address.clone(),
+            },
+        );
+    }
+
+    /// Remove an authorized allocator from whitelist
+    fn remove_authorized_allocator(e: &Env, allocator_address: &Address) {
+        let key = (AUTHORIZED_ALLOCATOR_KEY, allocator_address);
+        if e.storage().instance().has(&key) {
+            e.storage().instance().remove(&key);
+            
+            // Emit event
+            e.events().publish(
+                (symbol_short!("alloc_rm"), allocator_address),
+                AuthorizedAllocatorRemovedEvent {
+                    allocator_address: allocator_address.clone(),
+                },
+            );
+        }
+    }
+
+    /// Verify that caller is the owner of a commitment
+    fn require_owner(e: &Env, owner: &Address) {
+        let caller = e.invoker();
+        if caller != *owner {
+            panic!("Unauthorized: only commitment owner can perform this action");
+        }
+    }
+}
 
 #[contractimpl]
 impl CommitmentCoreContract {
     /// Initialize the core commitment contract
     pub fn initialize(e: Env, admin: Address, nft_contract: Address) {
-        // TODO: Store admin and NFT contract address
-        // TODO: Initialize storage
+        if Self::is_initialized(&e) {
+            panic!("Contract already initialized");
+        }
+        
+        Self::set_admin(&e, &admin);
+        Self::set_nft_contract(&e, &nft_contract);
+        Self::set_initialized(&e);
+    }
+
+    /// Transfer admin role to a new address (admin-only)
+    pub fn transfer_admin(e: Env, new_admin: Address) {
+        Self::require_admin(&e);
+        
+        let old_admin = Self::get_admin(&e);
+        Self::set_admin(&e, &new_admin);
+        
+        // Emit event
+        e.events().publish(
+            symbol_short!("admin_chg"),
+            AdminChangedEvent {
+                old_admin,
+                new_admin: new_admin.clone(),
+            },
+        );
+    }
+
+    /// Get the current admin address
+    pub fn get_admin(e: Env) -> Address {
+        Self::get_admin(&e)
+    }
+
+    /// Add an authorized allocator to whitelist (admin-only)
+    pub fn add_authorized_allocator(e: Env, allocator_address: Address) {
+        Self::require_admin(&e);
+        Self::add_authorized_allocator(&e, &allocator_address);
+    }
+
+    /// Remove an authorized allocator from whitelist (admin-only)
+    pub fn remove_authorized_allocator(e: Env, allocator_address: Address) {
+        Self::require_admin(&e);
+        Self::remove_authorized_allocator(&e, &allocator_address);
+    }
+
+    /// Check if an address is an authorized allocator
+    pub fn is_authorized_allocator(e: Env, allocator_address: Address) -> bool {
+        Self::is_authorized_allocator(&e, &allocator_address)
     }
 
     /// Create a new commitment
@@ -76,9 +252,10 @@ impl CommitmentCoreContract {
         }
     }
 
-    /// Update commitment value (called by allocation logic)
+    /// Update commitment value (called by allocation logic) - authorized allocators only
     pub fn update_value(e: Env, commitment_id: String, new_value: i128) {
-        // TODO: Verify caller is authorized (allocation contract)
+        Self::require_authorized_allocator(&e);
+        
         // TODO: Update current_value
         // TODO: Check if max_loss_percent is violated
         // TODO: Emit value update event
@@ -92,8 +269,10 @@ impl CommitmentCoreContract {
         false
     }
 
-    /// Settle commitment at maturity
+    /// Settle commitment at maturity - authorized allocators only
     pub fn settle(e: Env, commitment_id: String) {
+        Self::require_authorized_allocator(&e);
+        
         // TODO: Verify commitment is expired
         // TODO: Calculate final settlement amount
         // TODO: Transfer assets back to owner
@@ -102,18 +281,22 @@ impl CommitmentCoreContract {
         // TODO: Emit settlement event
     }
 
-    /// Early exit (with penalty)
-    pub fn early_exit(e: Env, commitment_id: String, caller: Address) {
-        // TODO: Verify caller is owner
+    /// Early exit (with penalty) - owner-only
+    pub fn early_exit(e: Env, commitment_id: String) {
+        // TODO: Get commitment and verify caller is owner
+        // let commitment = Self::get_commitment(e.clone(), commitment_id.clone());
+        // Self::require_owner(&e, &commitment.owner);
+        
         // TODO: Calculate penalty
         // TODO: Transfer remaining amount (after penalty) to owner
         // TODO: Mark commitment as early_exit
         // TODO: Emit early exit event
     }
 
-    /// Allocate liquidity (called by allocation strategy)
+    /// Allocate liquidity (called by allocation strategy) - authorized allocators only
     pub fn allocate(e: Env, commitment_id: String, target_pool: Address, amount: i128) {
-        // TODO: Verify caller is authorized allocation contract
+        Self::require_authorized_allocator(&e);
+        
         // TODO: Verify commitment is active
         // TODO: Transfer assets to target pool
         // TODO: Record allocation
