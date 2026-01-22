@@ -190,7 +190,7 @@ impl CommitmentNFTContract {
 
     /// Mint a new Commitment NFT (admin-only)
     pub fn mint(
-        e: Env,
+        _e: Env,
         _owner: Address,
         _commitment_id: String,
         _duration_days: u32,

@@ -281,12 +281,9 @@ impl CommitmentCoreContract {
         // TODO: Emit settlement event
     }
 
-    /// Early exit (with penalty) - owner-only
-    pub fn early_exit(_e: Env, _commitment_id: String) {
-        // TODO: Get commitment and verify caller is owner
-        // let commitment = Self::get_commitment(e.clone(), commitment_id.clone());
-        // Self::require_owner(&e, &commitment.owner);
-        
+    /// Early exit (with penalty)
+    pub fn early_exit(_e: Env, _commitment_id: String, _caller: Address) {
+        // TODO: Verify caller is owner
         // TODO: Calculate penalty
         // TODO: Transfer remaining amount (after penalty) to owner
         // TODO: Mark commitment as early_exit
