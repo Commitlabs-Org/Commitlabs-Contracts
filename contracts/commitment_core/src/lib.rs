@@ -230,11 +230,13 @@ impl CommitmentCoreContract {
     }
 
     /// Get commitment details
-    pub fn get_commitment(e: Env, _commitment_id: String) -> Commitment {
+    pub fn get_commitment(e: Env, commitment_id: String) -> Commitment {
         // TODO: Retrieve commitment from storage
+        // For now, return placeholder data with valid addresses
+        let dummy_address = Address::from_string(&String::from_str(&e, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"));
         Commitment {
-            commitment_id: String::from_str(&e, "placeholder"),
-            owner: Address::from_string(&String::from_str(&e, "placeholder")),
+            commitment_id,
+            owner: dummy_address.clone(),
             nft_token_id: 0,
             rules: CommitmentRules {
                 duration_days: 0,
@@ -244,7 +246,7 @@ impl CommitmentCoreContract {
                 min_fee_threshold: 0,
             },
             amount: 0,
-            asset_address: Address::from_string(&String::from_str(&e, "placeholder")),
+            asset_address: dummy_address,
             created_at: 0,
             expires_at: 0,
             current_value: 0,
