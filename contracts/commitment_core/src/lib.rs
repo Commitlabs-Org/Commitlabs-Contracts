@@ -314,3 +314,6 @@ impl CommitmentCoreContract {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
