@@ -1,9 +1,9 @@
 #![no_std]
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Symbol, Address, Env, String, Vec, Map, 
-    IntoVal, TryIntoVal, Val,
-};
 use access_control::{AccessControl, AccessControlError};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, Map,
+    String, Symbol, TryIntoVal, Val, Vec,
+};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,11 +91,16 @@ pub struct AttestationEngineContract;
 impl AttestationEngineContract {
     /// Initialize the attestation engine
     pub fn initialize(e: Env, admin: Address, commitment_core: Address) -> Result<(), Error> {
-        if e.storage().instance().has(&access_control::AccessControlKey::Admin) {
+        if e.storage()
+            .instance()
+            .has(&access_control::AccessControlKey::Admin)
+        {
             return Err(Error::AlreadyInitialized);
         }
         AccessControl::init_admin(&e, admin).map_err(|_| Error::AlreadyInitialized)?;
-        e.storage().instance().set(&DataKey::CommitmentCore, &commitment_core);
+        e.storage()
+            .instance()
+            .set(&DataKey::CommitmentCore, &commitment_core);
         Ok(())
     }
 
@@ -105,8 +110,7 @@ impl AttestationEngineContract {
         caller: Address,
         verifier_address: Address,
     ) -> Result<(), Error> {
-        AccessControl::add_authorized_contract(&e, caller, verifier_address)
-            .map_err(Error::from)
+        AccessControl::add_authorized_contract(&e, caller, verifier_address).map_err(Error::from)
     }
 
     /// Remove an authorized verifier contract from the whitelist (admin only)
@@ -115,8 +119,7 @@ impl AttestationEngineContract {
         caller: Address,
         verifier_address: Address,
     ) -> Result<(), Error> {
-        AccessControl::remove_authorized_contract(&e, caller, verifier_address)
-            .map_err(Error::from)
+        AccessControl::remove_authorized_contract(&e, caller, verifier_address).map_err(Error::from)
     }
 
     /// Check if a contract address is an authorized verifier
@@ -154,25 +157,24 @@ impl AttestationEngineContract {
             verified_by,
             is_compliant: true, // Default to true, can be updated by logic
         };
-        
+
         // Retrieve existing attestations
         let key = (symbol_short!("ATTS"), commitment_id.clone());
-        let mut attestations: Vec<Attestation> = e.storage()
+        let mut attestations: Vec<Attestation> = e
+            .storage()
             .persistent()
             .get(&key)
             .unwrap_or_else(|| Vec::new(&e));
-            
+
         // Add new attestation
         attestations.push_back(attestation);
-        
+
         // Store updated list
         e.storage().persistent().set(&key, &attestations);
-        
+
         // Emit attestation event
-        e.events().publish(
-            (symbol_short!("attest"), commitment_id),
-            attestation_type
-        );
+        e.events()
+            .publish((symbol_short!("attest"), commitment_id), attestation_type);
 
         Ok(())
     }
@@ -190,9 +192,7 @@ impl AttestationEngineContract {
     /// Get current health metrics for a commitment
     pub fn get_health_metrics(e: Env, commitment_id: String) -> HealthMetrics {
         // Get commitment from core contract
-        let commitment_core: Address = match e.storage()
-            .instance()
-            .get(&DataKey::CommitmentCore) {
+        let commitment_core: Address = match e.storage().instance().get(&DataKey::CommitmentCore) {
             Some(addr) => addr,
             None => {
                 // Return default HealthMetrics if not initialized
@@ -208,17 +208,14 @@ impl AttestationEngineContract {
                 };
             }
         };
-        
+
         // Call get_commitment on commitment_core contract
         // Using Symbol::new() for function name longer than 9 characters
         let mut args = Vec::new(&e);
         args.push_back(commitment_id.clone().into_val(&e));
-        let commitment_val: Val = e.invoke_contract(
-            &commitment_core,
-            &Symbol::new(&e, "get_commitment"),
-            args,
-        );
-        
+        let commitment_val: Val =
+            e.invoke_contract(&commitment_core, &Symbol::new(&e, "get_commitment"), args);
+
         // Convert Val to Commitment
         let commitment: Commitment = match commitment_val.try_into_val(&e) {
             Ok(c) => c,
@@ -236,24 +233,26 @@ impl AttestationEngineContract {
                 };
             }
         };
-        
+
         // Get all attestations
         let attestations = Self::get_attestations(e.clone(), commitment_id.clone());
-        
+
         // Extract values from commitment
         let initial_value = commitment.amount; // Using amount as initial value
         let current_value = commitment.current_value;
-        
+
         // Calculate drawdown percentage: ((initial - current) / initial) * 100
         // Handle zero initial value to prevent division by zero
         let drawdown_percent = if initial_value > 0 {
             let diff = initial_value.checked_sub(current_value).unwrap_or(0);
-            diff.checked_mul(100).unwrap_or(0)
-                .checked_div(initial_value).unwrap_or(0)
+            diff.checked_mul(100)
+                .unwrap_or(0)
+                .checked_div(initial_value)
+                .unwrap_or(0)
         } else {
             0
         };
-        
+
         // Sum fees from fee attestations
         // Extract fee_amount from data map where key is "fee_amount"
         let fees_generated: i128 = 0;
@@ -271,11 +270,11 @@ impl AttestationEngineContract {
                 }
             }
         }
-        
+
         // For now, fees_generated will be 0 until we implement proper fee tracking
         // This is acceptable as the requirement is to sum from fee attestations
         // which requires the attest() function to properly store fees
-        
+
         // Calculate volatility exposure from attestations
         // Simplified: use variance of price changes from attestations
         let mut volatility_exposure: i128 = 0;
@@ -284,16 +283,17 @@ impl AttestationEngineContract {
             // For now, return 0 as placeholder - would need price history
             volatility_exposure = 0;
         }
-        
+
         // Get last attestation timestamp
-        let last_attestation = attestations.iter()
+        let last_attestation = attestations
+            .iter()
             .map(|att| att.timestamp)
             .max()
             .unwrap_or(0);
-        
+
         // Calculate compliance score
         let compliance_score = Self::calculate_compliance_score(e.clone(), commitment_id.clone());
-        
+
         HealthMetrics {
             commitment_id,
             current_value,
@@ -307,7 +307,11 @@ impl AttestationEngineContract {
     }
 
     /// Verify commitment compliance (admin or authorized verifier only)
-    pub fn verify_compliance(e: Env, caller: Address, commitment_id: String) -> Result<bool, Error> {
+    pub fn verify_compliance(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+    ) -> Result<bool, Error> {
         // Verify caller is authorized (admin or authorized verifier)
         AccessControl::require_authorized(&e, &caller)?;
 
@@ -354,66 +358,68 @@ impl AttestationEngineContract {
     /// Calculate compliance score (0-100)
     pub fn calculate_compliance_score(e: Env, commitment_id: String) -> u32 {
         // Get commitment from core contract
-        let commitment_core: Address = match e.storage()
-            .instance()
-            .get(&DataKey::CommitmentCore) {
+        let commitment_core: Address = match e.storage().instance().get(&DataKey::CommitmentCore) {
             Some(addr) => addr,
             None => return 0, // Return 0 score if not initialized
         };
-        
+
         // Call get_commitment on commitment_core contract
         // Using Symbol::new() for function name longer than 9 characters
         let mut args = Vec::new(&e);
         args.push_back(commitment_id.clone().into_val(&e));
-        let commitment_val: Val = e.invoke_contract(
-            &commitment_core,
-            &Symbol::new(&e, "get_commitment"),
-            args,
-        );
-        
+        let commitment_val: Val =
+            e.invoke_contract(&commitment_core, &Symbol::new(&e, "get_commitment"), args);
+
         // Convert Val to Commitment
         let commitment: Commitment = match commitment_val.try_into_val(&e) {
             Ok(c) => c,
             Err(_) => return 0, // Return 0 score if commitment not found
         };
-        
+
         // Get all attestations
         let attestations = Self::get_attestations(e.clone(), commitment_id);
-        
+
         // Base score: 100
         let mut score: i32 = 100;
-        
+
         // Count violations: -20 per violation
-        let violation_count = attestations.iter()
-            .filter(|att| !att.is_compliant || att.attestation_type == String::from_str(&e, "violation"))
+        let violation_count = attestations
+            .iter()
+            .filter(|att| {
+                !att.is_compliant || att.attestation_type == String::from_str(&e, "violation")
+            })
             .count() as i32;
-        score = score.checked_sub(violation_count.checked_mul(20).unwrap_or(0)).unwrap_or(0);
-        
+        score = score
+            .checked_sub(violation_count.checked_mul(20).unwrap_or(0))
+            .unwrap_or(0);
+
         // Calculate drawdown vs threshold: -1 per % over threshold
         let initial_value = commitment.amount;
         let current_value = commitment.current_value;
         let max_loss_percent = commitment.rules.max_loss_percent as i128;
-        
+
         if initial_value > 0 {
             let drawdown_percent = {
                 let diff = initial_value.checked_sub(current_value).unwrap_or(0);
-                diff.checked_mul(100).unwrap_or(0)
-                    .checked_div(initial_value).unwrap_or(0)
+                diff.checked_mul(100)
+                    .unwrap_or(0)
+                    .checked_div(initial_value)
+                    .unwrap_or(0)
             };
-            
+
             if drawdown_percent > max_loss_percent {
                 let over_threshold = drawdown_percent.checked_sub(max_loss_percent).unwrap_or(0);
                 score = score.checked_sub(over_threshold as i32).unwrap_or(0);
             }
         }
-        
+
         // Calculate fee generation vs expectations: +1 per % of expected fees
         let min_fee_threshold = commitment.rules.min_fee_threshold;
         // Get fees from health metrics (which sums from attestations)
         // We'll calculate this from the attestations directly
         let total_fees: i128 = 0;
         let fee_key = String::from_str(&e, "fee_amount");
-        
+
         for att in attestations.iter() {
             if att.attestation_type == String::from_str(&e, "fee_generation") {
                 // Extract fee from data map
@@ -428,48 +434,52 @@ impl AttestationEngineContract {
                 }
             }
         }
-        
+
         // Only add fee bonus if we have fees and a threshold
         if min_fee_threshold > 0 && total_fees > 0 {
-            let fee_percent = total_fees.checked_mul(100).unwrap_or(0)
-                .checked_div(min_fee_threshold).unwrap_or(0);
+            let fee_percent = total_fees
+                .checked_mul(100)
+                .unwrap_or(0)
+                .checked_div(min_fee_threshold)
+                .unwrap_or(0);
             // Cap the bonus to prevent excessive score inflation
             let bonus = if fee_percent > 100 { 100 } else { fee_percent };
             score = score.checked_add(bonus as i32).unwrap_or(100);
         }
-        
+
         // Duration adherence: +10 if on track
         let current_time = e.ledger().timestamp();
         let expires_at = commitment.expires_at;
         let created_at = commitment.created_at;
-        
+
         if expires_at > created_at {
             let total_duration = expires_at.checked_sub(created_at).unwrap_or(1);
             let elapsed = current_time.checked_sub(created_at).unwrap_or(0);
-            
+
             // Check if we're on track (not too far behind or ahead)
             // Simplified: if elapsed is within reasonable bounds of expected progress
             let expected_progress = (elapsed as u128)
-                .checked_mul(100).unwrap_or(0)
-                .checked_div(total_duration as u128).unwrap_or(0);
-            
+                .checked_mul(100)
+                .unwrap_or(0)
+                .checked_div(total_duration as u128)
+                .unwrap_or(0);
+
             // Consider "on track" if between 0-100% of expected time
             if expected_progress <= 100 {
                 score = score.checked_add(10).unwrap_or(100);
             }
         }
-        
+
         // Clamp between 0 and 100
         if score < 0 {
             score = 0;
         } else if score > 100 {
             score = 100;
         }
-        
+
         score as u32
     }
 }
 
 #[cfg(test)]
 mod tests;
-

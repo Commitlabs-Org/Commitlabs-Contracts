@@ -96,15 +96,14 @@ impl AccessControl {
             return Err(AccessControlError::AlreadyAuthorized);
         }
 
-        e.storage()
-            .instance()
-            .set(&AccessControlKey::AuthorizedContract(contract_address.clone()), &true);
+        e.storage().instance().set(
+            &AccessControlKey::AuthorizedContract(contract_address.clone()),
+            &true,
+        );
 
         // Emit event
-        e.events().publish(
-            (symbol_short!("auth_add"), caller),
-            contract_address,
-        );
+        e.events()
+            .publish((symbol_short!("auth_add"), caller), contract_address);
 
         Ok(())
     }
@@ -124,13 +123,13 @@ impl AccessControl {
 
         e.storage()
             .instance()
-            .remove(&AccessControlKey::AuthorizedContract(contract_address.clone()));
+            .remove(&AccessControlKey::AuthorizedContract(
+                contract_address.clone(),
+            ));
 
         // Emit event
-        e.events().publish(
-            (symbol_short!("auth_rm"), caller),
-            contract_address,
-        );
+        e.events()
+            .publish((symbol_short!("auth_rm"), caller), contract_address);
 
         Ok(())
     }
@@ -145,7 +144,9 @@ impl AccessControl {
         // Check whitelist
         e.storage()
             .instance()
-            .get(&AccessControlKey::AuthorizedContract(contract_address.clone()))
+            .get(&AccessControlKey::AuthorizedContract(
+                contract_address.clone(),
+            ))
             .unwrap_or(false)
     }
 
@@ -167,13 +168,13 @@ impl AccessControl {
         Self::require_admin(e, &caller)?;
 
         let old_admin = Self::get_admin(e)?;
-        e.storage().instance().set(&AccessControlKey::Admin, &new_admin);
+        e.storage()
+            .instance()
+            .set(&AccessControlKey::Admin, &new_admin);
 
         // Emit event
-        e.events().publish(
-            (symbol_short!("admin_upd"), caller),
-            (old_admin, new_admin),
-        );
+        e.events()
+            .publish((symbol_short!("admin_upd"), caller), (old_admin, new_admin));
 
         Ok(())
     }
@@ -187,13 +188,13 @@ impl AccessControl {
         Self::require_owner(e, &caller)?;
 
         let old_owner = Self::get_owner(e).ok_or(AccessControlError::NotInitialized)?;
-        e.storage().instance().set(&AccessControlKey::Owner, &new_owner);
+        e.storage()
+            .instance()
+            .set(&AccessControlKey::Owner, &new_owner);
 
         // Emit event
-        e.events().publish(
-            (symbol_short!("owner_upd"), caller),
-            (old_owner, new_owner),
-        );
+        e.events()
+            .publish((symbol_short!("owner_upd"), caller), (old_owner, new_owner));
 
         Ok(())
     }

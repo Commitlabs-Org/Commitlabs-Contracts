@@ -1,18 +1,9 @@
 #![no_std]
 use soroban_sdk::{
-    contract,
-    contracterror,
-    contractimpl,
-    contracttype,
-    symbol_short,
-    Address,
-    Env,
-    String,
-    Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
 };
 
 use access_control::{AccessControl, AccessControlError};
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,11 +108,16 @@ fn has_commitment(e: &Env, commitment_id: &String) -> bool {
 impl CommitmentCoreContract {
     /// Initialize the core commitment contract
     pub fn initialize(e: Env, admin: Address, nft_contract: Address) -> Result<(), Error> {
-        if e.storage().instance().has(&access_control::AccessControlKey::Admin) {
+        if e.storage()
+            .instance()
+            .has(&access_control::AccessControlKey::Admin)
+        {
             return Err(Error::AlreadyInitialized);
         }
         AccessControl::init_admin(&e, admin).map_err(|_| Error::AlreadyInitialized)?;
-        e.storage().instance().set(&DataKey::NftContract, &nft_contract);
+        e.storage()
+            .instance()
+            .set(&DataKey::NftContract, &nft_contract);
         Ok(())
     }
 
@@ -131,8 +127,7 @@ impl CommitmentCoreContract {
         caller: Address,
         allocator_address: Address,
     ) -> Result<(), Error> {
-        AccessControl::add_authorized_contract(&e, caller, allocator_address)
-            .map_err(Error::from)
+        AccessControl::add_authorized_contract(&e, caller, allocator_address).map_err(Error::from)
     }
 
     /// Remove an authorized allocator contract from the whitelist (admin only)
@@ -178,8 +173,7 @@ impl CommitmentCoreContract {
 
     /// Get commitment details
     pub fn get_commitment(e: Env, commitment_id: String) -> Commitment {
-        read_commitment(&e, &commitment_id)
-            .unwrap_or_else(|| panic!("Commitment not found"))
+        read_commitment(&e, &commitment_id).unwrap_or_else(|| panic!("Commitment not found"))
     }
 
     /// Update commitment value (called by allocation logic)
@@ -202,8 +196,8 @@ impl CommitmentCoreContract {
     /// Check if commitment rules are violated
     /// Returns true if any rule violation is detected (loss limit or duration)
     pub fn check_violations(e: Env, commitment_id: String) -> bool {
-        let commitment = read_commitment(&e, &commitment_id)
-            .unwrap_or_else(|| panic!("Commitment not found"));
+        let commitment =
+            read_commitment(&e, &commitment_id).unwrap_or_else(|| panic!("Commitment not found"));
 
         // Skip check if already settled or violated
         let active_status = String::from_str(&e, "active");
@@ -237,12 +231,9 @@ impl CommitmentCoreContract {
 
     /// Get detailed violation information
     /// Returns a tuple: (has_violations, loss_violated, duration_violated, loss_percent, time_remaining)
-    pub fn get_violation_details(
-        e: Env,
-        commitment_id: String,
-    ) -> (bool, bool, bool, i128, u64) {
-        let commitment = read_commitment(&e, &commitment_id)
-            .unwrap_or_else(|| panic!("Commitment not found"));
+    pub fn get_violation_details(e: Env, commitment_id: String) -> (bool, bool, bool, i128, u64) {
+        let commitment =
+            read_commitment(&e, &commitment_id).unwrap_or_else(|| panic!("Commitment not found"));
 
         let current_time = e.ledger().timestamp();
 
@@ -270,7 +261,13 @@ impl CommitmentCoreContract {
 
         let has_violations = loss_violated || duration_violated;
 
-        (has_violations, loss_violated, duration_violated, loss_percent, time_remaining)
+        (
+            has_violations,
+            loss_violated,
+            duration_violated,
+            loss_percent,
+            time_remaining,
+        )
     }
 
     /// Settle commitment at maturity
@@ -317,4 +314,3 @@ impl CommitmentCoreContract {
 
 #[cfg(test)]
 mod tests;
-

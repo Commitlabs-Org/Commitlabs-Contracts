@@ -1,15 +1,14 @@
 #![no_std]
+use access_control::{AccessControl, AccessControlError};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
 };
-use access_control::{AccessControl, AccessControlError};
 #[cfg(test)]
 mod tests;
 
 // ============================================================================
 // Error Types
 // ============================================================================
-
 
 /// Contract errors for structured error handling
 #[contracterror]
@@ -127,56 +126,50 @@ impl CommitmentNFTContract {
 
     /// Initialize the NFT contract with an admin address
     pub fn initialize(e: Env, admin: Address) -> Result<(), Error> {
-        if e.storage().instance().has(&access_control::AccessControlKey::Admin) {
+        if e.storage()
+            .instance()
+            .has(&access_control::AccessControlKey::Admin)
+        {
             return Err(Error::AlreadyInitialized);
         }
         AccessControl::init_admin(&e, admin).map_err(|_| Error::AlreadyInitialized)?;
         e.storage().instance().set(&DataKey::TotalSupply, &0u32);
         Ok(())
     }
-  
 
-/// Add an authorized contract to the whitelist (admin only)
-pub fn add_authorized_contract(
-    e: Env,
-    caller: Address,
-    contract_address: Address,
-) -> Result<(), Error> {
-    AccessControl::add_authorized_contract(&e, caller, contract_address)
-        .map_err(Error::from)
-}
-
-// ========================================================================
-// Access Control
-// ========================================================================
-
-/// Add an authorized minter (admin or commitment_core contract)
-pub fn add_authorized_minter(
-    e: Env,
-    caller: Address,
-    minter: Address,
-) -> Result<(), Error> {
-    caller.require_auth();
-
-    let admin: Address = e
-        .storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .ok_or(Error::NotInitialized)?;
-
-    if caller != admin {
-        return Err(Error::Unauthorized);
+    /// Add an authorized contract to the whitelist (admin only)
+    pub fn add_authorized_contract(
+        e: Env,
+        caller: Address,
+        contract_address: Address,
+    ) -> Result<(), Error> {
+        AccessControl::add_authorized_contract(&e, caller, contract_address).map_err(Error::from)
     }
 
-    e.storage()
-        .instance()
-        .set(&DataKey::AuthorizedMinter(minter), &true);
+    // ========================================================================
+    // Access Control
+    // ========================================================================
 
-    Ok(())
-}
+    /// Add an authorized minter (admin or commitment_core contract)
+    pub fn add_authorized_minter(e: Env, caller: Address, minter: Address) -> Result<(), Error> {
+        caller.require_auth();
 
-      
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
 
+        if caller != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedMinter(minter), &true);
+
+        Ok(())
+    }
 
     /// Remove an authorized contract from the whitelist (admin only)
     pub fn remove_authorized_contract(
@@ -184,8 +177,7 @@ pub fn add_authorized_minter(
         caller: Address,
         contract_address: Address,
     ) -> Result<(), Error> {
-        AccessControl::remove_authorized_contract(&e, caller, contract_address)
-            .map_err(Error::from)
+        AccessControl::remove_authorized_contract(&e, caller, contract_address).map_err(Error::from)
     }
 
     /// Check if a contract address is authorized
