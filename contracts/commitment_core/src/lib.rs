@@ -1,5 +1,6 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String};
+use access_control::{AccessControl, AccessControlError};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,15 +27,85 @@ pub struct Commitment {
     pub status: String, // "active", "settled", "violated", "early_exit"
 }
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    Unauthorized = 3,
+    InvalidCommitment = 4,
+    InvalidAmount = 5,
+    CommitmentNotFound = 6,
+    AccessControlError = 7,
+}
+
+impl From<AccessControlError> for Error {
+    fn from(err: AccessControlError) -> Self {
+        match err {
+            AccessControlError::NotInitialized => Error::NotInitialized,
+            AccessControlError::Unauthorized => Error::Unauthorized,
+            AccessControlError::AlreadyAuthorized => Error::Unauthorized,
+            AccessControlError::NotAuthorized => Error::Unauthorized,
+            AccessControlError::InvalidAddress => Error::Unauthorized,
+        }
+    }
+}
+
+#[contracttype]
+pub enum DataKey {
+    NftContract,
+    Commitment(String), // commitment_id -> Commitment
+}
+
 #[contract]
 pub struct CommitmentCoreContract;
 
 #[contractimpl]
 impl CommitmentCoreContract {
     /// Initialize the core commitment contract
-    pub fn initialize(_e: Env, _admin: Address, _nft_contract: Address) {
-        // TODO: Store admin and NFT contract address
-        // TODO: Initialize storage
+    pub fn initialize(e: Env, admin: Address, nft_contract: Address) -> Result<(), Error> {
+        if e.storage().instance().has(&access_control::AccessControlKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        AccessControl::init_admin(&e, admin).map_err(|_| Error::AlreadyInitialized)?;
+        e.storage().instance().set(&DataKey::NftContract, &nft_contract);
+        Ok(())
+    }
+
+    /// Add an authorized allocator contract to the whitelist (admin only)
+    pub fn add_authorized_allocator(
+        e: Env,
+        caller: Address,
+        allocator_address: Address,
+    ) -> Result<(), Error> {
+        AccessControl::add_authorized_contract(&e, caller, allocator_address)
+            .map_err(Error::from)
+    }
+
+    /// Remove an authorized allocator contract from the whitelist (admin only)
+    pub fn remove_authorized_allocator(
+        e: Env,
+        caller: Address,
+        allocator_address: Address,
+    ) -> Result<(), Error> {
+        AccessControl::remove_authorized_contract(&e, caller, allocator_address)
+            .map_err(Error::from)
+    }
+
+    /// Check if a contract address is an authorized allocator
+    pub fn is_authorized_allocator(e: Env, contract_address: Address) -> bool {
+        AccessControl::is_authorized(&e, &contract_address)
+    }
+
+    /// Update admin (admin only)
+    pub fn update_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
+        AccessControl::update_admin(&e, caller, new_admin).map_err(Error::from)
+    }
+
+    /// Get the current admin address
+    pub fn get_admin(e: Env) -> Result<Address, Error> {
+        AccessControl::get_admin(&e).map_err(Error::from)
     }
 
     /// Create a new commitment
@@ -79,11 +150,20 @@ impl CommitmentCoreContract {
     }
 
     /// Update commitment value (called by allocation logic)
-    pub fn update_value(_e: Env, _commitment_id: String, _new_value: i128) {
-        // TODO: Verify caller is authorized (allocation contract)
+    pub fn update_value(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        new_value: i128,
+    ) -> Result<(), Error> {
+        // Verify caller is authorized (admin or authorized allocator)
+        AccessControl::require_authorized(&e, &caller)?;
+
+        // TODO: Get commitment from storage
         // TODO: Update current_value
         // TODO: Check if max_loss_percent is violated
         // TODO: Emit value update event
+        Ok(())
     }
 
     /// Check if commitment rules are violated
@@ -105,21 +185,34 @@ impl CommitmentCoreContract {
     }
 
     /// Early exit (with penalty)
-    pub fn early_exit(_e: Env, _commitment_id: String, _caller: Address) {
-        // TODO: Verify caller is owner
+    pub fn early_exit(e: Env, commitment_id: String, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+
+        // TODO: Get commitment from storage
+        // TODO: Verify caller is owner of the commitment
         // TODO: Calculate penalty
         // TODO: Transfer remaining amount (after penalty) to owner
         // TODO: Mark commitment as early_exit
         // TODO: Emit early exit event
+        Ok(())
     }
 
     /// Allocate liquidity (called by allocation strategy)
-    pub fn allocate(_e: Env, _commitment_id: String, _target_pool: Address, _amount: i128) {
-        // TODO: Verify caller is authorized allocation contract
+    pub fn allocate(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        target_pool: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        // Verify caller is authorized (admin or authorized allocator)
+        AccessControl::require_authorized(&e, &caller)?;
+
         // TODO: Verify commitment is active
         // TODO: Transfer assets to target pool
         // TODO: Record allocation
         // TODO: Emit allocation event
+        Ok(())
     }
 }
 

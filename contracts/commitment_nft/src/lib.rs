@@ -2,15 +2,14 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
 };
+use access_control::{AccessControl, AccessControlError};
 
 // Storage keys
 #[contracttype]
 pub enum DataKey {
-    Admin,
     TotalSupply,
     Nft(u32),   // token_id -> CommitmentNFT
     Owner(u32), // token_id -> Address
-    AuthorizedMinter(Address),
 }
 
 #[contracterror]
@@ -25,6 +24,19 @@ pub enum Error {
     InvalidCommitmentType = 6,
     InvalidAmount = 7,
     TokenNotFound = 8,
+    AccessControlError = 9,
+}
+
+impl From<AccessControlError> for Error {
+    fn from(err: AccessControlError) -> Self {
+        match err {
+            AccessControlError::NotInitialized => Error::NotInitialized,
+            AccessControlError::Unauthorized => Error::Unauthorized,
+            AccessControlError::AlreadyAuthorized => Error::Unauthorized,
+            AccessControlError::NotAuthorized => Error::Unauthorized,
+            AccessControlError::InvalidAddress => Error::Unauthorized,
+        }
+    }
 }
 
 #[contracttype]
@@ -60,46 +72,47 @@ pub struct CommitmentNFTContract;
 impl CommitmentNFTContract {
     /// Initialize the NFT contract
     pub fn initialize(e: Env, admin: Address) -> Result<(), Error> {
-        if e.storage().instance().has(&DataKey::Admin) {
+        if e.storage().instance().has(&access_control::AccessControlKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
-        e.storage().instance().set(&DataKey::Admin, &admin);
+        AccessControl::init_admin(&e, admin).map_err(|_| Error::AlreadyInitialized)?;
         e.storage().instance().set(&DataKey::TotalSupply, &0u32);
         Ok(())
     }
 
-    /// Add an authorized minter (admin or commitment_core contract)
-    pub fn add_authorized_minter(e: Env, caller: Address, minter: Address) -> Result<(), Error> {
-        caller.require_auth();
-        let admin: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        if caller != admin {
-            return Err(Error::Unauthorized);
-        }
-        e.storage()
-            .instance()
-            .set(&DataKey::AuthorizedMinter(minter), &true);
-        Ok(())
+    /// Add an authorized contract to the whitelist (admin only)
+    pub fn add_authorized_contract(
+        e: Env,
+        caller: Address,
+        contract_address: Address,
+    ) -> Result<(), Error> {
+        AccessControl::add_authorized_contract(&e, caller, contract_address)
+            .map_err(Error::from)
     }
 
-    /// Check if caller is authorized to mint
-    fn is_authorized_minter(e: &Env, caller: &Address) -> bool {
-        if let Some(admin) = e
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Admin)
-        {
-            if *caller == admin {
-                return true;
-            }
-        }
-        e.storage()
-            .instance()
-            .get(&DataKey::AuthorizedMinter(caller.clone()))
-            .unwrap_or(false)
+    /// Remove an authorized contract from the whitelist (admin only)
+    pub fn remove_authorized_contract(
+        e: Env,
+        caller: Address,
+        contract_address: Address,
+    ) -> Result<(), Error> {
+        AccessControl::remove_authorized_contract(&e, caller, contract_address)
+            .map_err(Error::from)
+    }
+
+    /// Check if a contract address is authorized
+    pub fn is_authorized(e: Env, contract_address: Address) -> bool {
+        AccessControl::is_authorized(&e, &contract_address)
+    }
+
+    /// Update admin (admin only)
+    pub fn update_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
+        AccessControl::update_admin(&e, caller, new_admin).map_err(Error::from)
+    }
+
+    /// Get the current admin address
+    pub fn get_admin(e: Env) -> Result<Address, Error> {
+        AccessControl::get_admin(&e).map_err(Error::from)
     }
 
     /// Validate commitment type
@@ -122,12 +135,8 @@ impl CommitmentNFTContract {
         initial_amount: i128,
         asset_address: Address,
     ) -> Result<u32, Error> {
-        caller.require_auth();
-
-        // Access control: only authorized addresses can mint
-        if !Self::is_authorized_minter(&e, &caller) {
-            return Err(Error::Unauthorized);
-        }
+        // Access control: only authorized addresses (admin or whitelisted contracts) can mint
+        AccessControl::require_authorized(&e, &caller)?;
 
         // Validate parameters
         if duration_days == 0 {

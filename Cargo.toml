@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "contracts/access_control",
     "contracts/commitment_nft",
     "contracts/commitment_core",
     "contracts/attestation_engine",

@@ -12,6 +12,7 @@ default = []
 
 [dependencies]
 soroban-sdk = "21.0.0"
+access_control = { path = "../access_control" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }

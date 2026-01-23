@@ -7,6 +7,7 @@ use commitment_core::CommitmentCoreContract;
 // Helper function to set up test environment with registered commitment_core contract
 fn setup_test_env() -> (Env, Address, Address, Address) {
     let e = Env::default();
+    e.mock_all_auths();
     let admin = Address::generate(&e);
     
     // Register and initialize commitment_core contract
@@ -15,7 +16,7 @@ fn setup_test_env() -> (Env, Address, Address, Address) {
     
     // Initialize commitment_core contract
     e.as_contract(&commitment_core_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone()).unwrap();
     });
     
     // Register attestation_engine contract
@@ -23,7 +24,7 @@ fn setup_test_env() -> (Env, Address, Address, Address) {
     
     // Initialize attestation_engine contract
     e.as_contract(&contract_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), commitment_core_id.clone());
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), commitment_core_id.clone()).unwrap();
     });
     
     (e, admin, commitment_core_id, contract_id)
@@ -219,6 +220,7 @@ fn test_health_metrics_structure() {
 #[test]
 fn test_attest_and_get_metrics() {
     let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
     
     // Set ledger timestamp to non-zero
     e.ledger().with_mut(|li| li.timestamp = 12345);
@@ -228,15 +230,16 @@ fn test_attest_and_get_metrics() {
     let mut data = Map::new(&e);
     data.set(String::from_str(&e, "note"), String::from_str(&e, "test attestation"));
     
-    // Record an attestation
+    // Record an attestation (admin is authorized)
     e.as_contract(&contract_id, || {
         AttestationEngineContract::attest(
             e.clone(),
+            admin.clone(), // caller
             commitment_id.clone(),
             attestation_type.clone(),
             data.clone(),
-            admin.clone(),
-        );
+            admin.clone(), // verified_by
+        ).unwrap();
     });
     
     // Get attestations and verify
@@ -253,4 +256,107 @@ fn test_attest_and_get_metrics() {
     });
     
     assert!(metrics.last_attestation > 0);
+}
+
+// Access Control Tests
+#[test]
+fn test_add_authorized_verifier() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let verifier = Address::generate(&e);
+
+    client.add_authorized_verifier(&admin, &verifier);
+    assert!(client.is_authorized_verifier(&verifier));
+}
+
+#[test]
+fn test_add_authorized_verifier_unauthorized_fails() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let unauthorized = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    let result = client.try_add_authorized_verifier(&unauthorized, &verifier);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_remove_authorized_verifier() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let verifier = Address::generate(&e);
+
+    client.add_authorized_verifier(&admin, &verifier);
+    assert!(client.is_authorized_verifier(&verifier));
+
+    client.remove_authorized_verifier(&admin, &verifier);
+    assert!(!client.is_authorized_verifier(&verifier));
+}
+
+#[test]
+fn test_update_admin() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let new_admin = Address::generate(&e);
+
+    client.update_admin(&admin, &new_admin);
+    let current_admin = client.get_admin();
+    assert_eq!(current_admin, new_admin);
+}
+
+#[test]
+fn test_get_admin() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+
+    let retrieved_admin = client.get_admin();
+    assert_eq!(retrieved_admin, admin);
+}
+
+#[test]
+fn test_attest_unauthorized_fails() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    
+    let unauthorized = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "test");
+    let attestation_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+    
+    let result = e.as_contract(&contract_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            unauthorized.clone(),
+            commitment_id,
+            attestation_type,
+            data,
+            unauthorized.clone(),
+        )
+    });
+    
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_attest_authorized_succeeds() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    
+    let commitment_id = String::from_str(&e, "test");
+    let attestation_type = String::from_str(&e, "health_check");
+    let mut data = Map::new(&e);
+    data.set(String::from_str(&e, "key"), String::from_str(&e, "value"));
+    
+    let result = e.as_contract(&contract_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id,
+            attestation_type,
+            data,
+            admin.clone(),
+        )
+    });
+    
+    assert!(result.is_ok());
 }

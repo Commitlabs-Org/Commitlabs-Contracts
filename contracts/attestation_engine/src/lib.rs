@@ -1,8 +1,9 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Symbol, Address, Env, String, Vec, Map, 
+    contract, contracterror, contractimpl, contracttype, symbol_short, Symbol, Address, Env, String, Vec, Map, 
     IntoVal, TryIntoVal, Val,
 };
+use access_control::{AccessControl, AccessControlError};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,26 +55,96 @@ pub struct HealthMetrics {
     pub compliance_score: u32, // 0-100
 }
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    Unauthorized = 3,
+    InvalidAttestation = 4,
+    CommitmentNotFound = 5,
+    AccessControlError = 6,
+}
+
+impl From<AccessControlError> for Error {
+    fn from(err: AccessControlError) -> Self {
+        match err {
+            AccessControlError::NotInitialized => Error::NotInitialized,
+            AccessControlError::Unauthorized => Error::Unauthorized,
+            AccessControlError::AlreadyAuthorized => Error::Unauthorized,
+            AccessControlError::NotAuthorized => Error::Unauthorized,
+            AccessControlError::InvalidAddress => Error::Unauthorized,
+        }
+    }
+}
+
+#[contracttype]
+pub enum DataKey {
+    CommitmentCore,
+}
+
 #[contract]
 pub struct AttestationEngineContract;
 
 #[contractimpl]
 impl AttestationEngineContract {
     /// Initialize the attestation engine
-    pub fn initialize(e: Env, admin: Address, commitment_core: Address) {
-        // Store admin and commitment core contract address in instance storage
-        e.storage().instance().set(&symbol_short!("ADMIN"), &admin);
-        e.storage().instance().set(&symbol_short!("CORE"), &commitment_core);
+    pub fn initialize(e: Env, admin: Address, commitment_core: Address) -> Result<(), Error> {
+        if e.storage().instance().has(&access_control::AccessControlKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        AccessControl::init_admin(&e, admin).map_err(|_| Error::AlreadyInitialized)?;
+        e.storage().instance().set(&DataKey::CommitmentCore, &commitment_core);
+        Ok(())
+    }
+
+    /// Add an authorized verifier contract to the whitelist (admin only)
+    pub fn add_authorized_verifier(
+        e: Env,
+        caller: Address,
+        verifier_address: Address,
+    ) -> Result<(), Error> {
+        AccessControl::add_authorized_contract(&e, caller, verifier_address)
+            .map_err(Error::from)
+    }
+
+    /// Remove an authorized verifier contract from the whitelist (admin only)
+    pub fn remove_authorized_verifier(
+        e: Env,
+        caller: Address,
+        verifier_address: Address,
+    ) -> Result<(), Error> {
+        AccessControl::remove_authorized_contract(&e, caller, verifier_address)
+            .map_err(Error::from)
+    }
+
+    /// Check if a contract address is an authorized verifier
+    pub fn is_authorized_verifier(e: Env, contract_address: Address) -> bool {
+        AccessControl::is_authorized(&e, &contract_address)
+    }
+
+    /// Update admin (admin only)
+    pub fn update_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
+        AccessControl::update_admin(&e, caller, new_admin).map_err(Error::from)
+    }
+
+    /// Get the current admin address
+    pub fn get_admin(e: Env) -> Result<Address, Error> {
+        AccessControl::get_admin(&e).map_err(Error::from)
     }
 
     /// Record an attestation for a commitment
     pub fn attest(
         e: Env,
+        caller: Address,
         commitment_id: String,
         attestation_type: String,
         data: Map<String, String>,
         verified_by: Address,
-    ) {
+    ) -> Result<(), Error> {
+        // Verify caller is authorized (admin or authorized verifier)
+        AccessControl::require_authorized(&e, &caller)?;
         // Create attestation record
         let attestation = Attestation {
             commitment_id: commitment_id.clone(),
@@ -102,6 +173,8 @@ impl AttestationEngineContract {
             (symbol_short!("attest"), commitment_id),
             attestation_type
         );
+
+        Ok(())
     }
 
     /// Get all attestations for a commitment
@@ -117,10 +190,24 @@ impl AttestationEngineContract {
     /// Get current health metrics for a commitment
     pub fn get_health_metrics(e: Env, commitment_id: String) -> HealthMetrics {
         // Get commitment from core contract
-        let commitment_core: Address = e.storage()
+        let commitment_core: Address = match e.storage()
             .instance()
-            .get(&symbol_short!("CORE"))
-            .unwrap();
+            .get(&DataKey::CommitmentCore) {
+            Some(addr) => addr,
+            None => {
+                // Return default HealthMetrics if not initialized
+                return HealthMetrics {
+                    commitment_id: commitment_id.clone(),
+                    current_value: 0,
+                    initial_value: 0,
+                    drawdown_percent: 0,
+                    fees_generated: 0,
+                    volatility_exposure: 0,
+                    last_attestation: 0,
+                    compliance_score: 0,
+                };
+            }
+        };
         
         // Call get_commitment on commitment_core contract
         // Using Symbol::new() for function name longer than 9 characters
@@ -133,7 +220,22 @@ impl AttestationEngineContract {
         );
         
         // Convert Val to Commitment
-        let commitment: Commitment = commitment_val.try_into_val(&e).unwrap();
+        let commitment: Commitment = match commitment_val.try_into_val(&e) {
+            Ok(c) => c,
+            Err(_) => {
+                // Return default HealthMetrics if commitment not found
+                return HealthMetrics {
+                    commitment_id: commitment_id.clone(),
+                    current_value: 0,
+                    initial_value: 0,
+                    drawdown_percent: 0,
+                    fees_generated: 0,
+                    volatility_exposure: 0,
+                    last_attestation: 0,
+                    compliance_score: 0,
+                };
+            }
+        };
         
         // Get all attestations
         let attestations = Self::get_attestations(e.clone(), commitment_id.clone());
@@ -204,37 +306,60 @@ impl AttestationEngineContract {
         }
     }
 
-    /// Verify commitment compliance
-    pub fn verify_compliance(_e: Env, _commitment_id: String) -> bool {
+    /// Verify commitment compliance (admin or authorized verifier only)
+    pub fn verify_compliance(e: Env, caller: Address, commitment_id: String) -> Result<bool, Error> {
+        // Verify caller is authorized (admin or authorized verifier)
+        AccessControl::require_authorized(&e, &caller)?;
+
         // TODO: Get commitment rules from core contract
         // TODO: Get current health metrics
         // TODO: Check if rules are being followed
         // TODO: Return compliance status
-        true
+        Ok(true)
     }
 
-    /// Record fee generation
-    pub fn record_fees(_e: Env, _commitment_id: String, _fee_amount: i128) {
+    /// Record fee generation (admin or authorized verifier only)
+    pub fn record_fees(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        fee_amount: i128,
+    ) -> Result<(), Error> {
+        // Verify caller is authorized (admin or authorized verifier)
+        AccessControl::require_authorized(&e, &caller)?;
+
         // TODO: Update fees_generated in health metrics
         // TODO: Create fee attestation
         // TODO: Emit fee event
+        Ok(())
     }
 
-    /// Record drawdown event
-    pub fn record_drawdown(_e: Env, _commitment_id: String, _drawdown_percent: i128) {
+    /// Record drawdown event (admin or authorized verifier only)
+    pub fn record_drawdown(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        drawdown_percent: i128,
+    ) -> Result<(), Error> {
+        // Verify caller is authorized (admin or authorized verifier)
+        AccessControl::require_authorized(&e, &caller)?;
+
         // TODO: Update drawdown_percent in health metrics
         // TODO: Check if max_loss_percent is exceeded
         // TODO: Create drawdown attestation
         // TODO: Emit drawdown event
+        Ok(())
     }
 
     /// Calculate compliance score (0-100)
     pub fn calculate_compliance_score(e: Env, commitment_id: String) -> u32 {
         // Get commitment from core contract
-        let commitment_core: Address = e.storage()
+        let commitment_core: Address = match e.storage()
             .instance()
-            .get(&symbol_short!("CORE"))
-            .unwrap();
+            .get(&DataKey::CommitmentCore) {
+            Some(addr) => addr,
+            None => return 0, // Return 0 score if not initialized
+        };
         
         // Call get_commitment on commitment_core contract
         // Using Symbol::new() for function name longer than 9 characters
@@ -247,7 +372,10 @@ impl AttestationEngineContract {
         );
         
         // Convert Val to Commitment
-        let commitment: Commitment = commitment_val.try_into_val(&e).unwrap();
+        let commitment: Commitment = match commitment_val.try_into_val(&e) {
+            Ok(c) => c,
+            Err(_) => return 0, // Return 0 score if commitment not found
+        };
         
         // Get all attestations
         let attestations = Self::get_attestations(e.clone(), commitment_id);

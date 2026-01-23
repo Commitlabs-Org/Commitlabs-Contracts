@@ -135,7 +135,7 @@ fn test_mint_unauthorized_fails() {
 }
 
 #[test]
-fn test_mint_authorized_minter() {
+fn test_mint_authorized_contract() {
     let (e, contract_id, admin) = setup_env();
     let client = CommitmentNFTContractClient::new(&e, &contract_id);
     let owner = Address::generate(&e);
@@ -143,7 +143,7 @@ fn test_mint_authorized_minter() {
     let asset = Address::generate(&e);
 
     client.initialize(&admin);
-    client.add_authorized_minter(&admin, &minter);
+    client.add_authorized_contract(&admin, &minter);
 
     let token_id = client.mint(
         &minter,
@@ -314,3 +314,105 @@ fn test_transfer() {
     // TODO: Test transfer when implemented
 }
 
+// Access Control Tests
+#[test]
+fn test_add_authorized_contract() {
+    let (e, contract_id, admin) = setup_env();
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let authorized = Address::generate(&e);
+
+    client.initialize(&admin);
+    client.add_authorized_contract(&admin, &authorized);
+
+    // Verify it's authorized
+    assert!(client.is_authorized(&authorized));
+}
+
+#[test]
+fn test_add_authorized_contract_unauthorized_fails() {
+    let (e, contract_id, admin) = setup_env();
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let unauthorized = Address::generate(&e);
+    let authorized = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let result = client.try_add_authorized_contract(&unauthorized, &authorized);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_remove_authorized_contract() {
+    let (e, contract_id, admin) = setup_env();
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let authorized = Address::generate(&e);
+
+    client.initialize(&admin);
+    client.add_authorized_contract(&admin, &authorized);
+    assert!(client.is_authorized(&authorized));
+
+    client.remove_authorized_contract(&admin, &authorized);
+    // Admin is still authorized, but the contract is not
+    assert!(!client.is_authorized(&authorized));
+}
+
+#[test]
+fn test_update_admin() {
+    let (e, contract_id, admin) = setup_env();
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let new_admin = Address::generate(&e);
+
+    client.initialize(&admin);
+    client.update_admin(&admin, &new_admin);
+
+    // Verify new admin
+    let current_admin = client.get_admin();
+    assert_eq!(current_admin, new_admin);
+}
+
+#[test]
+fn test_update_admin_unauthorized_fails() {
+    let (e, contract_id, admin) = setup_env();
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let unauthorized = Address::generate(&e);
+    let new_admin = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let result = client.try_update_admin(&unauthorized, &new_admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_admin() {
+    let (e, contract_id, admin) = setup_env();
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+
+    client.initialize(&admin);
+    let retrieved_admin = client.get_admin();
+    assert_eq!(retrieved_admin, admin);
+}
+
+#[test]
+fn test_admin_can_mint() {
+    let (e, contract_id, admin) = setup_env();
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let owner = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Admin should be able to mint without being explicitly authorized
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commitment_001"),
+        &30,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset,
+    );
+
+    assert_eq!(token_id, 1);
+}
