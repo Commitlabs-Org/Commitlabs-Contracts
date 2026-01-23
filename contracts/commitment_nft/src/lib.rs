@@ -36,6 +36,47 @@ pub enum ContractError {
 // Data Structures
 // ============================================================================
 
+#[cfg(test)]
+mod tests;
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+/// Contract errors for structured error handling
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    /// Contract has not been initialized
+    NotInitialized = 1,
+    /// Contract has already been initialized
+    AlreadyInitialized = 2,
+    /// Caller is not authorized to perform this action
+    Unauthorized = 3,
+    /// Invalid duration (must be > 0)
+    InvalidDuration = 4,
+    /// Invalid max loss percent (must be 0-100)
+    InvalidMaxLoss = 5,
+    /// Invalid commitment type (must be safe, balanced, or aggressive)
+    InvalidCommitmentType = 6,
+    /// Invalid amount (must be > 0)
+    InvalidAmount = 7,
+    /// NFT with the given token_id does not exist
+    TokenNotFound = 8,
+    /// NFT has already been settled
+    AlreadySettled = 9,
+    /// Commitment has not expired yet
+    NotExpired = 10,
+    /// Caller is not the owner of the NFT
+    NotOwner = 11,
+}
+
+// ============================================================================
+// Data Types
+// ============================================================================
+
+/// Metadata associated with a commitment NFT
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitmentMetadata {
@@ -49,6 +90,7 @@ pub struct CommitmentMetadata {
     pub asset_address: Address,
 }
 
+/// The Commitment NFT structure
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitmentNFT {
@@ -96,8 +138,22 @@ impl CommitmentNFTContract {
     // ========================================================================
 
     /// Mint a new Commitment NFT
+    ///
+    /// # Arguments
+    /// * `caller` - The address calling the mint function (must be authorized)
+    /// * `owner` - The address that will own the NFT
+    /// * `commitment_id` - Unique identifier for the commitment
+    /// * `duration_days` - Duration of the commitment in days
+    /// * `max_loss_percent` - Maximum allowed loss percentage (0-100)
+    /// * `commitment_type` - Type of commitment ("safe", "balanced", "aggressive")
+    /// * `initial_amount` - Initial amount committed
+    /// * `asset_address` - Address of the asset contract
+    ///
+    /// # Returns
+    /// The token_id of the newly minted NFT
     pub fn mint(
         e: Env,
+        caller: Address,
         owner: Address,
         commitment_id: String,
         duration_days: u32,

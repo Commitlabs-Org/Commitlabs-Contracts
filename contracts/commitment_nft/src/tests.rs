@@ -43,18 +43,33 @@ fn mint_test_nft(
 // Initialization Tests
 // ============================================================================
 
-#[test]
-fn test_initialize() {
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn setup_env() -> (Env, Address, Address) {
     let e = Env::default();
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
+    (e, contract_id, admin)
+}
+
+fn setup_contract<'a>(e: &'a Env) -> (Address, Address, Address, CommitmentNFTContractClient<'a>) {
+    let admin = Address::generate(e);
+    let core_contract = Address::generate(e);
+    let owner = Address::generate(e);
+
     let contract_id = e.register_contract(None, CommitmentNFTContract);
     let client = CommitmentNFTContractClient::new(&e, &contract_id);
 
     // Initialize should succeed
     client.initialize(&admin);
 }
+
+// ============================================================================
+// Initialization Tests
+// ============================================================================
 
 #[test]
 fn test_initialize_already_initialized() {
