@@ -1,7 +1,11 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, String};
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 fn setup_env() -> (Env, Address, Address) {
     let e = Env::default();
@@ -10,6 +14,41 @@ fn setup_env() -> (Env, Address, Address) {
     let admin = Address::generate(&e);
     (e, contract_id, admin)
 }
+
+fn setup_contract<'a>(e: &'a Env) -> (Address, Address, Address, CommitmentNFTContractClient<'a>) {
+    let admin = Address::generate(e);
+    let core_contract = Address::generate(e);
+    let owner = Address::generate(e);
+
+    let contract_id = e.register_contract(None, CommitmentNFTContract);
+    let client = CommitmentNFTContractClient::new(e, &contract_id);
+
+    (admin, core_contract, owner, client)
+}
+
+fn mint_test_nft(
+    e: &Env,
+    client: &CommitmentNFTContractClient,
+    caller: &Address,
+    owner: &Address,
+) -> u32 {
+    let asset = Address::generate(e);
+
+    client.mint(
+        caller,
+        owner,
+        &String::from_str(e, "commitment-1"),
+        &30, // duration_days
+        &10, // max_loss_percent
+        &String::from_str(e, "balanced"),
+        &1000, // initial_amount
+        &asset,
+    )
+}
+
+// ============================================================================
+// Initialization Tests
+// ============================================================================
 
 #[test]
 fn test_initialize() {
@@ -22,6 +61,9 @@ fn test_initialize() {
     // Verify total supply is 0
     let supply = client.total_supply();
     assert_eq!(supply, 0);
+
+    // Verify admin is set
+    assert_eq!(client.get_admin(), admin);
 }
 
 #[test]
@@ -33,6 +75,31 @@ fn test_initialize_twice_fails() {
     let result = client.try_initialize(&admin);
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Access Control Tests
+// ============================================================================
+
+#[test]
+fn test_set_core_contract() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, core_contract, _, client) = setup_contract(&e);
+
+    // Initialize
+    client.initialize(&admin);
+
+    // Set core contract
+    client.set_core_contract(&core_contract);
+
+    // Verify core contract is set
+    assert_eq!(client.get_core_contract(), core_contract);
+}
+
+// ============================================================================
+// Minting Tests
+// ============================================================================
 
 #[test]
 fn test_mint_success() {
@@ -262,22 +329,40 @@ fn test_mint_all_commitment_types() {
 
     // Test "safe"
     let t1 = client.mint(
-        &admin, &owner, &String::from_str(&e, "c1"),
-        &30, &10, &String::from_str(&e, "safe"), &1000, &asset,
+        &admin,
+        &owner,
+        &String::from_str(&e, "c1"),
+        &30,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset,
     );
     assert_eq!(t1, 1);
 
     // Test "balanced"
     let t2 = client.mint(
-        &admin, &owner, &String::from_str(&e, "c2"),
-        &30, &10, &String::from_str(&e, "balanced"), &1000, &asset,
+        &admin,
+        &owner,
+        &String::from_str(&e, "c2"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset,
     );
     assert_eq!(t2, 2);
 
     // Test "aggressive"
     let t3 = client.mint(
-        &admin, &owner, &String::from_str(&e, "c3"),
-        &30, &10, &String::from_str(&e, "aggressive"), &1000, &asset,
+        &admin,
+        &owner,
+        &String::from_str(&e, "c3"),
+        &30,
+        &10,
+        &String::from_str(&e, "aggressive"),
+        &1000,
+        &asset,
     );
     assert_eq!(t3, 3);
 }
@@ -304,17 +389,57 @@ fn test_owner_of_not_found() {
     assert!(result.is_err());
 }
 
+// ============================================================================
+// Transfer Tests
+// ============================================================================
+
 #[test]
 fn test_transfer() {
-    let (e, contract_id, _admin) = setup_env();
-    let _from = Address::generate(&e);
-    let _to = Address::generate(&e);
-    let _client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let e = Env::default();
+    e.mock_all_auths();
 
-    // TODO: Test transfer when implemented
+    let (admin, _, owner, client) = setup_contract(&e);
+    let new_owner = Address::generate(&e);
+
+    // Initialize and mint
+    client.initialize(&admin);
+    let token_id = mint_test_nft(&e, &client, &admin, &owner);
+
+    // Transfer
+    client.transfer(&owner, &new_owner, &token_id);
+
+    // Verify new owner
+    assert_eq!(client.owner_of(&token_id), new_owner);
+
+    // Verify NFT data is updated
+    let nft = client.get_nft(&token_id);
+    assert_eq!(nft.owner, new_owner);
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_transfer_not_owner() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, owner, client) = setup_contract(&e);
+    let not_owner = Address::generate(&e);
+    let new_owner = Address::generate(&e);
+
+    // Initialize and mint
+    client.initialize(&admin);
+    let token_id = mint_test_nft(&e, &client, &admin, &owner);
+
+    // Try to transfer from non-owner - should panic with NotOwner (error code 11)
+    client.transfer(&not_owner, &new_owner, &token_id);
+}
+
+
+
+// ============================================================================
 // Access Control Tests
+// ============================================================================
+
 #[test]
 fn test_add_authorized_contract() {
     let (e, contract_id, admin) = setup_env();
@@ -324,7 +449,6 @@ fn test_add_authorized_contract() {
     client.initialize(&admin);
     client.add_authorized_contract(&admin, &authorized);
 
-    // Verify it's authorized
     assert!(client.is_authorized(&authorized));
 }
 
@@ -352,7 +476,6 @@ fn test_remove_authorized_contract() {
     assert!(client.is_authorized(&authorized));
 
     client.remove_authorized_contract(&admin, &authorized);
-    // Admin is still authorized, but the contract is not
     assert!(!client.is_authorized(&authorized));
 }
 
@@ -365,7 +488,6 @@ fn test_update_admin() {
     client.initialize(&admin);
     client.update_admin(&admin, &new_admin);
 
-    // Verify new admin
     let current_admin = client.get_admin();
     assert_eq!(current_admin, new_admin);
 }
@@ -402,7 +524,6 @@ fn test_admin_can_mint() {
 
     client.initialize(&admin);
 
-    // Admin should be able to mint without being explicitly authorized
     let token_id = client.mint(
         &admin,
         &owner,
@@ -415,4 +536,99 @@ fn test_admin_can_mint() {
     );
 
     assert_eq!(token_id, 1);
+}
+
+// ============================================================================
+// Settlement Tests (Issue #5)
+// ============================================================================
+
+#[test]
+fn test_settle_success() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, core_contract, owner, client) = setup_contract(&e);
+
+    client.initialize(&admin);
+    client.set_core_contract(&core_contract);
+
+    let token_id = mint_test_nft(&e, &client, &admin, &owner);
+    assert!(client.is_active(&token_id));
+
+    client.settle(&core_contract, &token_id);
+
+    assert!(!client.is_active(&token_id));
+    let nft = client.get_nft(&token_id);
+    assert!(!nft.is_active);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_settle_unauthorized_caller() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, core_contract, owner, client) = setup_contract(&e);
+    let unauthorized = Address::generate(&e);
+
+    client.initialize(&admin);
+    client.set_core_contract(&core_contract);
+
+    let token_id = mint_test_nft(&e, &client, &admin, &owner);
+    client.settle(&unauthorized, &token_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_settle_nft_not_found() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, core_contract, _, client) = setup_contract(&e);
+
+    client.initialize(&admin);
+    client.set_core_contract(&core_contract);
+
+    client.settle(&core_contract, &999);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_settle_already_settled() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, core_contract, owner, client) = setup_contract(&e);
+
+    client.initialize(&admin);
+    client.set_core_contract(&core_contract);
+
+    let token_id = mint_test_nft(&e, &client, &admin, &owner);
+    client.settle(&core_contract, &token_id);
+    client.settle(&core_contract, &token_id);
+}
+
+// ============================================================================
+// Integration Tests
+// ============================================================================
+
+#[test]
+fn test_full_nft_lifecycle() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, core_contract, owner, client) = setup_contract(&e);
+    let new_owner = Address::generate(&e);
+
+    client.initialize(&admin);
+    client.set_core_contract(&core_contract);
+
+    let token_id = mint_test_nft(&e, &client, &admin, &owner);
+    assert_eq!(client.owner_of(&token_id), owner);
+
+    client.transfer(&owner, &new_owner, &token_id);
+    assert_eq!(client.owner_of(&token_id), new_owner);
+
+    client.settle(&core_contract, &token_id);
+    assert!(!client.is_active(&token_id));
 }
