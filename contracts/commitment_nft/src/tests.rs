@@ -34,17 +34,23 @@ fn create_test_metadata(e: &Env, asset_address: &Address) -> (String, u32, u32, 
 
 fn setup_env() -> (Env, Address, Address) {
     let e = Env::default();
-    let (admin, client) = setup_contract(&e);
+    let (admin, contract_id) = {
+        let (admin, client) = setup_contract(&e);
 
-    // Initialize should succeed
-    client.initialize(&admin);
+        // Initialize should succeed
+        client.initialize(&admin);
 
-    // Verify admin is set
-    let stored_admin = client.get_admin();
-    assert_eq!(stored_admin, admin);
+        // Verify admin is set
+        let stored_admin = client.get_admin();
+        assert_eq!(stored_admin, admin);
 
-    // Verify total supply is 0
-    assert_eq!(client.total_supply(), 0);
+        // Verify total supply is 0
+        assert_eq!(client.total_supply(), 0);
+        
+        (admin, client.address)
+    };
+
+    (e, contract_id, admin)
 }
 
 // ============================================================================
@@ -524,8 +530,6 @@ fn test_get_nfts_by_owner() {
 fn test_owner_of_not_found() {
     let (e, contract_id, admin) = setup_env();
     let client = CommitmentNFTContractClient::new(&e, &contract_id);
-
-    client.initialize(&admin);
 
     let result = client.try_owner_of(&999);
     assert!(result.is_err());

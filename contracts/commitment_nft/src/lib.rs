@@ -1,35 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Vec, symbol_short};
-
-// Storage keys for persistent data
-#[contracttype]
-pub enum DataKey {
-    Admin,                    // Admin address
-    TokenCounter,             // Current token counter for generating IDs
-    NFT(u32),                 // NFT data by token_id
-    OwnerBalance(Address),    // Balance count per owner
-    OwnerTokens(Address),     // Vec of token IDs per owner
-    TokenIds,                 // Vec of all token IDs
-}
-
-// Contract errors
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum ContractError {
-    NotInitialized = 1,
-    AlreadyInitialized = 2,
-    TokenNotFound = 3,
-    InvalidTokenId = 4,
-    NotOwner = 5,
-    NotAuthorized = 6,
-    TransferNotAllowed = 7,
-    AlreadySettled = 8,
-    NotExpired = 9,
-}
-
-#[cfg(test)]
-mod tests;
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Vec, symbol_short, Symbol};
 
 // ============================================================================
 // Error Types
@@ -39,29 +9,33 @@ mod tests;
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
-pub enum Error {
+pub enum ContractError {
     /// Contract has not been initialized
     NotInitialized = 1,
     /// Contract has already been initialized
     AlreadyInitialized = 2,
-    /// Caller is not authorized to perform this action
-    Unauthorized = 3,
-    /// Invalid duration (must be > 0)
-    InvalidDuration = 4,
-    /// Invalid max loss percent (must be 0-100)
-    InvalidMaxLoss = 5,
-    /// Invalid commitment type (must be safe, balanced, or aggressive)
-    InvalidCommitmentType = 6,
-    /// Invalid amount (must be > 0)
-    InvalidAmount = 7,
     /// NFT with the given token_id does not exist
-    TokenNotFound = 8,
-    /// NFT has already been settled
-    AlreadySettled = 9,
-    /// Commitment has not expired yet
-    NotExpired = 10,
+    TokenNotFound = 3,
+    /// Invalid token_id
+    InvalidTokenId = 4,
     /// Caller is not the owner of the NFT
-    NotOwner = 11,
+    NotOwner = 5,
+    /// Caller is not authorized to perform this action
+    NotAuthorized = 6,
+    /// Transfer is not allowed (e.g. restricted)
+    TransferNotAllowed = 7,
+    /// NFT has already been settled
+    AlreadySettled = 8,
+    /// Commitment has not expired yet
+    NotExpired = 9,
+    /// Invalid duration (must be > 0)
+    InvalidDuration = 10,
+    /// Invalid max loss percent (must be 0-100)
+    InvalidMaxLoss = 11,
+    /// Invalid commitment type (must be safe, balanced, or aggressive)
+    InvalidCommitmentType = 12,
+    /// Invalid amount (must be > 0)
+    InvalidAmount = 13,
 }
 
 // ============================================================================
@@ -99,21 +73,28 @@ pub enum DataKey {
     /// Admin address (singleton)
     Admin,
     /// Counter for generating unique token IDs / Total supply
-    TotalSupply,
+    TokenCounter,
     /// NFT data storage (token_id -> CommitmentNFT)
-    Nft(u32),
-    /// Owner mapping (token_id -> Address)
-    Owner(u32),
-    /// Authorized minter addresses (from upstream)
-    AuthorizedMinter(Address),
+    NFT(u32),
+    /// Owner balance count (Address -> u32)
+    OwnerBalance(Address),
+    /// Owner tokens list (Address -> Vec<u32>)
+    OwnerTokens(Address),
+    /// List of all token IDs (Vec<u32>)
+    TokenIds,
     /// Authorized commitment_core contract address (for settlement)
     CoreContract,
+    /// Authorized minter addresses (from upstream)
+    AuthorizedMinter(Address),
     /// Active status (token_id -> bool)
     ActiveStatus(u32),
 }
 
 // Events
 const MINT: soroban_sdk::Symbol = symbol_short!("mint");
+
+#[cfg(test)]
+mod tests;
 
 // ============================================================================
 // Contract Implementation
@@ -154,12 +135,12 @@ impl CommitmentNFTContract {
 
     /// Set the authorized commitment_core contract address for settlement
     /// Only the admin can call this function
-    pub fn set_core_contract(e: Env, core_contract: Address) -> Result<(), Error> {
+    pub fn set_core_contract(e: Env, core_contract: Address) -> Result<(), ContractError> {
         let admin: Address = e
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .ok_or(ContractError::NotInitialized)?;
         admin.require_auth();
 
         e.storage()
@@ -174,19 +155,19 @@ impl CommitmentNFTContract {
     }
 
     /// Get the authorized commitment_core contract address
-    pub fn get_core_contract(e: Env) -> Result<Address, Error> {
+    pub fn get_core_contract(e: Env) -> Result<Address, ContractError> {
         e.storage()
             .instance()
             .get(&DataKey::CoreContract)
-            .ok_or(Error::NotInitialized)
+            .ok_or(ContractError::NotInitialized)
     }
 
     /// Get the admin address
-    pub fn get_admin(e: Env) -> Result<Address, Error> {
+    pub fn get_admin(e: Env) -> Result<Address, ContractError> {
         e.storage()
             .instance()
             .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+            .ok_or(ContractError::NotInitialized)
     }
 
     // ========================================================================
@@ -418,56 +399,6 @@ impl CommitmentNFTContract {
     }
 
     // ========================================================================
-    // NFT Transfer
-    // ========================================================================
-
-    /// Transfer NFT to new owner
-    ///
-    /// # Arguments
-    /// * `from` - Current owner address
-    /// * `to` - New owner address
-    /// * `token_id` - Token ID to transfer
-    ///
-    /// # Errors
-    /// * `TokenNotFound` - If the NFT does not exist
-    /// * `NotOwner` - If the caller is not the owner
-    pub fn transfer(e: Env, from: Address, to: Address, token_id: u32) -> Result<(), Error> {
-        // Require authorization from the current owner
-        from.require_auth();
-
-        // Verify ownership
-        let current_owner: Address = e
-            .storage()
-            .persistent()
-            .get(&DataKey::Owner(token_id))
-            .ok_or(Error::TokenNotFound)?;
-        if current_owner != from {
-            return Err(Error::NotOwner);
-        }
-
-        // Update owner in storage
-        e.storage().persistent().set(&DataKey::Owner(token_id), &to);
-
-        // Update NFT data to reflect new owner
-        if let Some(mut nft) = e
-            .storage()
-            .persistent()
-            .get::<DataKey, CommitmentNFT>(&DataKey::Nft(token_id))
-        {
-            nft.owner = to.clone();
-            e.storage().persistent().set(&DataKey::Nft(token_id), &nft);
-        }
-
-        // Emit Transfer event
-        e.events().publish(
-            (Symbol::new(&e, "Transfer"), token_id),
-            (from, to, e.ledger().timestamp()),
-        );
-
-        Ok(())
-    }
-
-    // ========================================================================
     // Settlement (Issue #5 - Main Implementation)
     // ========================================================================
 
@@ -517,15 +448,4 @@ impl CommitmentNFTContract {
     pub fn token_exists(e: Env, token_id: u32) -> bool {
         e.storage().persistent().has(&DataKey::NFT(token_id))
     }
-
-    /// Get the admin address
-    pub fn get_admin(e: Env) -> Result<Address, ContractError> {
-        e.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ContractError::NotInitialized)
-    }
 }
-
-mod tests;
-
