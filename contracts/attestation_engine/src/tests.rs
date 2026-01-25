@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String};
-use commitment_core::{Commitment as CoreCommitment, CommitmentCoreContract, CommitmentRules as CoreCommitmentRules};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String, symbol_short};
+use commitment_core::{Commitment as CoreCommitment, CommitmentCoreContract, CommitmentRules as CoreCommitmentRules, DataKey};
 
 fn store_core_commitment(
     e: &Env,
@@ -36,8 +36,7 @@ fn store_core_commitment(
     };
 
     e.as_contract(commitment_core_id, || {
-        let key = (symbol_short!("Commit"), commitment.commitment_id.clone());
-        e.storage().persistent().set(&key, &commitment);
+        e.storage().instance().set(&DataKey::Commitment(commitment.commitment_id.clone()), &commitment);
     });
 }
 

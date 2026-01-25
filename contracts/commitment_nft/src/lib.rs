@@ -47,29 +47,33 @@ mod tests;
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
-pub enum Error {
+pub enum ContractError {
     /// Contract has not been initialized
     NotInitialized = 1,
     /// Contract has already been initialized
     AlreadyInitialized = 2,
-    /// Caller is not authorized to perform this action
-    Unauthorized = 3,
-    /// Invalid duration (must be > 0)
-    InvalidDuration = 4,
-    /// Invalid max loss percent (must be 0-100)
-    InvalidMaxLoss = 5,
-    /// Invalid commitment type (must be safe, balanced, or aggressive)
-    InvalidCommitmentType = 6,
-    /// Invalid amount (must be > 0)
-    InvalidAmount = 7,
     /// NFT with the given token_id does not exist
-    TokenNotFound = 8,
-    /// NFT has already been settled
-    AlreadySettled = 9,
-    /// Commitment has not expired yet
-    NotExpired = 10,
+    TokenNotFound = 3,
+    /// Invalid token_id
+    InvalidTokenId = 4,
     /// Caller is not the owner of the NFT
-    NotOwner = 11,
+    NotOwner = 5,
+    /// Caller is not authorized to perform this action
+    NotAuthorized = 6,
+    /// Transfer is not allowed (e.g. restricted)
+    TransferNotAllowed = 7,
+    /// NFT has already been settled
+    AlreadySettled = 8,
+    /// Commitment has not expired yet
+    NotExpired = 9,
+    /// Invalid duration (must be > 0)
+    InvalidDuration = 10,
+    /// Invalid max loss percent (must be 0-100)
+    InvalidMaxLoss = 11,
+    /// Invalid commitment type (must be safe, balanced, or aggressive)
+    InvalidCommitmentType = 12,
+    /// Invalid amount (must be > 0)
+    InvalidAmount = 13,
 }
 
 // ============================================================================
@@ -153,7 +157,6 @@ impl CommitmentNFTContract {
     /// The token_id of the newly minted NFT
     pub fn mint(
         e: Env,
-        caller: Address,
         owner: Address,
         commitment_id: String,
         duration_days: u32,
@@ -183,7 +186,7 @@ impl CommitmentNFTContract {
         let created_at = e.ledger().timestamp();
         let expires_at = created_at + (duration_days as u64 * 24 * 60 * 60);
 
-        // Create metadata
+        // Create CommitmentMetadata
         let metadata = CommitmentMetadata {
             commitment_id,
             duration_days,
@@ -195,7 +198,7 @@ impl CommitmentNFTContract {
             asset_address,
         };
 
-        // Create NFT
+        // Create CommitmentNFT
         let nft = CommitmentNFT {
             owner: owner.clone(),
             token_id: new_token_id,
@@ -354,7 +357,13 @@ impl CommitmentNFTContract {
         e.events()
             .publish((symbol_short!("settle"), nft.owner, token_id), timestamp);
 
-        Ok(())
+        for token_id in token_ids.iter() {
+            if let Some(nft) = e.storage().persistent().get::<DataKey, CommitmentNFT>(&DataKey::NFT(token_id)) {
+                owned_nfts.push_back(nft);
+            }
+        }
+
+        owned_nfts
     }
 
     /// Activate an NFT (for new commitments)
@@ -438,6 +447,23 @@ impl CommitmentNFTContract {
         e.storage()
             .persistent()
             .set(&DataKey::OwnerTokens(owner.clone()), &new_tokens);
+    }
+
+    /// Check if an NFT has expired (based on time)
+    pub fn is_expired(e: Env, token_id: u32) -> Result<bool, ContractError> {
+        let nft: CommitmentNFT = e
+            .storage()
+            .persistent()
+            .get(&DataKey::NFT(token_id))
+            .ok_or(ContractError::TokenNotFound)?;
+
+        let current_time = e.ledger().timestamp();
+        Ok(current_time >= nft.metadata.expires_at)
+    }
+
+    /// Check if a token exists
+    pub fn token_exists(e: Env, token_id: u32) -> bool {
+        e.storage().persistent().has(&DataKey::NFT(token_id))
     }
 }
 

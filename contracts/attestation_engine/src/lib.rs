@@ -63,6 +63,82 @@ impl AttestationEngineContract {
         e.storage().instance().set(&symbol_short!("CORE"), &commitment_core);
     }
 
+    // ========================================================================
+    // Access Control
+    // ========================================================================
+
+    /// Add an authorized recorder (only admin can call)
+    pub fn add_authorized_recorder(e: Env, caller: Address, recorder: Address) {
+        caller.require_auth();
+        
+        // Verify caller is admin
+        let admin: Address = e.storage()
+            .instance()
+            .get(&symbol_short!("ADMIN"))
+            .unwrap_or_else(|| panic!("Contract not initialized"));
+        
+        if caller != admin {
+            panic!("Unauthorized: only admin can add recorders");
+        }
+        
+        // Add recorder to authorized list
+        let key = (symbol_short!("AUTHREC"), recorder.clone());
+        e.storage().instance().set(&key, &true);
+        
+        // Emit event
+        e.events().publish(
+            (Symbol::new(&e, "RecorderAdded"),),
+            (recorder,)
+        );
+    }
+
+    /// Check if an address is authorized to record events
+    fn is_authorized_recorder(e: &Env, recorder: &Address) -> bool {
+        // Admin is always authorized
+        if let Some(admin) = e.storage()
+            .instance()
+            .get::<Symbol, Address>(&symbol_short!("ADMIN")) {
+            if *recorder == admin {
+                return true;
+            }
+        }
+        
+        // Check if recorder is in authorized list
+        let key = (symbol_short!("AUTHREC"), recorder.clone());
+        e.storage().instance().get(&key).unwrap_or(false)
+    }
+
+    // ========================================================================
+    // Health Metrics Storage Helpers
+    // ========================================================================
+
+    /// Load health metrics from storage or create new ones
+    fn load_or_create_health_metrics(e: &Env, commitment_id: &String) -> HealthMetrics {
+        let key = (symbol_short!("HEALTH"), commitment_id.clone());
+        
+        if let Some(metrics) = e.storage().persistent().get(&key) {
+            metrics
+        } else {
+            // Create new metrics initialized to zero
+            HealthMetrics {
+                commitment_id: commitment_id.clone(),
+                current_value: 0,
+                initial_value: 0,
+                drawdown_percent: 0,
+                fees_generated: 0,
+                volatility_exposure: 0,
+                last_attestation: 0,
+                compliance_score: 100, // Start with perfect score
+            }
+        }
+    }
+
+    /// Store health metrics
+    fn store_health_metrics(e: &Env, metrics: &HealthMetrics) {
+        let key = (symbol_short!("HEALTH"), metrics.commitment_id.clone());
+        e.storage().persistent().set(&key, metrics);
+    }
+
     /// Record an attestation for a commitment
     pub fn attest(
         e: Env,
@@ -211,18 +287,174 @@ impl AttestationEngineContract {
     }
 
     /// Record fee generation
-    pub fn record_fees(_e: Env, _commitment_id: String, _fee_amount: i128) {
-        // TODO: Update fees_generated in health metrics
-        // TODO: Create fee attestation
-        // TODO: Emit fee event
+    /// 
+    /// # Arguments
+    /// * `caller` - The address calling this function (must be authorized)
+    /// * `commitment_id` - The commitment ID to record fees for
+    /// * `fee_amount` - The amount of fees generated
+    pub fn record_fees(e: Env, caller: Address, commitment_id: String, fee_amount: i128) {
+        // 1. Verify caller authorization
+        caller.require_auth();
+        if !Self::is_authorized_recorder(&e, &caller) {
+            panic!("Unauthorized: caller is not an authorized recorder");
+        }
+        
+        // 2. Load or create health metrics
+        let mut metrics = Self::load_or_create_health_metrics(&e, &commitment_id);
+        
+        // 3. Update fees_generated
+        metrics.fees_generated = metrics.fees_generated.checked_add(fee_amount)
+            .unwrap_or_else(|| panic!("Fee amount overflow: cannot add {} to existing {}", fee_amount, metrics.fees_generated));
+        
+        // 4. Create fee attestation
+        let data = Map::new(&e);
+        let attestation = Attestation {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&e, "fee_generation"),
+            data,
+            timestamp: e.ledger().timestamp(),
+            verified_by: caller.clone(),
+            is_compliant: true,
+        };
+        
+        // Store attestation
+        let atts_key = (symbol_short!("ATTS"), commitment_id.clone());
+        let mut attestations: Vec<Attestation> = e.storage()
+            .persistent()
+            .get(&atts_key)
+            .unwrap_or_else(|| Vec::new(&e));
+        attestations.push_back(attestation);
+        e.storage().persistent().set(&atts_key, &attestations);
+        
+        // 5. Recalculate compliance score
+        metrics.compliance_score = Self::calculate_compliance_score(e.clone(), commitment_id.clone());
+        
+        // 6. Update last attestation timestamp
+        metrics.last_attestation = e.ledger().timestamp();
+        
+        // 7. Store updated health metrics
+        Self::store_health_metrics(&e, &metrics);
+        
+        // 8. Emit FeeRecorded event
+        e.events().publish(
+            (Symbol::new(&e, "FeeRecorded"), commitment_id),
+            (fee_amount, e.ledger().timestamp())
+        );
     }
 
     /// Record drawdown event
-    pub fn record_drawdown(_e: Env, _commitment_id: String, _drawdown_percent: i128) {
-        // TODO: Update drawdown_percent in health metrics
-        // TODO: Check if max_loss_percent is exceeded
-        // TODO: Create drawdown attestation
-        // TODO: Emit drawdown event
+    /// 
+    /// # Arguments
+    /// * `caller` - The address calling this function (must be authorized)
+    /// * `commitment_id` - The commitment ID to record drawdown for
+    /// * `current_value` - The current value of the commitment
+    pub fn record_drawdown(e: Env, caller: Address, commitment_id: String, current_value: i128) {
+        // 1. Verify caller authorization
+        caller.require_auth();
+        if !Self::is_authorized_recorder(&e, &caller) {
+            panic!("Unauthorized: caller is not an authorized recorder");
+        }
+        
+        // 2. Get commitment from core contract to retrieve initial amount and max_loss_percent
+        let commitment_core: Address = e.storage()
+            .instance()
+            .get(&symbol_short!("CORE"))
+            .unwrap_or_else(|| panic!("Core contract not set"));
+        
+        let mut args = Vec::new(&e);
+        args.push_back(commitment_id.clone().into_val(&e));
+        let commitment_val: Val = e.invoke_contract(
+            &commitment_core,
+            &Symbol::new(&e, "get_commitment"),
+            args,
+        );
+        let commitment: Commitment = commitment_val.try_into_val(&e)
+            .unwrap_or_else(|_| panic!("Failed to get commitment"));
+        
+        // 3. Calculate drawdown percentage: ((initial - current) / initial) * 100
+        let initial_value = commitment.amount;
+        let drawdown_percent = if initial_value > 0 {
+            let diff = initial_value.checked_sub(current_value).unwrap_or(0);
+            diff.checked_mul(100).unwrap_or(0)
+                .checked_div(initial_value).unwrap_or(0)
+        } else {
+            0
+        };
+        
+        // 4. Load or create health metrics
+        let mut metrics = Self::load_or_create_health_metrics(&e, &commitment_id);
+        
+        // 5. Update health metrics
+        metrics.current_value = current_value;
+        metrics.initial_value = initial_value;
+        metrics.drawdown_percent = drawdown_percent;
+        
+        // 6. Check for violation
+        let max_loss_percent = commitment.rules.max_loss_percent as i128;
+        let is_violation = drawdown_percent > max_loss_percent;
+        
+        if is_violation {
+            // Create violation attestation
+            let violation_data = Map::new(&e);
+            let violation_attestation = Attestation {
+                commitment_id: commitment_id.clone(),
+                attestation_type: String::from_str(&e, "violation"),
+                data: violation_data,
+                timestamp: e.ledger().timestamp(),
+                verified_by: caller.clone(),
+                is_compliant: false,
+            };
+            
+            // Store violation attestation
+            let atts_key = (symbol_short!("ATTS"), commitment_id.clone());
+            let mut attestations: Vec<Attestation> = e.storage()
+                .persistent()
+                .get(&atts_key)
+                .unwrap_or_else(|| Vec::new(&e));
+            attestations.push_back(violation_attestation);
+            e.storage().persistent().set(&atts_key, &attestations);
+            
+            // Emit ViolationDetected event
+            e.events().publish(
+                (Symbol::new(&e, "ViolationDetected"), commitment_id.clone()),
+                (drawdown_percent, max_loss_percent, e.ledger().timestamp())
+            );
+        }
+        
+        // 7. Create drawdown attestation
+        let drawdown_data = Map::new(&e);
+        let drawdown_attestation = Attestation {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&e, "drawdown"),
+            data: drawdown_data,
+            timestamp: e.ledger().timestamp(),
+            verified_by: caller.clone(),
+            is_compliant: !is_violation,
+        };
+        
+        // Store drawdown attestation
+        let atts_key = (symbol_short!("ATTS"), commitment_id.clone());
+        let mut attestations: Vec<Attestation> = e.storage()
+            .persistent()
+            .get(&atts_key)
+            .unwrap_or_else(|| Vec::new(&e));
+        attestations.push_back(drawdown_attestation);
+        e.storage().persistent().set(&atts_key, &attestations);
+        
+        // 8. Recalculate compliance score
+        metrics.compliance_score = Self::calculate_compliance_score(e.clone(), commitment_id.clone());
+        
+        // 9. Update last attestation timestamp
+        metrics.last_attestation = e.ledger().timestamp();
+        
+        // 10. Store updated health metrics
+        Self::store_health_metrics(&e, &metrics);
+        
+        // 11. Emit DrawdownRecorded event
+        e.events().publish(
+            (Symbol::new(&e, "DrawdownRecorded"), commitment_id),
+            (current_value, drawdown_percent, e.ledger().timestamp())
+        );
     }
 
     /// Calculate compliance score (0-100)
@@ -341,4 +573,3 @@ impl AttestationEngineContract {
 
 #[cfg(test)]
 mod tests;
-

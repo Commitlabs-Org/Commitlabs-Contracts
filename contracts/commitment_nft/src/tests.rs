@@ -39,9 +39,9 @@ fn mint_test_nft(
     )
 }
 
-// ============================================================================
+// ============================================
 // Initialization Tests
-// ============================================================================
+// ============================================
 
 // ============================================================================
 // Helper Functions
@@ -88,9 +88,9 @@ fn test_initialize_already_initialized() {
     assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
 }
 
-// ============================================================================
-// Minting Tests
-// ============================================================================
+// ============================================
+// Mint Tests
+// ============================================
 
 #[test]
 fn test_mint() {
@@ -319,6 +319,10 @@ fn test_transfer_after_settle() {
     assert_eq!(client.owner_of(&token_id), new_owner);
 }
 
+// ============================================
+// Transfer Tests
+// ============================================
+
 #[test]
 fn test_transfer_reactivated_nft_fails() {
     let (e, admin, client) = setup_env();
@@ -455,6 +459,10 @@ fn test_get_metadata() {
     assert_eq!(metadata.max_loss_percent, 10);
     assert_eq!(metadata.initial_amount, 1000);
 }
+
+// ============================================
+// is_expired Tests
+// ============================================
 
 #[test]
 fn test_get_metadata_non_existent() {

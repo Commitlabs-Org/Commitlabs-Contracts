@@ -90,19 +90,17 @@ cargo test --workspace
 The CI will fail fast on any build errors or test failures, ensuring that only valid code is merged into the main branch.
 
 ## Deployment
+Deployment is managed via scripts and documented in `DEPLOYMENT.md`.
 
 ```bash
-# Deploy to testnet
-soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/commitment_nft.wasm \
-  --source <your-key> \
-  --network testnet
+# Build all contracts
+bash scripts/build-contracts.sh
 
-# Deploy to mainnet (when ready)
-soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/commitment_nft.wasm \
-  --source <your-key> \
-  --network mainnet
+# Deploy to testnet
+bash scripts/deploy-testnet.sh
+
+# Deploy to mainnet
+bash scripts/deploy-mainnet.sh
 ```
 
 ## Contract Structure
