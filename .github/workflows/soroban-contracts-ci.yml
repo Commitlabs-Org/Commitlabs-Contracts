@@ -1,0 +1,93 @@
+name: Soroban Contracts CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build-and-test:
+    name: Build and Test Soroban Contracts
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Add Soroban Rust target
+        run: rustup target add wasm32v1-none
+
+      - name: Install Stellar CLI via Homebrew
+        run: |
+          brew tap stellar/stellar-cli || true
+          brew install stellar-cli || brew install stellar
+
+      - name: Verify Stellar CLI installation
+        run: |
+          if command -v stellar &> /dev/null; then
+            stellar --version
+          fi
+          if command -v soroban &> /dev/null; then
+            soroban --version
+          else
+            echo "Note: soroban command not found, using stellar CLI"
+          fi
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Rust contracts with Cargo
+        run: |
+          cargo build --target wasm32v1-none --release
+          echo "✓ Cargo build completed successfully"
+
+      - name: Build Soroban contracts with Stellar CLI
+        run: |
+          # Build each contract using Stellar CLI
+          for contract in contracts/*/; do
+            if [ -f "$contract/Cargo.toml" ]; then
+              contract_name=$(basename "$contract")
+              echo "Building $contract_name with Stellar CLI..."
+              cd "$contract"
+              if command -v soroban &> /dev/null; then
+                soroban contract build
+              elif command -v stellar &> /dev/null; then
+                stellar contract build
+              else
+                echo "Error: Neither soroban nor stellar CLI found"
+                exit 1
+              fi
+              cd - > /dev/null
+            fi
+          done
+          echo "✓ Stellar CLI build completed"
+
+      - name: Run unit and integration tests
+        run: |
+          cargo test --workspace
+          echo "✓ All tests passed"
+
+      - name: Check for build artifacts
+        run: |
+          echo "Checking for WASM build artifacts..."
+          find target -name "*.wasm" -type f | head -10 || echo "No WASM files found in target directory"
+          ls -la target/wasm32v1-none/release/*.wasm 2>/dev/null || echo "WASM files not found in expected location"
+

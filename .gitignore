@@ -1,5 +1,29 @@
 target/
 **/*.rs.bk
-Cargo.lock
-*.wasm
 
+*.wasm
+.env
+config/deploy.env
+
+# AI & Agent metadata
+.claude/
+CLAUDE.md
+.agents/
+.opencode/
+
+# Planning files
+task_plan.md
+findings.md
+progress.md
+
+# Cursor
+.cursor/
+.cursorrules
+
+# Test snapshots
+test_snapshots/
+
+# Agent Skills
+.github/skills
+# Issue Requirements
+issue-requirements.md

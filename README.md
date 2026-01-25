@@ -38,20 +38,69 @@ cd contracts/commitment_nft
 cargo test
 ```
 
-## Deployment
+## CI/CD
+
+This repository uses GitHub Actions to automatically build, test, and validate Soroban smart contracts on every push to `main` and every pull request targeting `main`.
+
+### What the CI Does
+
+The CI pipeline performs the following steps:
+
+1. **Checkout** the repository
+2. **Install Rust** via rustup (stable toolchain)
+3. **Add Soroban target** (`wasm32v1-none`) for contract compilation
+4. **Install Stellar CLI** via Homebrew
+5. **Build contracts** using both:
+   - Cargo (`cargo build --target wasm32v1-none --release`)
+   - Stellar CLI (`soroban contract build`)
+6. **Run tests** (`cargo test --target wasm32v1-none --release`)
+
+### When It Runs
+
+- On every push to the `main` branch
+- On every pull request targeting the `main` branch
+
+### Fixing CI Failures Locally
+
+If the CI fails, you can reproduce the same environment locally:
 
 ```bash
-# Deploy to testnet
-soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/commitment_nft.wasm \
-  --source <your-key> \
-  --network testnet
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default stable
 
-# Deploy to mainnet (when ready)
-soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/commitment_nft.wasm \
-  --source <your-key> \
-  --network mainnet
+# Add Soroban target
+rustup target add wasm32v1-none
+
+# Install Stellar CLI (macOS)
+brew tap stellar/stellar-cli
+brew install stellar
+
+# Verify installation
+stellar --version
+soroban --version
+
+# Build contracts
+cargo build --target wasm32v1-none --release
+
+# Run tests
+cargo test --workspace
+```
+
+The CI will fail fast on any build errors or test failures, ensuring that only valid code is merged into the main branch.
+
+## Deployment
+Deployment is managed via scripts and documented in `DEPLOYMENT.md`.
+
+```bash
+# Build all contracts
+bash scripts/build-contracts.sh
+
+# Deploy to testnet
+bash scripts/deploy-testnet.sh
+
+# Deploy to mainnet
+bash scripts/deploy-mainnet.sh
 ```
 
 ## Contract Structure
