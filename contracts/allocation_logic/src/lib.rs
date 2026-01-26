@@ -255,6 +255,27 @@ impl AllocationStrategiesContract {
     // CORE ALLOCATION FUNCTIONS
     // ========================================================================
 
+    /// Allocate funds according to strategy
+    /// 
+    /// # Formal Verification
+    /// **Preconditions:**
+    /// - Contract is initialized
+    /// - `amount > 0`
+    /// - `reentrancy_guard == false`
+    /// - No existing allocation for `commitment_id`
+    /// 
+    /// **Postconditions:**
+    /// - `get_allocation(commitment_id).total_allocated == amount`
+    /// - For all pools P: `P.total_liquidity <= P.max_capacity`
+    /// - `reentrancy_guard == false`
+    /// 
+    /// **Invariants Maintained:**
+    /// - INV-4: Reentrancy guard invariant
+    /// - Pool capacity never exceeded
+    /// 
+    /// **Security Properties:**
+    /// - SP-1: Reentrancy protection
+    /// - SP-3: Arithmetic safety (overflow checks)
     pub fn allocate(
         env: Env,
         caller: Address,
