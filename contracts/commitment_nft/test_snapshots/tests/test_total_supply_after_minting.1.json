@@ -1117,14 +1117,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 0
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 0
+              "vec": [
+                {
+                  "string": "commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1217,14 +1227,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 1
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 1
+              "vec": [
+                {
+                  "string": "commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1317,14 +1337,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 2
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 2
+              "vec": [
+                {
+                  "string": "commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1417,14 +1447,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 3
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 3
+              "vec": [
+                {
+                  "string": "commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1517,14 +1557,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 4
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 4
+              "vec": [
+                {
+                  "string": "commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }

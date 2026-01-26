@@ -626,14 +626,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 0
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 0
+              "vec": [
+                {
+                  "string": "commitment_001"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -855,7 +865,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "transfer"
+                "symbol": "Transfer"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -865,7 +875,14 @@
               }
             ],
             "data": {
-              "u32": 0
+              "vec": [
+                {
+                  "u32": 0
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }

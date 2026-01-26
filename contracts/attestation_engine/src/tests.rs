@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String, Map, symbol_short};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, testutils::Events, Address, Env, String, symbol_short, vec, IntoVal, Map, Symbol};
 use commitment_core::{Commitment as CoreCommitment, CommitmentCoreContract, CommitmentRules as CoreCommitmentRules, DataKey};
 
 fn store_core_commitment(
@@ -412,6 +412,47 @@ fn test_attest_and_get_metrics() {
     });
 
     assert!(metrics.last_attestation > 0);
+}
+
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn test_attest_reentrancy_protection() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+
+    let commitment_id = String::from_str(&e, "test_commitment");
+    let owner = Address::generate(&e);
+
+    store_core_commitment(
+        &e,
+        &_commitment_core,
+        "test_commitment",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+
+    let attestation_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+
+    // Manually set reentrancy guard to simulate reentrancy
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&super::DataKey::ReentrancyGuard, &true);
+    });
+
+    // Try to attest, should panic
+    e.as_contract(&contract_id, || {
+        let _ = AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            attestation_type.clone(),
+            data.clone(),
+            true,
+        );
+    });
 }
 
 // ============================================================================
@@ -1197,4 +1238,150 @@ fn test_get_core_contract() {
     });
 
     assert_eq!(stored_core, commitment_core);
+}
+
+// ============================================================================
+// Event Verification Tests
+// ============================================================================
+
+#[test]
+fn test_attest_event() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let verified_by = admin.clone();
+
+    let commitment_id = String::from_str(&e, "test_id");
+    let owner = Address::generate(&e);
+    store_core_commitment(
+        &e,
+        &_commitment_core,
+        "test_id",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+
+    let attestation_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+
+    client.attest(&verified_by, &commitment_id, &attestation_type, &data, &true);
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, Symbol::new(&e, "AttestationRecorded").into_val(&e), commitment_id.into_val(&e), verified_by.into_val(&e)]
+    );
+}
+
+#[test]
+fn test_record_fees_event() {
+    let (e, admin, commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+
+    let commitment_id = String::from_str(&e, "test_id");
+    let owner = Address::generate(&e);
+    store_core_commitment(
+        &e,
+        &commitment_core,
+        "test_id",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+    
+    // record_fees requires caller (admin)
+    client.record_fees(&admin, &commitment_id, &100);
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, Symbol::new(&e, "FeeRecorded").into_val(&e), commitment_id.into_val(&e)]
+    );
+    let event_data: (i128, u64) = last_event.2.into_val(&e);
+    assert_eq!(event_data.0, 100);
+}
+
+#[test]
+fn test_record_drawdown_event() {
+    let (e, admin, commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+
+    // Need to store a commitment first because record_drawdown fetches it
+    let commitment_id = String::from_str(&e, "test_id");
+    let owner = Address::generate(&e);
+    store_core_commitment(
+        &e,
+        &commitment_core,
+        "test_id",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+
+    // record_drawdown requires caller (admin) and drawdown_percent
+    client.record_drawdown(&admin, &commitment_id, &5); // 5% drawdown
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, Symbol::new(&e, "DrawdownRecorded").into_val(&e), commitment_id.into_val(&e)]
+    );
+    let event_data: (i128, bool, u64) = last_event.2.into_val(&e);
+    // (drawdown_percent, is_compliant, timestamp)
+    assert_eq!(event_data.0, 5);
+    assert_eq!(event_data.1, true);
+}
+
+#[test]
+fn test_calculate_compliance_score_event() {
+    let (e, _admin, commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+
+    // Need to store a commitment first
+    let commitment_id = String::from_str(&e, "test_id");
+    let owner = Address::generate(&e);
+    store_core_commitment(
+        &e,
+        &commitment_core,
+        "test_id",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+
+    client.calculate_compliance_score(&commitment_id);
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, symbol_short!("ScoreUpd").into_val(&e), commitment_id.into_val(&e)]
+    );
+    let event_data: (u32, u64) = last_event.2.into_val(&e);
+    assert_eq!(event_data.0, 100);
 }
