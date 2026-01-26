@@ -1,7 +1,9 @@
 target/
 **/*.rs.bk
-Cargo.lock
+
 *.wasm
+.env
+config/deploy.env
 
 # AI & Agent metadata
 .claude/

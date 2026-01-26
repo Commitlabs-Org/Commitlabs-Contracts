@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String};
-use commitment_core::{Commitment as CoreCommitment, CommitmentCoreContract, CommitmentRules as CoreCommitmentRules};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, testutils::Events, Address, Env, String, symbol_short, vec, IntoVal, Map};
+use commitment_core::{Commitment as CoreCommitment, CommitmentCoreContract, CommitmentRules as CoreCommitmentRules, DataKey};
 
 fn store_core_commitment(
     e: &Env,
@@ -36,8 +36,7 @@ fn store_core_commitment(
     };
 
     e.as_contract(commitment_core_id, || {
-        let key = (symbol_short!("Commit"), commitment.commitment_id.clone());
-        e.storage().persistent().set(&key, &commitment);
+        e.storage().instance().set(&DataKey::Commitment(commitment.commitment_id.clone()), &commitment);
     });
 }
 
@@ -411,4 +410,138 @@ fn test_attest_and_get_metrics() {
     });
     
     assert!(metrics.last_attestation > 0);
+}
+
+// Event Verification Tests
+
+#[test]
+fn test_attest_event() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let verified_by = admin.clone();
+
+    let commitment_id = String::from_str(&e, "test_id");
+    let attestation_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+
+    client.attest(&commitment_id, &attestation_type, &data, &verified_by);
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, symbol_short!("Attest").into_val(&e), commitment_id.into_val(&e), verified_by.into_val(&e)]
+    );
+    let event_data: (String, bool, u64) = last_event.2.into_val(&e);
+    assert_eq!(event_data.0, attestation_type);
+    assert_eq!(event_data.1, true);
+}
+
+#[test]
+fn test_record_fees_event() {
+    let (e, admin, commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+
+    let commitment_id = String::from_str(&e, "test_id");
+    let owner = Address::generate(&e);
+    store_core_commitment(
+        &e,
+        &commitment_core,
+        "test_id",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+    
+    // record_fees requires caller (admin)
+    client.record_fees(&admin, &commitment_id, &100);
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, symbol_short!("FeeRec").into_val(&e), commitment_id.into_val(&e)]
+    );
+    let event_data: (i128, u64) = last_event.2.into_val(&e);
+    assert_eq!(event_data.0, 100);
+}
+
+#[test]
+fn test_record_drawdown_event() {
+    let (e, admin, commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+
+    // Need to store a commitment first because record_drawdown fetches it
+    let commitment_id = String::from_str(&e, "test_id");
+    let owner = Address::generate(&e);
+    store_core_commitment(
+        &e,
+        &commitment_core,
+        "test_id",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+
+    // record_drawdown requires caller (admin) and current_value
+    client.record_drawdown(&admin, &commitment_id, &950); // 5% drawdown
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, symbol_short!("Drawdown").into_val(&e), commitment_id.into_val(&e)]
+    );
+    let event_data: (i128, i128, u64) = last_event.2.into_val(&e);
+    // (current_value, drawdown_percent, timestamp)
+    assert_eq!(event_data.0, 950);
+    assert_eq!(event_data.1, 5);
+}
+
+#[test]
+fn test_calculate_compliance_score_event() {
+    let (e, _admin, commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+
+    // Need to store a commitment first
+    let commitment_id = String::from_str(&e, "test_id");
+    let owner = Address::generate(&e);
+    store_core_commitment(
+        &e,
+        &commitment_core,
+        "test_id",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        1000,
+    );
+
+    client.calculate_compliance_score(&commitment_id);
+
+    let events = e.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        vec![&e, symbol_short!("ScoreUpd").into_val(&e), commitment_id.into_val(&e)]
+    );
+    let event_data: (u32, u64) = last_event.2.into_val(&e);
+    assert_eq!(event_data.0, 100);
 }
