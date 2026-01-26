@@ -1,13 +1,11 @@
-#![cfg(test)]
-
 use super::*;
 use soroban_sdk::{
-    symbol_short,
     testutils::{Address as _, Ledger},
     Address, Env, String,
 };
 
 // Helper function to create a test commitment
+#[allow(clippy::too_many_arguments)]
 fn create_test_commitment(
     e: &Env,
     commitment_id: &str,
@@ -62,8 +60,7 @@ fn test_initialize() {
     let (e, contract_id, admin, nft_contract) = setup_env();
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
 
-    let result = client.initialize(&admin, &nft_contract);
-    assert_eq!(result, ());
+    client.initialize(&admin, &nft_contract);
 }
 
 #[test]
@@ -143,7 +140,7 @@ fn test_get_admin() {
 fn test_create_commitment() {
     let (e, contract_id, admin, nft_contract) = setup_env();
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    let owner = Address::generate(&e);
+    let _owner = Address::generate(&e);
 
     client.initialize(&admin, &nft_contract);
 

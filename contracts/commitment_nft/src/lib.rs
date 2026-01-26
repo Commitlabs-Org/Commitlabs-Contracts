@@ -250,6 +250,7 @@ impl CommitmentNFTContract {
     ///
     /// # Returns
     /// The token_id of the newly minted NFT
+    #[allow(clippy::too_many_arguments)]
     pub fn mint(
         e: Env,
         caller: Address,

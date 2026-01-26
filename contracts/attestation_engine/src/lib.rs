@@ -310,7 +310,7 @@ impl AttestationEngineContract {
     pub fn verify_compliance(
         e: Env,
         caller: Address,
-        commitment_id: String,
+        _commitment_id: String,
     ) -> Result<bool, Error> {
         // Verify caller is authorized (admin or authorized verifier)
         AccessControl::require_authorized(&e, &caller)?;
@@ -326,8 +326,8 @@ impl AttestationEngineContract {
     pub fn record_fees(
         e: Env,
         caller: Address,
-        commitment_id: String,
-        fee_amount: i128,
+        _commitment_id: String,
+        _fee_amount: i128,
     ) -> Result<(), Error> {
         // Verify caller is authorized (admin or authorized verifier)
         AccessControl::require_authorized(&e, &caller)?;
@@ -342,8 +342,8 @@ impl AttestationEngineContract {
     pub fn record_drawdown(
         e: Env,
         caller: Address,
-        commitment_id: String,
-        drawdown_percent: i128,
+        _commitment_id: String,
+        _drawdown_percent: i128,
     ) -> Result<(), Error> {
         // Verify caller is authorized (admin or authorized verifier)
         AccessControl::require_authorized(&e, &caller)?;
@@ -454,7 +454,7 @@ impl AttestationEngineContract {
 
         if expires_at > created_at {
             let total_duration = expires_at.checked_sub(created_at).unwrap_or(1);
-            let elapsed = current_time.checked_sub(created_at).unwrap_or(0);
+            let elapsed = current_time.saturating_sub(created_at);
 
             // Check if we're on track (not too far behind or ahead)
             // Simplified: if elapsed is within reasonable bounds of expected progress
@@ -471,11 +471,7 @@ impl AttestationEngineContract {
         }
 
         // Clamp between 0 and 100
-        if score < 0 {
-            score = 0;
-        } else if score > 100 {
-            score = 100;
-        }
+        score = score.clamp(0, 100);
 
         score as u32
     }

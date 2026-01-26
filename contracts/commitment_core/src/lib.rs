@@ -69,14 +69,6 @@ fn commitment_key(_e: &Env) -> Symbol {
     symbol_short!("Commit")
 }
 
-fn admin_key(_e: &Env) -> Symbol {
-    symbol_short!("Admin")
-}
-
-fn nft_contract_key(_e: &Env) -> Symbol {
-    symbol_short!("NFT")
-}
-
 // Error types for better error handling
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,16 +84,6 @@ pub enum CommitmentError {
 fn read_commitment(e: &Env, commitment_id: &String) -> Option<Commitment> {
     let key = (commitment_key(e), commitment_id.clone());
     e.storage().persistent().get(&key)
-}
-
-fn set_commitment(e: &Env, commitment: &Commitment) {
-    let key = (commitment_key(e), commitment.commitment_id.clone());
-    e.storage().persistent().set(&key, commitment);
-}
-
-fn has_commitment(e: &Env, commitment_id: &String) -> bool {
-    let key = (commitment_key(e), commitment_id.clone());
-    e.storage().persistent().has(&key)
 }
 
 #[contractimpl]
@@ -180,8 +162,8 @@ impl CommitmentCoreContract {
     pub fn update_value(
         e: Env,
         caller: Address,
-        commitment_id: String,
-        new_value: i128,
+        _commitment_id: String,
+        _new_value: i128,
     ) -> Result<(), Error> {
         // Verify caller is authorized (admin or authorized allocator)
         AccessControl::require_authorized(&e, &caller)?;
@@ -253,11 +235,7 @@ impl CommitmentCoreContract {
         let duration_violated = current_time >= commitment.expires_at;
 
         // Calculate time remaining (0 if expired)
-        let time_remaining = if current_time < commitment.expires_at {
-            commitment.expires_at - current_time
-        } else {
-            0
-        };
+        let time_remaining = commitment.expires_at.saturating_sub(current_time);
 
         let has_violations = loss_violated || duration_violated;
 
@@ -281,7 +259,7 @@ impl CommitmentCoreContract {
     }
 
     /// Early exit (with penalty)
-    pub fn early_exit(e: Env, commitment_id: String, caller: Address) -> Result<(), Error> {
+    pub fn early_exit(_e: Env, _commitment_id: String, caller: Address) -> Result<(), Error> {
         caller.require_auth();
 
         // TODO: Get commitment from storage
@@ -297,9 +275,9 @@ impl CommitmentCoreContract {
     pub fn allocate(
         e: Env,
         caller: Address,
-        commitment_id: String,
-        target_pool: Address,
-        amount: i128,
+        _commitment_id: String,
+        _target_pool: Address,
+        _amount: i128,
     ) -> Result<(), Error> {
         // Verify caller is authorized (admin or authorized allocator)
         AccessControl::require_authorized(&e, &caller)?;

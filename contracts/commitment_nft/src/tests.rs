@@ -1,7 +1,5 @@
-#![cfg(test)]
-
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 // ============================================================================
 // Helper Functions
@@ -55,8 +53,7 @@ fn test_initialize() {
     let (e, contract_id, admin) = setup_env();
     let client = CommitmentNFTContractClient::new(&e, &contract_id);
 
-    let result = client.initialize(&admin);
-    assert_eq!(result, ());
+    client.initialize(&admin);
 
     // Verify total supply is 0
     let supply = client.total_supply();

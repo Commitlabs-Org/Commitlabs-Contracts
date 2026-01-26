@@ -1,11 +1,10 @@
-#![cfg(test)]
-
 use super::*;
 use commitment_core::{
     Commitment as CoreCommitment, CommitmentCoreContract, CommitmentRules as CoreCommitmentRules,
 };
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String};
 
+#[allow(clippy::too_many_arguments)]
 fn store_core_commitment(
     e: &Env,
     commitment_core_id: &Address,
@@ -72,7 +71,7 @@ fn setup_test_env() -> (Env, Address, Address, Address) {
 
 #[test]
 fn test_initialize() {
-    let (e, admin, commitment_core, contract_id) = setup_test_env();
+    let (e, _admin, _commitment_core, contract_id) = setup_test_env();
 
     // Verify initialization by checking that we can call other functions
     // (indirect verification through storage access)
@@ -439,7 +438,7 @@ fn test_add_authorized_verifier() {
 
 #[test]
 fn test_add_authorized_verifier_unauthorized_fails() {
-    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let (e, _admin, _commitment_core, contract_id) = setup_test_env();
     let client = AttestationEngineContractClient::new(&e, &contract_id);
     let unauthorized = Address::generate(&e);
     let verifier = Address::generate(&e);
@@ -483,7 +482,7 @@ fn test_get_admin() {
 
 #[test]
 fn test_attest_unauthorized_fails() {
-    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    let (e, _admin, _commitment_core, contract_id) = setup_test_env();
     e.mock_all_auths();
 
     let unauthorized = Address::generate(&e);
