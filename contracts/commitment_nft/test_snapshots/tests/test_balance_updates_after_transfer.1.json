@@ -769,6 +769,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "TokenCounter"
                             }
                           ]
@@ -1009,14 +1021,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 0
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 0
+              "vec": [
+                {
+                  "string": "commitment_0"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1109,14 +1131,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 1
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 1
+              "vec": [
+                {
+                  "string": "commitment_1"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1209,14 +1241,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 2
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 2
+              "vec": [
+                {
+                  "string": "commitment_2"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1389,7 +1431,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "transfer"
+                "symbol": "Transfer"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -1399,7 +1441,14 @@
               }
             ],
             "data": {
-              "u32": 0
+              "vec": [
+                {
+                  "u32": 0
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1570,7 +1619,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "transfer"
+                "symbol": "Transfer"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -1580,7 +1629,14 @@
               }
             ],
             "data": {
-              "u32": 1
+              "vec": [
+                {
+                  "u32": 1
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }

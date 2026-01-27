@@ -74,6 +74,8 @@ pub enum ContractError {
     InvalidCommitmentType = 12,
     /// Invalid amount (must be > 0)
     InvalidAmount = 13,
+    /// Reentrancy detected
+    ReentrancyDetected = 14,
 }
 
 // ============================================================================
@@ -155,6 +157,10 @@ impl CommitmentNFTContract {
     ///
     /// # Returns
     /// The token_id of the newly minted NFT
+    /// 
+    /// # Reentrancy Protection
+    /// Uses checks-effects-interactions pattern. This function only writes to storage
+    /// and doesn't make external calls, but still protected for consistency.
     pub fn mint(
         e: Env,
         owner: Address,
@@ -188,7 +194,7 @@ impl CommitmentNFTContract {
 
         // Create CommitmentMetadata
         let metadata = CommitmentMetadata {
-            commitment_id,
+            commitment_id: commitment_id.clone(),
             duration_days,
             max_loss_percent,
             commitment_type,
@@ -214,6 +220,9 @@ impl CommitmentNFTContract {
 
         // Add to owner's token list
         Self::add_token_to_owner(&e, &owner, new_token_id);
+
+        // Clear reentrancy guard
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
 
         // Emit mint event
         e.events()
@@ -260,6 +269,7 @@ impl CommitmentNFTContract {
 
         // Verify ownership - from address must be the current owner
         if nft.owner != from {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotOwner);
         }
 

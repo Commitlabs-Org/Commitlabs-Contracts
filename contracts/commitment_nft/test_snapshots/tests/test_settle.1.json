@@ -308,6 +308,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "TokenCounter"
                             }
                           ]
@@ -476,14 +488,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 0
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 0
+              "vec": [
+                {
+                  "string": "test_commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -646,11 +668,14 @@
           "v0": {
             "topics": [
               {
-                "symbol": "settle"
+                "symbol": "Settle"
+              },
+              {
+                "u32": 0
               }
             ],
             "data": {
-              "u32": 0
+              "u64": 172800
             }
           }
         }

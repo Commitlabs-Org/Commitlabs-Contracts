@@ -1029,6 +1029,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "TokenCounter"
                             }
                           ]
@@ -1209,14 +1221,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 0
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 0
+              "vec": [
+                {
+                  "string": "owner1_commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1309,14 +1331,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 1
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 1
+              "vec": [
+                {
+                  "string": "owner1_commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1409,14 +1441,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 2
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
               }
             ],
             "data": {
-              "u32": 2
+              "vec": [
+                {
+                  "string": "owner1_commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1509,14 +1551,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 3
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
               }
             ],
             "data": {
-              "u32": 3
+              "vec": [
+                {
+                  "string": "owner2_commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
@@ -1609,14 +1661,24 @@
           "v0": {
             "topics": [
               {
-                "symbol": "mint"
+                "symbol": "Mint"
+              },
+              {
+                "u32": 4
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
               }
             ],
             "data": {
-              "u32": 4
+              "vec": [
+                {
+                  "string": "owner2_commitment"
+                },
+                {
+                  "u64": 0
+                }
+              ]
             }
           }
         }
