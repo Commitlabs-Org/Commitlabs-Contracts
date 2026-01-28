@@ -284,6 +284,28 @@ fn test_multiple_users_allocations() {
 }
 
 #[test]
+#[should_panic(expected = "Rate limit exceeded")]
+fn test_allocation_rate_limit_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Configure rate limit: 1 allocation call per 60 seconds
+    let fn_symbol = soroban_sdk::Symbol::new(&env, "alloc");
+    client.set_rate_limit(&admin, &fn_symbol, &60u64, &1u32);
+
+    let user = Address::generate(&env);
+
+    // First allocation should succeed
+    setup_test_pools(&env, &client, &admin);
+    client.allocate(&user, &100, &10_000_000, &Strategy::Balanced);
+
+    // Second allocation should panic due to rate limit
+    client.allocate(&user, &101, &10_000_000, &Strategy::Balanced);
+}
+
+#[test]
 fn test_get_nonexistent_allocation() {
     let env = Env::default();
     env.mock_all_auths();

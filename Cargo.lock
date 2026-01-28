@@ -21,6 +21,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "allocation_logic"
 version = "0.1.0"
 dependencies = [
+ "shared_utils",
  "soroban-sdk",
 ]
 
@@ -47,6 +48,7 @@ name = "attestation_engine"
 version = "0.1.0"
 dependencies = [
  "commitment_core",
+ "shared_utils",
  "soroban-sdk",
 ]
 
@@ -160,6 +162,7 @@ dependencies = [
 name = "commitment_core"
 version = "0.1.0"
 dependencies = [
+ "shared_utils",
  "soroban-sdk",
 ]
 
@@ -1065,6 +1068,13 @@ checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
 dependencies = [
  "digest",
  "keccak",
+]
+
+[[package]]
+name = "shared_utils"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]
