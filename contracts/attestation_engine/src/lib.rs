@@ -1067,7 +1067,7 @@ impl AttestationEngineContract {
             .unwrap();
 
         // get_total_commitments() on core contract
-        let mut args = Vec::new(&e);
+        let args = Vec::new(&e);
         let total_commitments_val: Val = e.invoke_contract(
             &commitment_core,
             &Symbol::new(&e, "get_total_commitments"),
@@ -1155,4 +1155,5 @@ impl AttestationEngineContract {
     }
 }
 
-mod tests;
+mod tests;#[cfg(all(test, feature = "benchmark"))]
+mod benchmarks;

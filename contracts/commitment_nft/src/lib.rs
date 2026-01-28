@@ -549,4 +549,5 @@ impl CommitmentNFTContract {
     }
 }
 
-
+#[cfg(all(test, feature = "benchmark"))]
+mod benchmarks;

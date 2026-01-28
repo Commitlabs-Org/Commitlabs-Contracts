@@ -8,6 +8,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+benchmark = []
 default = []
 
 [dependencies]

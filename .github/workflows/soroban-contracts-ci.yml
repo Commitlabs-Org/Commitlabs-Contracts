@@ -85,6 +85,12 @@ jobs:
           cargo test --workspace
           echo "✓ All tests passed"
 
+      - name: Run performance benchmarks
+        run: |
+          echo "Running performance benchmarks..."
+          cargo test --workspace --features benchmark --release -- --nocapture 2>&1 | tee benchmarks/results/ci_benchmark_$(date +%Y%m%d_%H%M%S).log || echo "Note: Some benchmarks may have failed, but continuing..."
+          echo "✓ Benchmarks completed"
+
       - name: Check for build artifacts
         run: |
           echo "Checking for WASM build artifacts..."

@@ -772,3 +772,6 @@ impl AllocationStrategiesContract {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "benchmark"))]
+mod benchmarks;

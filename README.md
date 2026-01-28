@@ -38,6 +38,26 @@ cd contracts/commitment_nft
 cargo test
 ```
 
+## Documentation
+
+**Generate API documentation for all contracts**
+
+```bash
+bash scripts/generate-docs.sh
+```
+
+This command runs `cargo doc --workspace --no-deps` and **copies HTML documentation into `docs/`**.
+Open the following files in a browser for crate-specific docs:
+
+- `docs/commitment_nft/index.html`
+- `docs/commitment_core/index.html`
+- `docs/attestation_engine/index.html`
+- `docs/allocation_logic/index.html`
+- `docs/shared_utils/index.html`
+
+The docs are generated directly from Rust doc comments (`///` and `//!`) so they stay in sync with the code as it evolves.
+You can re-run the script after any changes to regenerate function, parameter, and error documentation, as well as any usage examples included in the comments.
+
 ## CI/CD
 
 This repository uses GitHub Actions to automatically build, test, and validate Soroban smart contracts on every push to `main` and every pull request targeting `main`.
