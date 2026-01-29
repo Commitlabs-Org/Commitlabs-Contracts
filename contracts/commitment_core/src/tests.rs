@@ -1308,7 +1308,7 @@ fn test_early_exit_commitment_not_found() {
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized: caller is not the owner")]
+#[should_panic(expected = "Unauthorized: caller not allowed")]
 fn test_early_exit_unauthorized_caller() {
     let e = Env::default();
     e.mock_all_auths();
