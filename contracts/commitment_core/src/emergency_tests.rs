@@ -71,7 +71,7 @@ fn test_emergency_withdraw_forbidden_in_normal_mode() {
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized: only admin")]
+#[should_panic(expected = "Unauthorized: caller not allowed")]
 fn test_set_emergency_mode_unauthorized() {
     let e = Env::default();
     e.mock_all_auths();

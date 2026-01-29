@@ -6,6 +6,7 @@ members = [
     "contracts/attestation_engine",
     "contracts/allocation_logic",
     "contracts/commitment_interface",
+    "contracts/commitment_transformation",
     "contracts/price_oracle",
 ]
 # Note: tests/integration is excluded from workspace to prevent testutils feature
