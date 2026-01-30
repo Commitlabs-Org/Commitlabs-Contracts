@@ -1,10 +1,10 @@
-// Allocation Strategies Contract 
+// Allocation Strategies Contract
 #![no_std]
 
+use shared_utils::RateLimiter;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map, Symbol, Vec,
 };
-use shared_utils::RateLimiter;
 
 pub const CURRENT_VERSION: u32 = 1;
 
@@ -113,33 +113,32 @@ pub struct AllocationStrategiesContract;
 
 #[contractimpl]
 impl AllocationStrategiesContract {
-    
     // ========================================================================
     // INITIALIZATION
     // ========================================================================
-    
+
     pub fn initialize(env: Env, admin: Address, commitment_core: Address) -> Result<(), Error> {
         // Check if already initialized
         if env.storage().instance().has(&DataKey::Initialized) {
             return Err(Error::AlreadyInitialized);
         }
-        
+
         // Validate addresses
         admin.require_auth();
-        
+
         // Set storage
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::CommitmentCore, &commitment_core);
+        env.storage()
+            .instance()
+            .set(&DataKey::CommitmentCore, &commitment_core);
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::PoolRegistry, &Vec::<u32>::new(&env));
         env.storage().instance().set(&DataKey::Version, &CURRENT_VERSION);
         
         // Emit initialization event
-        env.events().publish(
-            (symbol_short!("init"), symbol_short!("alloc")),
-            admin
-        );
-        
+        env.events()
+            .publish((symbol_short!("init"), symbol_short!("alloc")), admin);
+
         Ok(())
     }
 
@@ -164,8 +163,9 @@ impl AllocationStrategiesContract {
         if max_capacity <= 0 {
             return Err(Error::InvalidCapacity);
         }
-        
-        if apy > 100_000 {  // Max 1000% APY (10000 basis points = 100%)
+
+        if apy > 100_000 {
+            // Max 1000% APY (10000 basis points = 100%)
             return Err(Error::InvalidAPY);
         }
 
@@ -186,20 +186,24 @@ impl AllocationStrategiesContract {
         };
 
         // Store pool
-        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
-        
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pool(pool_id), &pool);
+
         // Add to registry
-        let mut registry: Vec<u32> = env.storage().instance()
+        let mut registry: Vec<u32> = env
+            .storage()
+            .instance()
             .get(&DataKey::PoolRegistry)
             .unwrap_or(Vec::new(&env));
         registry.push_back(pool_id);
-        env.storage().instance().set(&DataKey::PoolRegistry, &registry);
+        env.storage()
+            .instance()
+            .set(&DataKey::PoolRegistry, &registry);
 
         // Emit event
-        env.events().publish(
-            (symbol_short!("pool_reg"), pool_id),
-            risk_level
-        );
+        env.events()
+            .publish((symbol_short!("pool_reg"), pool_id), risk_level);
 
         Ok(())
     }
@@ -208,7 +212,7 @@ impl AllocationStrategiesContract {
         env: Env,
         admin: Address,
         pool_id: u32,
-        active: bool
+        active: bool,
     ) -> Result<(), Error> {
         admin.require_auth();
         Self::require_initialized(&env)?;
@@ -218,13 +222,13 @@ impl AllocationStrategiesContract {
         let mut pool = Self::get_pool_internal(&env, pool_id)?;
         pool.active = active;
         pool.updated_at = env.ledger().timestamp();
-        
-        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
 
-        env.events().publish(
-            (symbol_short!("pool_upd"), pool_id),
-            active
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pool(pool_id), &pool);
+
+        env.events()
+            .publish((symbol_short!("pool_upd"), pool_id), active);
 
         Ok(())
     }
@@ -244,7 +248,7 @@ impl AllocationStrategiesContract {
         }
 
         let mut pool = Self::get_pool_internal(&env, pool_id)?;
-        
+
         // Ensure new capacity is not less than current liquidity
         if new_capacity < pool.total_liquidity {
             return Err(Error::PoolCapacityExceeded);
@@ -252,8 +256,10 @@ impl AllocationStrategiesContract {
 
         pool.max_capacity = new_capacity;
         pool.updated_at = env.ledger().timestamp();
-        
-        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pool(pool_id), &pool);
 
         Ok(())
     }
@@ -263,23 +269,23 @@ impl AllocationStrategiesContract {
     // ========================================================================
 
     /// Allocate funds according to strategy
-    /// 
+    ///
     /// # Formal Verification
     /// **Preconditions:**
     /// - Contract is initialized
     /// - `amount > 0`
     /// - `reentrancy_guard == false`
     /// - No existing allocation for `commitment_id`
-    /// 
+    ///
     /// **Postconditions:**
     /// - `get_allocation(commitment_id).total_allocated == amount`
     /// - For all pools P: `P.total_liquidity <= P.max_capacity`
     /// - `reentrancy_guard == false`
-    /// 
+    ///
     /// **Invariants Maintained:**
     /// - INV-4: Reentrancy guard invariant
     /// - Pool capacity never exceeded
-    /// 
+    ///
     /// **Security Properties:**
     /// - SP-1: Reentrancy protection
     /// - SP-3: Arithmetic safety (overflow checks)
@@ -308,20 +314,28 @@ impl AllocationStrategiesContract {
         }
 
         // Check for existing allocation (prevent double allocation)
-        if env.storage().persistent().has(&DataKey::Allocations(commitment_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Allocations(commitment_id))
+        {
             Self::set_reentrancy_guard(&env, false);
             return Err(Error::AlreadyInitialized);
         }
 
         // Store allocation ownership
-        env.storage().persistent().set(&DataKey::AllocationOwner(commitment_id), &caller);
-        
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllocationOwner(commitment_id), &caller);
+
         // Store the strategy
-        env.storage().persistent().set(&DataKey::Strategy(commitment_id), &strategy);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Strategy(commitment_id), &strategy);
 
         // Get pools based on strategy
         let pools = Self::select_pools(&env, strategy)?;
-        
+
         if pools.is_empty() {
             Self::set_reentrancy_guard(&env, false);
             return Err(Error::NoSuitablePools);
@@ -329,11 +343,11 @@ impl AllocationStrategiesContract {
 
         // Calculate allocation amounts with overflow protection
         let allocation_plan = Self::calculate_allocation(&env, amount, &pools, strategy)?;
-        
+
         // Execute allocations
         let mut allocations = Vec::new(&env);
         let mut total_allocated = 0i128;
-        
+
         for (pool_id, alloc_amount) in allocation_plan.iter() {
             if alloc_amount <= 0 {
                 continue;
@@ -341,7 +355,7 @@ impl AllocationStrategiesContract {
 
             // Update pool liquidity with overflow check
             let mut pool = Self::get_pool_internal(&env, pool_id)?;
-            
+
             // Check pool is active
             if !pool.active {
                 Self::set_reentrancy_guard(&env, false);
@@ -349,17 +363,21 @@ impl AllocationStrategiesContract {
             }
 
             // Safe addition with overflow check
-            let new_liquidity = pool.total_liquidity.checked_add(alloc_amount)
+            let new_liquidity = pool
+                .total_liquidity
+                .checked_add(alloc_amount)
                 .ok_or(Error::ArithmeticOverflow)?;
-            
+
             if new_liquidity > pool.max_capacity {
                 Self::set_reentrancy_guard(&env, false);
                 return Err(Error::PoolCapacityExceeded);
             }
-            
+
             pool.total_liquidity = new_liquidity;
             pool.updated_at = env.ledger().timestamp();
-            env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(pool_id), &pool);
 
             // Record allocation
             let allocation = Allocation {
@@ -368,11 +386,12 @@ impl AllocationStrategiesContract {
                 amount: alloc_amount,
                 timestamp: env.ledger().timestamp(),
             };
-            
+
             allocations.push_back(allocation);
-            
+
             // Safe addition
-            total_allocated = total_allocated.checked_add(alloc_amount)
+            total_allocated = total_allocated
+                .checked_add(alloc_amount)
                 .ok_or(Error::ArithmeticOverflow)?;
         }
 
@@ -383,8 +402,12 @@ impl AllocationStrategiesContract {
         }
 
         // Store allocations
-        env.storage().persistent().set(&DataKey::Allocations(commitment_id), &allocations);
-        env.storage().persistent().set(&DataKey::TotalAllocated(commitment_id), &total_allocated);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allocations(commitment_id), &allocations);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalAllocated(commitment_id), &total_allocated);
 
         // Clear reentrancy guard
         Self::set_reentrancy_guard(&env, false);
@@ -392,7 +415,7 @@ impl AllocationStrategiesContract {
         // Emit event
         env.events().publish(
             (symbol_short!("allocate"), commitment_id),
-            (strategy, amount)
+            (strategy, amount),
         );
 
         Ok(AllocationSummary {
@@ -406,7 +429,7 @@ impl AllocationStrategiesContract {
     pub fn rebalance(
         env: Env,
         caller: Address,
-        commitment_id: u64
+        commitment_id: u64,
     ) -> Result<AllocationSummary, Error> {
         caller.require_auth();
         Self::require_initialized(&env)?;
@@ -417,10 +440,12 @@ impl AllocationStrategiesContract {
         RateLimiter::check(&env, &caller, &fn_symbol);
 
         // Verify ownership
-        let owner: Address = env.storage().persistent()
+        let owner: Address = env
+            .storage()
+            .persistent()
             .get(&DataKey::AllocationOwner(commitment_id))
             .ok_or(Error::AllocationNotFound)?;
-        
+
         if owner != caller {
             return Err(Error::Unauthorized);
         }
@@ -428,54 +453,67 @@ impl AllocationStrategiesContract {
         Self::set_reentrancy_guard(&env, true);
 
         // Get current allocations
-        let current_allocations: Vec<Allocation> = env.storage().persistent()
+        let current_allocations: Vec<Allocation> = env
+            .storage()
+            .persistent()
             .get(&DataKey::Allocations(commitment_id))
             .ok_or(Error::AllocationNotFound)?;
 
         // Get strategy
-        let strategy: Strategy = env.storage().persistent()
+        let strategy: Strategy = env
+            .storage()
+            .persistent()
             .get(&DataKey::Strategy(commitment_id))
             .ok_or(Error::AllocationNotFound)?;
 
         let mut total_amount = 0i128;
-        
+
         // Remove old allocations from pools with overflow protection
         for allocation in current_allocations.iter() {
-            total_amount = total_amount.checked_add(allocation.amount)
+            total_amount = total_amount
+                .checked_add(allocation.amount)
                 .ok_or(Error::ArithmeticOverflow)?;
-            
+
             let mut pool = Self::get_pool_internal(&env, allocation.pool_id)?;
-            pool.total_liquidity = pool.total_liquidity.checked_sub(allocation.amount)
+            pool.total_liquidity = pool
+                .total_liquidity
+                .checked_sub(allocation.amount)
                 .ok_or(Error::ArithmeticOverflow)?;
             pool.updated_at = env.ledger().timestamp();
-            env.storage().persistent().set(&DataKey::Pool(allocation.pool_id), &pool);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(allocation.pool_id), &pool);
         }
 
         // Reallocate with current strategy
         let pools = Self::select_pools(&env, strategy)?;
         let allocation_plan = Self::calculate_allocation(&env, total_amount, &pools, strategy)?;
-        
+
         let mut new_allocations = Vec::new(&env);
         let mut new_total = 0i128;
-        
+
         for (pool_id, alloc_amount) in allocation_plan.iter() {
             if alloc_amount <= 0 {
                 continue;
             }
 
             let mut pool = Self::get_pool_internal(&env, pool_id)?;
-            
+
             if !pool.active {
                 continue; // Skip inactive pools during rebalancing
             }
 
-            let new_liquidity = pool.total_liquidity.checked_add(alloc_amount)
+            let new_liquidity = pool
+                .total_liquidity
+                .checked_add(alloc_amount)
                 .ok_or(Error::ArithmeticOverflow)?;
 
             if new_liquidity <= pool.max_capacity {
                 pool.total_liquidity = new_liquidity;
                 pool.updated_at = env.ledger().timestamp();
-                env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Pool(pool_id), &pool);
 
                 let allocation = Allocation {
                     commitment_id,
@@ -483,22 +521,25 @@ impl AllocationStrategiesContract {
                     amount: alloc_amount,
                     timestamp: env.ledger().timestamp(),
                 };
-                
+
                 new_allocations.push_back(allocation);
-                new_total = new_total.checked_add(alloc_amount)
+                new_total = new_total
+                    .checked_add(alloc_amount)
                     .ok_or(Error::ArithmeticOverflow)?;
             }
         }
 
-        env.storage().persistent().set(&DataKey::Allocations(commitment_id), &new_allocations);
-        env.storage().persistent().set(&DataKey::TotalAllocated(commitment_id), &new_total);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allocations(commitment_id), &new_allocations);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalAllocated(commitment_id), &new_total);
 
         Self::set_reentrancy_guard(&env, false);
 
-        env.events().publish(
-            (symbol_short!("rebalance"), commitment_id),
-            new_total
-        );
+        env.events()
+            .publish((symbol_short!("rebalance"), commitment_id), new_total);
 
         Ok(AllocationSummary {
             commitment_id,
@@ -513,15 +554,21 @@ impl AllocationStrategiesContract {
     // ========================================================================
 
     pub fn get_allocation(env: Env, commitment_id: u64) -> AllocationSummary {
-        let allocations: Vec<Allocation> = env.storage().persistent()
+        let allocations: Vec<Allocation> = env
+            .storage()
+            .persistent()
             .get(&DataKey::Allocations(commitment_id))
             .unwrap_or(Vec::new(&env));
 
-        let strategy: Strategy = env.storage().persistent()
+        let strategy: Strategy = env
+            .storage()
+            .persistent()
             .get(&DataKey::Strategy(commitment_id))
             .unwrap_or(Strategy::Balanced);
 
-        let total = env.storage().persistent()
+        let total = env
+            .storage()
+            .persistent()
             .get(&DataKey::TotalAllocated(commitment_id))
             .unwrap_or(0i128);
 
@@ -538,7 +585,9 @@ impl AllocationStrategiesContract {
     }
 
     pub fn get_all_pools(env: Env) -> Vec<Pool> {
-        let registry: Vec<u32> = env.storage().instance()
+        let registry: Vec<u32> = env
+            .storage()
+            .instance()
             .get(&DataKey::PoolRegistry)
             .unwrap_or(Vec::new(&env));
 
@@ -552,7 +601,10 @@ impl AllocationStrategiesContract {
     }
 
     pub fn is_initialized(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Initialized).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false)
     }
 
     /// Get current on-chain version (0 if legacy/uninitialized).
@@ -626,17 +678,24 @@ impl AllocationStrategiesContract {
     // ========================================================================
 
     fn require_initialized(env: &Env) -> Result<(), Error> {
-        if !env.storage().instance().get(&DataKey::Initialized).unwrap_or(false) {
+        if !env
+            .storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false)
+        {
             return Err(Error::NotInitialized);
         }
         Ok(())
     }
 
     fn require_admin(env: &Env, address: &Address) -> Result<(), Error> {
-        let admin: Address = env.storage().instance()
+        let admin: Address = env
+            .storage()
+            .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        
+
         if admin != *address {
             return Err(Error::Unauthorized);
         }
@@ -679,10 +738,12 @@ impl AllocationStrategiesContract {
     }
 
     fn require_no_reentrancy(env: &Env) -> Result<(), Error> {
-        let guard: bool = env.storage().instance()
+        let guard: bool = env
+            .storage()
+            .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
-        
+
         if guard {
             return Err(Error::ReentrancyDetected);
         }
@@ -690,19 +751,24 @@ impl AllocationStrategiesContract {
     }
 
     fn set_reentrancy_guard(env: &Env, value: bool) {
-        env.storage().instance().set(&DataKey::ReentrancyGuard, &value);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &value);
     }
 
     fn get_pool_internal(env: &Env, pool_id: u32) -> Result<Pool, Error> {
-        env.storage().persistent()
+        env.storage()
+            .persistent()
             .get(&DataKey::Pool(pool_id))
             .ok_or(Error::PoolNotFound)
     }
 
     fn select_pools(env: &Env, strategy: Strategy) -> Result<Vec<Pool>, Error> {
         let mut pools = Vec::new(env);
-        
-        let registry: Vec<u32> = env.storage().instance()
+
+        let registry: Vec<u32> = env
+            .storage()
+            .instance()
             .get(&DataKey::PoolRegistry)
             .unwrap_or(Vec::new(env));
 
@@ -715,7 +781,9 @@ impl AllocationStrategiesContract {
                 let include = match strategy {
                     Strategy::Safe => matches!(pool.risk_level, RiskLevel::Low),
                     Strategy::Balanced => true,
-                    Strategy::Aggressive => matches!(pool.risk_level, RiskLevel::High | RiskLevel::Medium),
+                    Strategy::Aggressive => {
+                        matches!(pool.risk_level, RiskLevel::High | RiskLevel::Medium)
+                    }
                 };
 
                 if include {
@@ -746,7 +814,7 @@ impl AllocationStrategiesContract {
                 for pool in pools.iter() {
                     allocation_map.set(pool.pool_id, amount_per_pool);
                 }
-            },
+            }
             Strategy::Balanced => {
                 let mut low_risk_pools = Vec::new(env);
                 let mut medium_risk_pools = Vec::new(env);
@@ -761,22 +829,30 @@ impl AllocationStrategiesContract {
                 }
 
                 // Safe percentage calculations with checked operations
-                let low_amount = total_amount.checked_mul(40)
+                let low_amount = total_amount
+                    .checked_mul(40)
                     .and_then(|x| x.checked_div(100))
                     .ok_or(Error::ArithmeticOverflow)?;
-                
-                let medium_amount = total_amount.checked_mul(40)
+
+                let medium_amount = total_amount
+                    .checked_mul(40)
                     .and_then(|x| x.checked_div(100))
                     .ok_or(Error::ArithmeticOverflow)?;
-                
-                let high_amount = total_amount.checked_mul(20)
+
+                let high_amount = total_amount
+                    .checked_mul(20)
                     .and_then(|x| x.checked_div(100))
                     .ok_or(Error::ArithmeticOverflow)?;
 
                 Self::distribute_to_pools(env, &mut allocation_map, &low_risk_pools, low_amount)?;
-                Self::distribute_to_pools(env, &mut allocation_map, &medium_risk_pools, medium_amount)?;
+                Self::distribute_to_pools(
+                    env,
+                    &mut allocation_map,
+                    &medium_risk_pools,
+                    medium_amount,
+                )?;
                 Self::distribute_to_pools(env, &mut allocation_map, &high_risk_pools, high_amount)?;
-            },
+            }
             Strategy::Aggressive => {
                 let mut medium_risk_pools = Vec::new(env);
                 let mut high_risk_pools = Vec::new(env);
@@ -785,21 +861,28 @@ impl AllocationStrategiesContract {
                     match pool.risk_level {
                         RiskLevel::Medium => medium_risk_pools.push_back(pool),
                         RiskLevel::High => high_risk_pools.push_back(pool),
-                        _ => {},
+                        _ => {}
                     }
                 }
 
-                let high_amount = total_amount.checked_mul(70)
+                let high_amount = total_amount
+                    .checked_mul(70)
                     .and_then(|x| x.checked_div(100))
                     .ok_or(Error::ArithmeticOverflow)?;
-                
-                let medium_amount = total_amount.checked_mul(30)
+
+                let medium_amount = total_amount
+                    .checked_mul(30)
                     .and_then(|x| x.checked_div(100))
                     .ok_or(Error::ArithmeticOverflow)?;
 
                 Self::distribute_to_pools(env, &mut allocation_map, &high_risk_pools, high_amount)?;
-                Self::distribute_to_pools(env, &mut allocation_map, &medium_risk_pools, medium_amount)?;
-            },
+                Self::distribute_to_pools(
+                    env,
+                    &mut allocation_map,
+                    &medium_risk_pools,
+                    medium_amount,
+                )?;
+            }
         }
 
         Ok(allocation_map)
@@ -817,11 +900,13 @@ impl AllocationStrategiesContract {
         }
 
         let amount_per_pool = amount / pool_count as i128;
-        
+
         for pool in pools.iter() {
-            let available_capacity = pool.max_capacity.checked_sub(pool.total_liquidity)
+            let available_capacity = pool
+                .max_capacity
+                .checked_sub(pool.total_liquidity)
                 .ok_or(Error::ArithmeticOverflow)?;
-            
+
             let alloc_amount = if amount_per_pool > available_capacity {
                 available_capacity
             } else {

@@ -1,13 +1,13 @@
 //! Error handling utilities and common error patterns
 
-use soroban_sdk::{Env, log};
+use soroban_sdk::{log, Env};
 
 /// Error helper functions
 pub struct ErrorHelper;
 
 impl ErrorHelper {
     /// Log an error message
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `message` - The error message
@@ -16,7 +16,7 @@ impl ErrorHelper {
     }
 
     /// Log an error with context
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `context` - The error context
@@ -26,11 +26,11 @@ impl ErrorHelper {
     }
 
     /// Panic with a formatted error message
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `message` - The error message
-    /// 
+    ///
     /// # Panics
     /// Always panics with the error message
     pub fn panic_with_log(e: &Env, message: &str) -> ! {
@@ -39,12 +39,12 @@ impl ErrorHelper {
     }
 
     /// Panic with context and formatted error message
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `context` - The error context
     /// * `message` - The error message
-    /// 
+    ///
     /// # Panics
     /// Always panics with the formatted error message
     pub fn panic_with_context(e: &Env, context: &str, message: &str) -> ! {
@@ -53,12 +53,12 @@ impl ErrorHelper {
     }
 
     /// Require a condition to be true, panic otherwise
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `condition` - The condition to check
     /// * `message` - The error message if condition is false
-    /// 
+    ///
     /// # Panics
     /// Panics with the error message if condition is false
     pub fn require(e: &Env, condition: bool, message: &str) {
@@ -68,13 +68,13 @@ impl ErrorHelper {
     }
 
     /// Require a condition with context
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `condition` - The condition to check
     /// * `context` - The error context
     /// * `message` - The error message if condition is false
-    /// 
+    ///
     /// # Panics
     /// Panics with the formatted error message if condition is false
     pub fn require_with_context(e: &Env, condition: bool, context: &str, message: &str) {

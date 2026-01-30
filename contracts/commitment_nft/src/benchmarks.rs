@@ -3,7 +3,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger}, Address, Env, String,
+    testutils::{Address as _, Ledger},
+    Address, Env, String,
 };
 
 /// Benchmark helper to measure gas usage
@@ -41,11 +42,11 @@ impl BenchmarkMetrics {
 fn setup_test_env(e: &Env) -> Address {
     let admin = Address::generate(e);
     let contract_id = e.register_contract(None, CommitmentNFTContract);
-    
+
     e.as_contract(&contract_id, || {
         CommitmentNFTContract::initialize(e.clone(), admin.clone()).unwrap();
     });
-    
+
     contract_id
 }
 
@@ -54,16 +55,16 @@ fn benchmark_initialize() {
     let e = Env::default();
     let admin = Address::generate(&e);
     let contract_id = e.register_contract(None, CommitmentNFTContract);
-    
+
     let mut metrics = BenchmarkMetrics::new("initialize");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         CommitmentNFTContract::initialize(e.clone(), admin.clone()).unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -72,9 +73,9 @@ fn benchmark_mint() {
     let e = Env::default();
     let contract_id = setup_test_env(&e);
     let owner = Address::generate(&e);
-    
+
     let mut metrics = BenchmarkMetrics::new("mint");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         let _ = CommitmentNFTContract::mint(
@@ -87,11 +88,12 @@ fn benchmark_mint() {
             1000_0000000,
             Address::generate(&e),
             10,
-        ).unwrap();
+        )
+        .unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -100,7 +102,7 @@ fn benchmark_get_metadata() {
     let e = Env::default();
     let contract_id = setup_test_env(&e);
     let owner = Address::generate(&e);
-    
+
     let token_id = e.as_contract(&contract_id, || {
         CommitmentNFTContract::mint(
             e.clone(),
@@ -112,18 +114,19 @@ fn benchmark_get_metadata() {
             1000_0000000,
             Address::generate(&e),
             10,
-        ).unwrap()
+        )
+        .unwrap()
     });
-    
+
     let mut metrics = BenchmarkMetrics::new("get_metadata");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         CommitmentNFTContract::get_metadata(e.clone(), token_id).unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -132,7 +135,7 @@ fn benchmark_owner_of() {
     let e = Env::default();
     let contract_id = setup_test_env(&e);
     let owner = Address::generate(&e);
-    
+
     let token_id = e.as_contract(&contract_id, || {
         CommitmentNFTContract::mint(
             e.clone(),
@@ -144,18 +147,19 @@ fn benchmark_owner_of() {
             1000_0000000,
             Address::generate(&e),
             10,
-        ).unwrap()
+        )
+        .unwrap()
     });
-    
+
     let mut metrics = BenchmarkMetrics::new("owner_of");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         CommitmentNFTContract::owner_of(e.clone(), token_id).unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -164,7 +168,7 @@ fn benchmark_balance_of() {
     let e = Env::default();
     let contract_id = setup_test_env(&e);
     let owner = Address::generate(&e);
-    
+
     e.as_contract(&contract_id, || {
         CommitmentNFTContract::mint(
             e.clone(),
@@ -176,18 +180,19 @@ fn benchmark_balance_of() {
             1000_0000000,
             Address::generate(&e),
             10,
-        ).unwrap();
+        )
+        .unwrap();
     });
-    
+
     let mut metrics = BenchmarkMetrics::new("balance_of");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         CommitmentNFTContract::balance_of(e.clone(), owner.clone());
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -196,9 +201,9 @@ fn benchmark_batch_mint() {
     let e = Env::default();
     let contract_id = setup_test_env(&e);
     let owner = Address::generate(&e);
-    
+
     let mut metrics = BenchmarkMetrics::new("batch_mint_10");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         for i in 0..10 {
@@ -212,11 +217,12 @@ fn benchmark_batch_mint() {
                 1000_0000000,
                 Address::generate(&e),
                 10,
-            ).unwrap();
+            )
+            .unwrap();
         }
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }

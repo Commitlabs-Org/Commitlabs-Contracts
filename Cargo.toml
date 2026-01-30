@@ -9,7 +9,6 @@ members = [
     "contracts/commitment_transformation",
     "contracts/price_oracle",
     "contracts/mock_oracle",
-    "tests/integration",
     "contracts/version-system"
 ]
 # Note: tests/integration is excluded from workspace to prevent testutils feature

@@ -3,7 +3,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger}, Address, Env,
+    testutils::{Address as _, Ledger},
+    Address, Env,
 };
 
 /// Benchmark helper to measure gas usage
@@ -42,15 +43,12 @@ fn setup_test_env(e: &Env) -> (Address, Address) {
     let admin = Address::generate(e);
     let core_contract = Address::generate(e);
     let contract_id = e.register_contract(None, AllocationStrategiesContract);
-    
+
     e.as_contract(&contract_id, || {
-        AllocationStrategiesContract::initialize(
-            e.clone(),
-            admin.clone(),
-            core_contract.clone(),
-        ).unwrap();
+        AllocationStrategiesContract::initialize(e.clone(), admin.clone(), core_contract.clone())
+            .unwrap();
     });
-    
+
     (contract_id, admin)
 }
 
@@ -60,20 +58,17 @@ fn benchmark_initialize() {
     let admin = Address::generate(&e);
     let core_contract = Address::generate(&e);
     let contract_id = e.register_contract(None, AllocationStrategiesContract);
-    
+
     let mut metrics = BenchmarkMetrics::new("initialize");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
-        AllocationStrategiesContract::initialize(
-            e.clone(),
-            admin.clone(),
-            core_contract.clone(),
-        ).unwrap();
+        AllocationStrategiesContract::initialize(e.clone(), admin.clone(), core_contract.clone())
+            .unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -81,9 +76,9 @@ fn benchmark_initialize() {
 fn benchmark_register_pool() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     let mut metrics = BenchmarkMetrics::new("register_pool");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         AllocationStrategiesContract::register_pool(
@@ -93,11 +88,12 @@ fn benchmark_register_pool() {
             RiskLevel::Low,
             500, // 5% APY
             10000_0000000,
-        ).unwrap();
+        )
+        .unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -105,7 +101,7 @@ fn benchmark_register_pool() {
 fn benchmark_allocate() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     // Register a pool first
     e.as_contract(&contract_id, || {
         AllocationStrategiesContract::register_pool(
@@ -115,12 +111,13 @@ fn benchmark_allocate() {
             RiskLevel::Low,
             500,
             10000_0000000,
-        ).unwrap();
+        )
+        .unwrap();
     });
-    
+
     let caller = Address::generate(&e);
     let mut metrics = BenchmarkMetrics::new("allocate");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         let _ = AllocationStrategiesContract::allocate(
@@ -133,7 +130,7 @@ fn benchmark_allocate() {
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -141,7 +138,7 @@ fn benchmark_allocate() {
 fn benchmark_get_allocation() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     // Register pool and create allocation
     let caller = Address::generate(&e);
     e.as_contract(&contract_id, || {
@@ -152,25 +149,27 @@ fn benchmark_get_allocation() {
             RiskLevel::Low,
             500,
             10000_0000000,
-        ).unwrap();
+        )
+        .unwrap();
         AllocationStrategiesContract::allocate(
             e.clone(),
             caller.clone(),
             1,
             1000_0000000,
             Strategy::Safe,
-        ).unwrap();
+        )
+        .unwrap();
     });
-    
+
     let mut metrics = BenchmarkMetrics::new("get_allocation");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         AllocationStrategiesContract::get_allocation(e.clone(), 1);
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -178,7 +177,7 @@ fn benchmark_get_allocation() {
 fn benchmark_get_pool() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     // Register a pool first
     e.as_contract(&contract_id, || {
         AllocationStrategiesContract::register_pool(
@@ -188,18 +187,19 @@ fn benchmark_get_pool() {
             RiskLevel::Low,
             500,
             10000_0000000,
-        ).unwrap();
+        )
+        .unwrap();
     });
-    
+
     let mut metrics = BenchmarkMetrics::new("get_pool");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         AllocationStrategiesContract::get_pool(e.clone(), 1).unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -207,7 +207,7 @@ fn benchmark_get_pool() {
 fn benchmark_batch_allocate() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     // Register pools
     e.as_contract(&contract_id, || {
         for i in 1..=5 {
@@ -218,13 +218,14 @@ fn benchmark_batch_allocate() {
                 RiskLevel::Low,
                 500,
                 10000_0000000,
-            ).unwrap();
+            )
+            .unwrap();
         }
     });
-    
+
     let caller = Address::generate(&e);
     let mut metrics = BenchmarkMetrics::new("batch_allocate_10");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         for i in 1..=10 {
@@ -239,6 +240,6 @@ fn benchmark_batch_allocate() {
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }

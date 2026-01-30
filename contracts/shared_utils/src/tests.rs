@@ -2,13 +2,13 @@
 
 #[cfg(test)]
 mod integration_tests {
-    use crate::math::SafeMath;
-    use crate::validation::Validation;
-    use crate::time::TimeUtils;
-    use crate::storage::Storage;
     use crate::access_control::AccessControl;
     use crate::events::Events;
-    use soroban_sdk::{Env, String as SorobanString, contract, contractimpl};
+    use crate::math::SafeMath;
+    use crate::storage::Storage;
+    use crate::time::TimeUtils;
+    use crate::validation::Validation;
+    use soroban_sdk::{contract, contractimpl, Env, String as SorobanString};
 
     // Dummy contract used to provide a valid contract context for integration tests
     #[contract]
@@ -24,10 +24,10 @@ mod integration_tests {
         // Test that math utilities work with validation
         let amount = 1000i128;
         Validation::require_positive(amount);
-        
+
         let percent = SafeMath::percent(amount, 10);
         assert_eq!(percent, 100);
-        
+
         Validation::require_valid_percent(10);
     }
 
@@ -68,7 +68,7 @@ mod integration_tests {
         let env = Env::default();
         let creator = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
         let id = SorobanString::from_str(&env, "test_id");
-        
+
         Validation::require_non_empty_string(&id, "id");
         Events::emit_created(&env, &id, &creator, (100i128,));
     }

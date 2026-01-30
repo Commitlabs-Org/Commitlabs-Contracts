@@ -12,10 +12,10 @@ impl TimeUtils {
     }
 
     /// Convert days to seconds
-    /// 
+    ///
     /// # Arguments
     /// * `days` - Number of days
-    /// 
+    ///
     /// # Returns
     /// Number of seconds
     pub fn days_to_seconds(days: u32) -> u64 {
@@ -23,10 +23,10 @@ impl TimeUtils {
     }
 
     /// Convert hours to seconds
-    /// 
+    ///
     /// # Arguments
     /// * `hours` - Number of hours
-    /// 
+    ///
     /// # Returns
     /// Number of seconds
     pub fn hours_to_seconds(hours: u32) -> u64 {
@@ -34,10 +34,10 @@ impl TimeUtils {
     }
 
     /// Convert minutes to seconds
-    /// 
+    ///
     /// # Arguments
     /// * `minutes` - Number of minutes
-    /// 
+    ///
     /// # Returns
     /// Number of seconds
     pub fn minutes_to_seconds(minutes: u32) -> u64 {
@@ -45,11 +45,11 @@ impl TimeUtils {
     }
 
     /// Calculate expiration timestamp from current time and duration in days
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `duration_days` - Duration in days
-    /// 
+    ///
     /// # Returns
     /// Expiration timestamp
     pub fn calculate_expiration(e: &Env, duration_days: u32) -> u64 {
@@ -59,11 +59,11 @@ impl TimeUtils {
     }
 
     /// Check if a timestamp has expired (current time >= expiration)
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `expiration` - The expiration timestamp
-    /// 
+    ///
     /// # Returns
     /// `true` if expired, `false` otherwise
     pub fn is_expired(e: &Env, expiration: u64) -> bool {
@@ -71,11 +71,11 @@ impl TimeUtils {
     }
 
     /// Check if a timestamp is still valid (current time < expiration)
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `expiration` - The expiration timestamp
-    /// 
+    ///
     /// # Returns
     /// `true` if still valid, `false` if expired
     pub fn is_valid(e: &Env, expiration: u64) -> bool {
@@ -83,44 +83,36 @@ impl TimeUtils {
     }
 
     /// Calculate time remaining until expiration
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `expiration` - The expiration timestamp
-    /// 
+    ///
     /// # Returns
     /// Time remaining in seconds (0 if expired)
     pub fn time_remaining(e: &Env, expiration: u64) -> u64 {
         let current_time = Self::now(e);
-        if current_time >= expiration {
-            0
-        } else {
-            expiration - current_time
-        }
+        expiration.saturating_sub(current_time)
     }
 
     /// Calculate elapsed time since a timestamp
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `start_time` - The start timestamp
-    /// 
+    ///
     /// # Returns
     /// Elapsed time in seconds
     pub fn elapsed(e: &Env, start_time: u64) -> u64 {
         let current_time = Self::now(e);
-        if current_time < start_time {
-            0
-        } else {
-            current_time - start_time
-        }
+        current_time.saturating_sub(start_time)
     }
 
     /// Convert seconds to days (rounded down)
-    /// 
+    ///
     /// # Arguments
     /// * `seconds` - Number of seconds
-    /// 
+    ///
     /// # Returns
     /// Number of days
     pub fn seconds_to_days(seconds: u64) -> u32 {

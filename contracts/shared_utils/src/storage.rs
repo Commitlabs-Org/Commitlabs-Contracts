@@ -1,6 +1,6 @@
 //! Storage helper utilities for common storage patterns
 
-use soroban_sdk::{Env, Symbol, Address};
+use soroban_sdk::{Address, Env, Symbol};
 
 /// Storage key constants
 pub mod keys {
@@ -15,10 +15,10 @@ pub struct Storage;
 
 impl Storage {
     /// Check if a contract has been initialized
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
-    /// 
+    ///
     /// # Returns
     /// `true` if initialized, `false` otherwise
     pub fn is_initialized(e: &Env) -> bool {
@@ -26,10 +26,10 @@ impl Storage {
     }
 
     /// Require that the contract is initialized, panic otherwise
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
-    /// 
+    ///
     /// # Panics
     /// Panics with "Contract not initialized" if not initialized
     pub fn require_initialized(e: &Env) {
@@ -39,7 +39,7 @@ impl Storage {
     }
 
     /// Mark contract as initialized
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     pub fn set_initialized(e: &Env) {
@@ -47,13 +47,13 @@ impl Storage {
     }
 
     /// Get admin address from storage
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
-    /// 
+    ///
     /// # Returns
     /// Admin address
-    /// 
+    ///
     /// # Panics
     /// Panics if contract not initialized or admin not set
     pub fn get_admin(e: &Env) -> Address {
@@ -65,7 +65,7 @@ impl Storage {
     }
 
     /// Set admin address in storage
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `admin` - The admin address
@@ -74,10 +74,10 @@ impl Storage {
     }
 
     /// Check if contract is already initialized and panic if so
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
-    /// 
+    ///
     /// # Panics
     /// Panics with "Contract already initialized" if already initialized
     pub fn require_not_initialized(e: &Env) {
@@ -87,26 +87,23 @@ impl Storage {
     }
 
     /// Generic storage getter with default value
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `key` - The storage key
     /// * `default` - Default value if key doesn't exist
-    /// 
+    ///
     /// # Returns
     /// The stored value or default
     pub fn get_or_default<T>(e: &Env, key: &Symbol, default: T) -> T
     where
         T: Clone + soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
     {
-        e.storage()
-            .instance()
-            .get::<_, T>(key)
-            .unwrap_or(default)
+        e.storage().instance().get::<_, T>(key).unwrap_or(default)
     }
 
     /// Generic storage setter
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `key` - The storage key
@@ -119,11 +116,11 @@ impl Storage {
     }
 
     /// Generic storage getter
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `key` - The storage key
-    /// 
+    ///
     /// # Returns
     /// The stored value or None
     pub fn get<T>(e: &Env, key: &Symbol) -> Option<T>
@@ -134,11 +131,11 @@ impl Storage {
     }
 
     /// Check if a key exists in storage
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `key` - The storage key
-    /// 
+    ///
     /// # Returns
     /// `true` if key exists, `false` otherwise
     pub fn has(e: &Env, key: &Symbol) -> bool {
@@ -149,7 +146,6 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as TestAddress;
     use soroban_sdk::{contract, contractimpl};
 
     // Dummy contract used to provide a valid contract context for storage access

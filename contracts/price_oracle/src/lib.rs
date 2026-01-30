@@ -7,6 +7,9 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env};
 use shared_utils::Validation;
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env,
+};
 
 pub const CURRENT_VERSION: u32 = 1;
 
@@ -210,7 +213,9 @@ impl PriceOracleContract {
             updated_at,
             decimals,
         };
-        e.storage().instance().set(&DataKey::Price(asset.clone()), &data);
+        e.storage()
+            .instance()
+            .set(&DataKey::Price(asset.clone()), &data);
         e.events().publish(
             (symbol_short!("PriceSet"), asset),
             (price, updated_at, decimals),
