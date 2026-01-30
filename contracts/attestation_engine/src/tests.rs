@@ -79,6 +79,57 @@ fn test_initialize() {
 }
 
 #[test]
+fn test_fee_get_attestation_fee_default() {
+    let (e, _admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let (amount, asset) = client.get_attestation_fee();
+    assert_eq!(amount, 0);
+    assert!(asset.is_none());
+}
+
+#[test]
+fn test_fee_set_attestation_fee() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let fee_asset = Address::generate(&e);
+    client.set_attestation_fee(&admin, &100i128, &fee_asset);
+    let (amount, asset) = client.get_attestation_fee();
+    assert_eq!(amount, 100);
+    assert_eq!(asset.unwrap(), fee_asset);
+}
+
+#[test]
+fn test_fee_set_fee_recipient() {
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    assert!(client.get_fee_recipient().is_none());
+    let treasury = Address::generate(&e);
+    client.set_fee_recipient(&admin, &treasury);
+    assert_eq!(client.get_fee_recipient().unwrap(), treasury);
+}
+
+#[test]
+fn test_fee_get_collected_fees_default() {
+    let (e, _admin, _commitment_core, contract_id) = setup_test_env();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let asset = Address::generate(&e);
+    assert_eq!(client.get_collected_fees(&asset), 0);
+}
+
+#[test]
+#[should_panic]
+fn test_fee_withdraw_requires_recipient() {
+    // Withdraw fails when fee recipient is not set
+    let (e, admin, _commitment_core, contract_id) = setup_test_env();
+    e.mock_all_auths();
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let asset = Address::generate(&e);
+    client.withdraw_fees(&admin, &asset, &100i128);
+}
+
+#[test]
 fn test_get_attestations_empty() {
     let (e, _admin, _commitment_core, contract_id) = setup_test_env();
     

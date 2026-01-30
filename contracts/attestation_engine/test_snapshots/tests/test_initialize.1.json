@@ -57,6 +57,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "CreationFeeBps"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "NftContract"
                             }
                           ]

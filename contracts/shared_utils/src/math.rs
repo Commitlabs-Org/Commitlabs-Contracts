@@ -1,7 +1,5 @@
 //! Math utilities for safe arithmetic operations and percentage calculations
 
-use soroban_sdk::Env;
-
 /// Safe math operations to prevent overflow/underflow
 pub struct SafeMath;
 

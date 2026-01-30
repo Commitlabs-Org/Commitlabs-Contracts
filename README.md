@@ -38,6 +38,10 @@ cd contracts/commitment_nft
 cargo test
 ```
 
+## Fee Structure
+
+Protocol fee collection (creation, attestation, transformation, early exit) is documented in [docs/FEES.md](docs/FEES.md).
+
 ## Documentation
 
 **Generate API documentation for all contracts**

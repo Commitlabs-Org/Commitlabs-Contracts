@@ -6,7 +6,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String, Vec,
 };
 use shared_utils::{Validation, emit_error_event};
 
@@ -28,6 +28,8 @@ pub enum TransformationError {
     TransformationNotFound = 8,
     InvalidState = 9,
     ReentrancyDetected = 10,
+    FeeRecipientNotSet = 11,
+    InsufficientFees = 12,
 }
 
 impl TransformationError {
@@ -43,6 +45,8 @@ impl TransformationError {
             TransformationError::TransformationNotFound => "Transformation record not found",
             TransformationError::InvalidState => "Invalid state for transformation",
             TransformationError::ReentrancyDetected => "Reentrancy detected",
+            TransformationError::FeeRecipientNotSet => "Fee recipient not set",
+            TransformationError::InsufficientFees => "Insufficient collected fees to withdraw",
         }
     }
 }
@@ -128,6 +132,10 @@ pub enum DataKey {
     CommitmentGuarantees(String),
     AuthorizedTransformer(Address),
     TrancheSetCounter,
+    /// Fee collection: protocol treasury for withdrawals
+    FeeRecipient,
+    /// Collected transformation fees per asset (asset -> i128)
+    CollectedFees(Address),
 }
 
 // ============================================================================
@@ -225,6 +233,7 @@ impl CommitmentTransformationContract {
     }
 
     /// Split a commitment into risk tranches. Caller must be commitment owner or authorized.
+    /// When transformation_fee_bps > 0, caller must send fee_amount of fee_asset to the contract.
     /// tranche_share_bps: e.g. [6000, 3000, 1000] for 60% senior, 30% mezzanine, 10% equity.
     pub fn create_tranches(
         e: Env,
@@ -233,6 +242,7 @@ impl CommitmentTransformationContract {
         total_value: i128,
         tranche_share_bps: Vec<u32>,
         risk_levels: Vec<String>,
+        fee_asset: Address,
     ) -> String {
         require_authorized(&e, &caller);
         require_no_reentrancy(&e);
@@ -258,6 +268,16 @@ impl CommitmentTransformationContract {
             .get::<_, u32>(&DataKey::TransformationFeeBps)
             .unwrap_or(0);
         let fee_amount = (total_value * fee_bps as i128) / 10000i128;
+
+        // Collect transformation fee from caller when fee_bps > 0
+        if fee_amount > 0 {
+            let contract_address = e.current_contract_address();
+            let token_client = token::Client::new(&e, &fee_asset);
+            token_client.transfer(&caller, &contract_address, &fee_amount);
+            let key = DataKey::CollectedFees(fee_asset.clone());
+            let current: i128 = e.storage().instance().get::<_, i128>(&key).unwrap_or(0);
+            e.storage().instance().set(&key, &(current + fee_amount));
+        }
 
         let counter: u64 = e
             .storage()
@@ -550,6 +570,55 @@ impl CommitmentTransformationContract {
         e.storage()
             .instance()
             .get::<_, u32>(&DataKey::TransformationFeeBps)
+            .unwrap_or(0)
+    }
+
+    /// Set fee recipient (protocol treasury). Admin only.
+    pub fn set_fee_recipient(e: Env, caller: Address, recipient: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().set(&DataKey::FeeRecipient, &recipient);
+        e.events().publish(
+            (symbol_short!("FeeRecip"), caller),
+            (recipient, e.ledger().timestamp()),
+        );
+    }
+
+    /// Withdraw collected transformation fees to the configured fee recipient. Admin only.
+    pub fn withdraw_fees(e: Env, caller: Address, asset_address: Address, amount: i128) {
+        require_admin(&e, &caller);
+        if amount <= 0 {
+            fail(&e, TransformationError::InvalidAmount, "withdraw_fees");
+        }
+        let recipient = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::FeeRecipient)
+            .unwrap_or_else(|| fail(&e, TransformationError::FeeRecipientNotSet, "withdraw_fees"));
+        let key = DataKey::CollectedFees(asset_address.clone());
+        let collected = e.storage().instance().get::<_, i128>(&key).unwrap_or(0);
+        if amount > collected {
+            fail(&e, TransformationError::InsufficientFees, "withdraw_fees");
+        }
+        e.storage().instance().set(&key, &(collected - amount));
+        let contract_address = e.current_contract_address();
+        let token_client = token::Client::new(&e, &asset_address);
+        token_client.transfer(&contract_address, &recipient, &amount);
+        e.events().publish(
+            (symbol_short!("FeesWith"), caller, recipient),
+            (asset_address, amount, e.ledger().timestamp()),
+        );
+    }
+
+    /// Get fee recipient. Panics if not set (use only after set_fee_recipient).
+    pub fn get_fee_recipient(e: Env) -> Option<Address> {
+        e.storage().instance().get(&DataKey::FeeRecipient)
+    }
+
+    /// Get collected transformation fees for an asset.
+    pub fn get_collected_fees(e: Env, asset_address: Address) -> i128 {
+        e.storage()
+            .instance()
+            .get::<_, i128>(&DataKey::CollectedFees(asset_address))
             .unwrap_or(0)
     }
 }

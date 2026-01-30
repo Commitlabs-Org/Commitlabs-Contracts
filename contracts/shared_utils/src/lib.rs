@@ -22,6 +22,7 @@ pub mod error_codes;
 pub mod access_control;
 pub mod events;
 pub mod rate_limiting;
+pub mod fees;
 
 #[cfg(test)]
 mod tests;
@@ -36,3 +37,4 @@ pub use error_codes::*;
 pub use access_control::*;
 pub use events::*;
 pub use rate_limiting::*;
+pub use fees::*;

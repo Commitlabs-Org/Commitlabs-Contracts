@@ -1242,6 +1242,81 @@ fn test_early_exit_conservation_invariant() {
     }
 }
 
+// ============================================================================
+// Fee collection tests
+// ============================================================================
+
+#[test]
+fn test_fee_get_creation_fee_bps_default() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    let bps = e.as_contract(&contract_id, || CommitmentCoreContract::get_creation_fee_bps(e.clone()));
+    assert_eq!(bps, 0);
+}
+
+#[test]
+fn test_fee_set_creation_fee_bps() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+    assert_eq!(client.get_creation_fee_bps(), 0);
+    client.set_creation_fee_bps(&admin, &100); // 1%
+    assert_eq!(client.get_creation_fee_bps(), 100);
+    client.set_creation_fee_bps(&admin, &50); // 0.5%
+    assert_eq!(client.get_creation_fee_bps(), 50);
+}
+
+#[test]
+fn test_fee_set_and_get_fee_recipient() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let treasury = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+    assert!(client.get_fee_recipient().is_none());
+    client.set_fee_recipient(&admin, &treasury);
+    assert_eq!(client.get_fee_recipient().unwrap(), treasury);
+}
+
+#[test]
+fn test_fee_get_collected_fees_default() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let asset = Address::generate(&e);
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    assert_eq!(client.get_collected_fees(&asset), 0);
+}
+
+#[test]
+#[should_panic(expected = "Invalid fee: basis points must be 0-10000")]
+fn test_fee_set_creation_fee_bps_invalid() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+    client.set_creation_fee_bps(&admin, &10001);
+}
+
 #[test]
 fn test_early_exit_status_transition() {
     let e = Env::default();
