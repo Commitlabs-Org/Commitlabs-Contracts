@@ -1,11 +1,12 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger, Wasm};
-use soroban_sdk::BytesN;
+use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::{Bytes, BytesN};
 
 fn upload_wasm(e: &Env) -> BytesN<32> {
-    let wasm = Wasm::from_contract::<PriceOracleContract>();
+    // Empty WASM is accepted in testutils and is sufficient for upgrade tests.
+    let wasm = Bytes::new(e);
     e.deployer().upload_contract_wasm(wasm)
 }
 
@@ -247,9 +248,9 @@ fn test_upgrade_and_migrate_preserves_state() {
     });
 
     let wasm_hash = upload_wasm(&e);
-    assert_eq!(client.upgrade(&admin, &wasm_hash), Ok(()));
+    assert_eq!(client.try_upgrade(&admin, &wasm_hash), Ok(Ok(())));
 
-    assert_eq!(client.migrate(&admin, &0), Ok(()));
+    assert_eq!(client.try_migrate(&admin, &0), Ok(Ok(())));
     assert_eq!(client.get_version(), CURRENT_VERSION);
     assert_eq!(client.get_max_staleness(), 3000);
 
@@ -273,14 +274,14 @@ fn test_upgrade_authorization_and_invalid_hash() {
 
     let wasm_hash = upload_wasm(&e);
     assert_eq!(
-        client.upgrade(&attacker, &wasm_hash),
-        Err(OracleError::Unauthorized)
+        client.try_upgrade(&attacker, &wasm_hash),
+        Err(Ok(OracleError::Unauthorized))
     );
 
     let zero = BytesN::from_array(&e, &[0; 32]);
     assert_eq!(
-        client.upgrade(&admin, &zero),
-        Err(OracleError::InvalidWasmHash)
+        client.try_upgrade(&admin, &zero),
+        Err(Ok(OracleError::InvalidWasmHash))
     );
 }
 
@@ -307,18 +308,18 @@ fn test_migrate_version_checks_and_replay_safety() {
     });
 
     assert_eq!(
-        client.migrate(&attacker, &0),
-        Err(OracleError::Unauthorized)
+        client.try_migrate(&attacker, &0),
+        Err(Ok(OracleError::Unauthorized))
     );
     assert_eq!(
-        client.migrate(&admin, &(CURRENT_VERSION + 1)),
-        Err(OracleError::InvalidVersion)
+        client.try_migrate(&admin, &(CURRENT_VERSION + 1)),
+        Err(Ok(OracleError::InvalidVersion))
     );
 
-    assert_eq!(client.migrate(&admin, &0), Ok(()));
+    assert_eq!(client.try_migrate(&admin, &0), Ok(Ok(())));
     assert_eq!(
-        client.migrate(&admin, &0),
-        Err(OracleError::AlreadyMigrated)
+        client.try_migrate(&admin, &0),
+        Err(Ok(OracleError::AlreadyMigrated))
     );
 
     let legacy_exists = e.as_contract(&contract_id, || {
