@@ -1,5 +1,5 @@
 [package]
-name = "commitment_nft"
+name = "mock_oracle"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,12 +8,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 testutils = ["soroban-sdk/testutils"]
-benchmark = []
 default = []
 
 [dependencies]
 soroban-sdk = "21.0.0"
-shared_utils = { path = "../shared_utils" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }

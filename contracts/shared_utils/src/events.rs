@@ -1,13 +1,13 @@
 //! Event emission patterns and utilities
 
-use soroban_sdk::{Env, symbol_short, Symbol, Address, String as SorobanString, Topics};
+use soroban_sdk::{symbol_short, Address, Env, String as SorobanString, Symbol, Topics};
 
 /// Event emission helper functions
 pub struct Events;
 
 impl Events {
     /// Emit a simple event with topic and data
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `topic` - The event topic (Symbol)
@@ -20,7 +20,7 @@ impl Events {
     }
 
     /// Emit an event with multiple topics
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `topics` - Tuple of topics (must implement Topics)
@@ -34,7 +34,7 @@ impl Events {
     }
 
     /// Emit a creation event
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `id` - The created item ID
@@ -52,7 +52,7 @@ impl Events {
     }
 
     /// Emit an update event
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `id` - The updated item ID
@@ -65,7 +65,7 @@ impl Events {
     }
 
     /// Emit a deletion event
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `id` - The deleted item ID
@@ -78,7 +78,7 @@ impl Events {
     }
 
     /// Emit a transfer event
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `from` - The sender address
@@ -93,7 +93,7 @@ impl Events {
     }
 
     /// Emit a violation event
-    /// 
+    ///
     /// # Arguments
     /// * `e` - The environment
     /// * `id` - The item ID with violation
@@ -123,7 +123,7 @@ mod tests {
         let env = Env::default();
         let creator = <soroban_sdk::Address as TestAddress>::generate(&env);
         let id = SorobanString::from_str(&env, "test_id");
-        
+
         Events::emit_created(&env, &id, &creator, (100i128,));
     }
 
@@ -132,7 +132,7 @@ mod tests {
         let env = Env::default();
         let from = <soroban_sdk::Address as TestAddress>::generate(&env);
         let to = <soroban_sdk::Address as TestAddress>::generate(&env);
-        
+
         Events::emit_transfer(&env, &from, &to, 1000);
     }
 }

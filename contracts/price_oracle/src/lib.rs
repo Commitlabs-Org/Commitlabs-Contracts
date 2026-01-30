@@ -5,8 +5,10 @@
 //! Provides whitelisted price feeds with validation, time-based validity (staleness),
 //! and optional fallback. Used for value calculation, drawdown, compliance, and fees.
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env};
 use shared_utils::Validation;
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -131,7 +133,9 @@ impl PriceOracleContract {
             updated_at,
             decimals,
         };
-        e.storage().instance().set(&DataKey::Price(asset.clone()), &data);
+        e.storage()
+            .instance()
+            .set(&DataKey::Price(asset.clone()), &data);
         e.events().publish(
             (symbol_short!("PriceSet"), asset),
             (price, updated_at, decimals),

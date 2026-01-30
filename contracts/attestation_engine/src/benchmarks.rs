@@ -3,7 +3,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger}, Address, Env, String, Map,
+    testutils::{Address as _, Ledger},
+    Address, Env, Map, String,
 };
 
 /// Benchmark helper to measure gas usage
@@ -42,15 +43,12 @@ fn setup_test_env(e: &Env) -> (Address, Address) {
     let admin = Address::generate(e);
     let core_contract = Address::generate(e);
     let contract_id = e.register_contract(None, AttestationEngineContract);
-    
+
     e.as_contract(&contract_id, || {
-        AttestationEngineContract::initialize(
-            e.clone(),
-            admin.clone(),
-            core_contract.clone(),
-        ).unwrap();
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_contract.clone())
+            .unwrap();
     });
-    
+
     (contract_id, admin)
 }
 
@@ -60,20 +58,17 @@ fn benchmark_initialize() {
     let admin = Address::generate(&e);
     let core_contract = Address::generate(&e);
     let contract_id = e.register_contract(None, AttestationEngineContract);
-    
+
     let mut metrics = BenchmarkMetrics::new("initialize");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
-        AttestationEngineContract::initialize(
-            e.clone(),
-            admin.clone(),
-            core_contract.clone(),
-        ).unwrap();
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_contract.clone())
+            .unwrap();
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -81,21 +76,21 @@ fn benchmark_initialize() {
 fn benchmark_attest() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     // Add admin as verifier
     e.as_contract(&contract_id, || {
         // Admin is already authorized
     });
-    
+
     let commitment_id = String::from_str(&e, "commitment_1");
     let mut data = Map::new(&e);
     data.set(
         String::from_str(&e, "health_status"),
-        String::from_str(&e, "good")
+        String::from_str(&e, "good"),
     );
-    
+
     let mut metrics = BenchmarkMetrics::new("attest");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         let _ = AttestationEngineContract::attest(
@@ -109,7 +104,7 @@ fn benchmark_attest() {
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -117,14 +112,14 @@ fn benchmark_attest() {
 fn benchmark_get_attestations() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     let commitment_id = String::from_str(&e, "commitment_1");
     let mut data = Map::new(&e);
     data.set(
         String::from_str(&e, "health_status"),
-        String::from_str(&e, "good")
+        String::from_str(&e, "good"),
     );
-    
+
     // Create an attestation first
     e.as_contract(&contract_id, || {
         let _ = AttestationEngineContract::attest(
@@ -136,16 +131,16 @@ fn benchmark_get_attestations() {
             true,
         );
     });
-    
+
     let mut metrics = BenchmarkMetrics::new("get_attestations");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         AttestationEngineContract::get_attestations(e.clone(), commitment_id.clone());
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -153,21 +148,18 @@ fn benchmark_get_attestations() {
 fn benchmark_calculate_compliance_score() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     let commitment_id = String::from_str(&e, "commitment_1");
-    
+
     let mut metrics = BenchmarkMetrics::new("calculate_compliance_score");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
-        AttestationEngineContract::calculate_compliance_score(
-            e.clone(),
-            commitment_id.clone(),
-        );
+        AttestationEngineContract::calculate_compliance_score(e.clone(), commitment_id.clone());
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }
 
@@ -175,9 +167,9 @@ fn benchmark_calculate_compliance_score() {
 fn benchmark_batch_attest() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
-    
+
     let mut metrics = BenchmarkMetrics::new("batch_attest_10");
-    
+
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
         for i in 0..10 {
@@ -185,7 +177,7 @@ fn benchmark_batch_attest() {
             let mut data = Map::new(&e);
             data.set(
                 String::from_str(&e, "health_status"),
-                String::from_str(&e, "good")
+                String::from_str(&e, "good"),
             );
             let _ = AttestationEngineContract::attest(
                 e.clone(),
@@ -199,6 +191,6 @@ fn benchmark_batch_attest() {
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
-    
+
     metrics.print_summary();
 }

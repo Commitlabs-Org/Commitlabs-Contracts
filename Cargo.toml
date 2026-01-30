@@ -8,6 +8,8 @@ members = [
     "contracts/commitment_interface",
     "contracts/commitment_transformation",
     "contracts/price_oracle",
+    "contracts/mock_oracle",
+    "contracts/version-system"
 ]
 # Note: tests/integration is excluded from workspace to prevent testutils feature
 # from being enabled during WASM builds. Run integration tests separately.

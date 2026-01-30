@@ -650,6 +650,10 @@ fn test_update_value_event() {
         );
         set_commitment(&e, &commitment);
         e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage().instance().set(
+            &DataKey::TotalValueLockedByAsset(commitment.asset_address.clone()),
+            &1000i128,
+        );
         // Call update_value in same context so it sees stored commitment
         CommitmentCoreContract::update_value(e.clone(), commitment.commitment_id.clone(), 1100);
     });
@@ -704,6 +708,10 @@ fn test_update_value_rate_limit_enforced() {
         );
         set_commitment(&e, &commitment);
         e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage().instance().set(
+            &DataKey::TotalValueLockedByAsset(commitment.asset_address.clone()),
+            &1000i128,
+        );
         // First update_value inside contract context (consumes the one allowed call)
         CommitmentCoreContract::update_value(e.clone(), commitment.commitment_id.clone(), 100);
     });
@@ -1351,4 +1359,179 @@ fn test_early_exit_status_transition() {
     });
     
     assert_eq!(before.status, String::from_str(&e, "active"));
+}
+
+// ============================================================================
+// Multi-asset support tests
+// ============================================================================
+
+#[test]
+fn test_get_supported_assets_empty_by_default() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let supported = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_supported_assets(e.clone())
+    });
+    assert_eq!(supported.len(), 0);
+}
+
+#[test]
+fn test_add_and_remove_supported_asset() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.add_supported_asset(&admin, &asset);
+
+    let supported = client.get_supported_assets();
+    assert_eq!(supported.len(), 1);
+    assert_eq!(supported.get(0).unwrap(), asset);
+
+    client.remove_supported_asset(&admin, &asset);
+    let supported = client.get_supported_assets();
+    assert_eq!(supported.len(), 0);
+}
+
+#[test]
+fn test_is_asset_supported_empty_whitelist_allows_all() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    // Empty whitelist = all assets supported
+    assert!(client.is_asset_supported(&asset));
+}
+
+#[test]
+fn test_is_asset_supported_whitelist() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let asset_a = Address::generate(&e);
+    let asset_b = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.add_supported_asset(&admin, &asset_a);
+
+    assert!(client.is_asset_supported(&asset_a));
+    assert!(!client.is_asset_supported(&asset_b));
+}
+
+#[test]
+fn test_asset_metadata_set_and_get() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    assert!(client.get_asset_metadata(&asset).is_none());
+
+    client.set_asset_metadata(&admin, &asset, &String::from_str(&e, "USDC"), &6);
+    let meta = client.get_asset_metadata(&asset).unwrap();
+    assert_eq!(meta.symbol, String::from_str(&e, "USDC"));
+    assert_eq!(meta.decimals, 6);
+}
+
+#[test]
+fn test_get_total_value_locked_by_asset() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    assert_eq!(client.get_total_value_locked_by_asset(&asset), 0);
+
+    // Store a commitment and set per-asset TVL manually (simulating create_commitment)
+    e.as_contract(&contract_id, || {
+        let commitment = create_test_commitment(
+            &e,
+            "c_asset1",
+            &owner,
+            500,
+            500,
+            10,
+            30,
+            1000,
+        );
+        set_commitment(&e, &commitment);
+        e.storage().instance().set(&DataKey::TotalValueLockedByAsset(asset.clone()), &500i128);
+    });
+
+    let tvl_asset = client.get_total_value_locked_by_asset(&asset);
+    assert_eq!(tvl_asset, 500);
+}
+
+#[test]
+#[should_panic(expected = "Asset is not in the supported whitelist")]
+fn test_create_commitment_requires_asset_supported_when_whitelist_set() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let allowed_asset = Address::generate(&e);
+    let disallowed_asset = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        // Set whitelist to only allowed_asset
+        let mut supported = Vec::new(&e);
+        supported.push_back(allowed_asset.clone());
+        e.storage().instance().set(&DataKey::SupportedAssets, &supported);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    let rules = CommitmentRules {
+        duration_days: 30,
+        max_loss_percent: 10,
+        commitment_type: String::from_str(&e, "safe"),
+        early_exit_penalty: 5,
+        min_fee_threshold: 100,
+    };
+
+    // Creating with disallowed asset should panic
+    client.create_commitment(&owner, &1000, &disallowed_asset, &rules);
 }
