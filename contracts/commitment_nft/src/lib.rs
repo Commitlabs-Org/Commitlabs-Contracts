@@ -99,6 +99,7 @@ pub enum DataKey {
 }
 
 // Events
+// const MINT: soroban_sdk::Symbol = symbol_short!("mint"); // TODO: Use this in mint function
 
 #[cfg(test)]
 mod tests;

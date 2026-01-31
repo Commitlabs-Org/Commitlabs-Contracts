@@ -27,7 +27,7 @@ jobs:
           toolchain: stable
 
       - name: Add Soroban Rust target
-        run: rustup target add wasm32v1-none
+        run: rustup target add wasm32-unknown-unknown
 
       - name: Install Stellar CLI via Homebrew
         run: |
@@ -61,7 +61,7 @@ jobs:
       - name: Build Rust contracts with Cargo (WASM)
         run: |
           # Build all workspace contracts for WASM target
-          cargo build --target wasm32v1-none --release
+          cargo build --target wasm32-unknown-unknown --release
           echo "✓ Cargo WASM build completed successfully"
 
       - name: Build Soroban contracts with Stellar CLI
@@ -109,4 +109,6 @@ jobs:
         run: |
           echo "Checking for WASM build artifacts..."
           find target -name "*.wasm" -type f | head -10 || echo "No WASM files found in target directory"
+          ls -la target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null || echo "WASM files not found in expected location"
+
           ls -la target/wasm32v1-none/release/*.wasm 2>/dev/null || echo "WASM files not found in expected location"

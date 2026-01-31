@@ -71,6 +71,7 @@ pub struct CommitmentRules {
     pub commitment_type: String, // "safe", "balanced", "aggressive"
     pub early_exit_penalty: u32,
     pub min_fee_threshold: i128,
+    pub grace_period_days: u32,
 }
 
 #[contracttype]
@@ -748,6 +749,14 @@ impl AttestationEngineContract {
         }
     }
 
+    /// Record fee generation
+    ///
+    /// Convenience function that creates a fee_generation attestation
+    ///
+    /// # Arguments
+    /// * `caller` - Must be authorized verifier
+    /// * `commitment_id` - The commitment generating fees
+    /// * `fee_amount` - The fee amount generated
     /// Verify commitment compliance
     pub fn verify_compliance(e: Env, commitment_id: String) -> bool {
         let core = Self::get_commitment_core(&e);
@@ -1286,6 +1295,7 @@ impl AttestationEngineContract {
     }
 }
 
+mod tests;
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
 mod tests;

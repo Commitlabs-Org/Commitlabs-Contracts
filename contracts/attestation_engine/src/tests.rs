@@ -32,6 +32,7 @@ fn store_core_commitment(
             commitment_type: String::from_str(e, "balanced"),
             early_exit_penalty: 10,
             min_fee_threshold: 1000,
+            grace_period_days: 3,
         },
         amount,
         asset_address: Address::generate(e),

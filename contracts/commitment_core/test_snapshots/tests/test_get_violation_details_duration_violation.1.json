@@ -155,6 +155,14 @@
                                   },
                                   {
                                     "key": {
+                                      "symbol": "grace_period_days"
+                                    },
+                                    "val": {
+                                      "u32": 3
+                                    }
+                                  },
+                                  {
+                                    "key": {
                                       "symbol": "max_loss_percent"
                                     },
                                     "val": {
