@@ -10,6 +10,9 @@
     [],
     [],
     [],
+    [],
+    [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
@@ -70,7 +73,7 @@
   "ledger": {
     "protocol_version": 21,
     "sequence_number": 0,
-    "timestamp": 0,
+    "timestamp": 172800,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -127,7 +130,7 @@
                         "symbol": "is_active"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -173,7 +176,7 @@
                               "symbol": "duration_days"
                             },
                             "val": {
-                              "u32": 30
+                              "u32": 1
                             }
                           },
                           {
@@ -181,7 +184,7 @@
                               "symbol": "expires_at"
                             },
                             "val": {
-                              "u64": 2592000
+                              "u64": 86400
                             }
                           },
                           {
@@ -281,7 +284,7 @@
                         "symbol": "is_active"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -327,7 +330,7 @@
                               "symbol": "duration_days"
                             },
                             "val": {
-                              "u32": 30
+                              "u32": 1
                             }
                           },
                           {
@@ -335,7 +338,7 @@
                               "symbol": "expires_at"
                             },
                             "val": {
-                              "u64": 2592000
+                              "u64": 86400
                             }
                           },
                           {
@@ -435,7 +438,7 @@
                         "symbol": "is_active"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -481,7 +484,7 @@
                               "symbol": "duration_days"
                             },
                             "val": {
-                              "u32": 30
+                              "u32": 1
                             }
                           },
                           {
@@ -489,7 +492,7 @@
                               "symbol": "expires_at"
                             },
                             "val": {
-                              "u64": 2592000
+                              "u64": 86400
                             }
                           },
                           {
@@ -810,6 +813,18 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -985,7 +1000,7 @@
                   "string": "commitment_0"
                 },
                 {
-                  "u32": 30
+                  "u32": 1
                 },
                 {
                   "u32": 10
@@ -1095,7 +1110,7 @@
                   "string": "commitment_1"
                 },
                 {
-                  "u32": 30
+                  "u32": 1
                 },
                 {
                   "u32": 10
@@ -1205,7 +1220,7 @@
                   "string": "commitment_2"
                 },
                 {
-                  "u32": 30
+                  "u32": 1
                 },
                 {
                   "u32": 10
@@ -1401,6 +1416,216 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
+                "symbol": "settle"
+              }
+            ],
+            "data": {
+              "u32": 0
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "Settle"
+              },
+              {
+                "u32": 0
+              }
+            ],
+            "data": {
+              "u64": 172800
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "settle"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "settle"
+              }
+            ],
+            "data": {
+              "u32": 1
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "Settle"
+              },
+              {
+                "u32": 1
+              }
+            ],
+            "data": {
+              "u64": 172800
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "settle"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "settle"
+              }
+            ],
+            "data": {
+              "u32": 2
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "Settle"
+              },
+              {
+                "u32": 2
+              }
+            ],
+            "data": {
+              "u64": 172800
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "settle"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
                 "symbol": "transfer"
               }
             ],
@@ -1446,7 +1671,7 @@
                   "u32": 0
                 },
                 {
-                  "u64": 0
+                  "u64": 172800
                 }
               ]
             }
@@ -1634,7 +1859,7 @@
                   "u32": 1
                 },
                 {
-                  "u64": 0
+                  "u64": 172800
                 }
               ]
             }
@@ -1820,7 +2045,7 @@
                         "symbol": "is_active"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -1866,7 +2091,7 @@
                               "symbol": "duration_days"
                             },
                             "val": {
-                              "u32": 30
+                              "u32": 1
                             }
                           },
                           {
@@ -1874,7 +2099,7 @@
                               "symbol": "expires_at"
                             },
                             "val": {
-                              "u64": 2592000
+                              "u64": 86400
                             }
                           },
                           {
@@ -1982,7 +2207,7 @@
                         "symbol": "is_active"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -2028,7 +2253,7 @@
                               "symbol": "duration_days"
                             },
                             "val": {
-                              "u32": 30
+                              "u32": 1
                             }
                           },
                           {
@@ -2036,7 +2261,7 @@
                               "symbol": "expires_at"
                             },
                             "val": {
-                              "u64": 2592000
+                              "u64": 86400
                             }
                           },
                           {
@@ -2094,7 +2319,7 @@
                         "symbol": "is_active"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -2140,7 +2365,7 @@
                               "symbol": "duration_days"
                             },
                             "val": {
-                              "u32": 30
+                              "u32": 1
                             }
                           },
                           {
@@ -2148,7 +2373,7 @@
                               "symbol": "expires_at"
                             },
                             "val": {
-                              "u64": 2592000
+                              "u64": 86400
                             }
                           },
                           {

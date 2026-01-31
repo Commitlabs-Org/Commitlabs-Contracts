@@ -49,6 +49,10 @@ pub enum ContractError {
     InvalidVersion = 16,
     /// Migration already applied
     AlreadyMigrated = 17,
+    /// Transfer to zero address is not allowed
+    TransferToZeroAddress = 18,
+    /// NFT is locked (active commitment) and cannot be transferred
+    NFTLocked = 19,
 }
 
 // ============================================================================
@@ -478,6 +482,14 @@ impl CommitmentNFTContract {
         // CHECKS: Require authorization from the sender
         from.require_auth();
 
+        // Validate 'to' address is not the same as 'from' (prevent self-transfer)
+        if to == from {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::TransferToZeroAddress);
+        }
+
         // Get the NFT
         let mut nft: CommitmentNFT = e
             .storage()
@@ -498,13 +510,13 @@ impl CommitmentNFTContract {
             return Err(ContractError::NotOwner);
         }
 
-        // Check if NFT is still active (active NFTs may have transfer restrictions)
-        // For now, we allow transfers regardless of active status
-        // Uncomment below to restrict transfers of active NFTs:
-        // if nft.is_active {
-        //     e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
-        //     return Err(ContractError::TransferNotAllowed);
-        // }
+        // Check if NFT is active (locked) - active commitments cannot be transferred
+        if nft.is_active {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::NFTLocked);
+        }
 
         // EFFECTS: Update state
         // Update owner
