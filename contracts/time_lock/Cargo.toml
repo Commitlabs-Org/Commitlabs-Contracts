@@ -1,0 +1,19 @@
+[package]
+name = "time_lock"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+benchmark = []
+default = []
+
+[dependencies]
+soroban-sdk = "21.0.0"
+shared_utils = { path = "../shared_utils" }
+
+[dev-dependencies]
+soroban-sdk = { version = "21.0.0", features = ["testutils"] }
