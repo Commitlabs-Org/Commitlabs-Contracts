@@ -7,8 +7,10 @@
 
 use shared_utils::Validation;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
 };
+
+pub const CURRENT_VERSION: u32 = 1;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -22,6 +24,9 @@ pub enum OracleError {
     StalePrice = 6,
     InvalidPrice = 7,
     InvalidStaleness = 8,
+    InvalidWasmHash = 9,
+    InvalidVersion = 10,
+    AlreadyMigrated = 11,
 }
 
 #[contracttype]
@@ -33,14 +38,24 @@ pub struct PriceData {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleConfig {
+    pub max_staleness_seconds: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
-    /// Default max age (seconds) for price validity
+    /// Default max age (seconds) for price validity (legacy)
     MaxStalenessSeconds,
     /// Whitelist: set of Address that can call set_price
     OracleWhitelist(Address),
     /// Price per asset: asset_address -> PriceData
     Price(Address),
+    /// Oracle configuration (v1+)
+    OracleConfig,
+    /// Contract version
+    Version,
 }
 
 fn read_admin(e: &Env) -> Address {
@@ -72,6 +87,68 @@ fn require_whitelisted(e: &Env, caller: &Address) {
     }
 }
 
+fn read_version(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Version)
+        .unwrap_or(0)
+}
+
+fn write_version(e: &Env, version: u32) {
+    e.storage().instance().set(&DataKey::Version, &version);
+}
+
+fn read_config(e: &Env) -> OracleConfig {
+    if let Some(config) = e.storage().instance().get::<_, OracleConfig>(&DataKey::OracleConfig) {
+        return config;
+    }
+    let legacy = e
+        .storage()
+        .instance()
+        .get::<_, u64>(&DataKey::MaxStalenessSeconds)
+        .unwrap_or(3600);
+    OracleConfig {
+        max_staleness_seconds: legacy,
+    }
+}
+
+fn write_config(e: &Env, config: &OracleConfig) {
+    e.storage().instance().set(&DataKey::OracleConfig, config);
+}
+
+fn set_max_staleness_internal(e: &Env, seconds: u64) {
+    let config = OracleConfig {
+        max_staleness_seconds: seconds,
+    };
+    write_config(e, &config);
+    if e.storage().instance().has(&DataKey::MaxStalenessSeconds) {
+        e.storage()
+            .instance()
+            .set(&DataKey::MaxStalenessSeconds, &seconds);
+    }
+}
+
+fn require_admin_result(e: &Env, caller: &Address) -> Result<(), OracleError> {
+    caller.require_auth();
+    let admin = e
+        .storage()
+        .instance()
+        .get::<_, Address>(&DataKey::Admin)
+        .ok_or(OracleError::NotInitialized)?;
+    if *caller != admin {
+        return Err(OracleError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), OracleError> {
+    let zero = BytesN::from_array(e, &[0; 32]);
+    if *wasm_hash == zero {
+        return Err(OracleError::InvalidWasmHash);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct PriceOracleContract;
 
@@ -84,9 +161,11 @@ impl PriceOracleContract {
         }
         e.storage().instance().set(&DataKey::Admin, &admin);
         // Default: price valid for 1 hour
-        e.storage()
-            .instance()
-            .set(&DataKey::MaxStalenessSeconds, &3600u64);
+        let config = OracleConfig {
+            max_staleness_seconds: 3600,
+        };
+        write_config(&e, &config);
+        write_version(&e, CURRENT_VERSION);
         Ok(())
     }
 
@@ -170,12 +249,8 @@ impl PriceOracleContract {
         if data.price < 0 {
             return Err(OracleError::InvalidPrice);
         }
-        let max_staleness = max_staleness_override.unwrap_or_else(|| {
-            e.storage()
-                .instance()
-                .get::<_, u64>(&DataKey::MaxStalenessSeconds)
-                .unwrap_or(3600)
-        });
+        let max_staleness = max_staleness_override
+            .unwrap_or_else(|| read_config(&e).max_staleness_seconds);
         let now = e.ledger().timestamp();
         if now < data.updated_at || now - data.updated_at > max_staleness {
             return Err(OracleError::StalePrice);
@@ -186,23 +261,78 @@ impl PriceOracleContract {
     /// Set default max staleness (seconds). Admin only.
     pub fn set_max_staleness(e: Env, caller: Address, seconds: u64) -> Result<(), OracleError> {
         require_admin(&e, &caller);
-        e.storage()
-            .instance()
-            .set(&DataKey::MaxStalenessSeconds, &seconds);
+        set_max_staleness_internal(&e, seconds);
         Ok(())
     }
 
     /// Get max staleness setting.
     pub fn get_max_staleness(e: Env) -> u64 {
-        e.storage()
-            .instance()
-            .get::<_, u64>(&DataKey::MaxStalenessSeconds)
-            .unwrap_or(3600)
+        read_config(&e).max_staleness_seconds
     }
 
     /// Get admin address.
     pub fn get_admin(e: Env) -> Address {
         read_admin(&e)
+    }
+
+    /// Get current on-chain version (0 if legacy/uninitialized).
+    pub fn get_version(e: Env) -> u32 {
+        read_version(&e)
+    }
+
+    /// Update admin (admin-only).
+    pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), OracleError> {
+        require_admin_result(&e, &caller)?;
+        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    /// Upgrade contract WASM (admin-only).
+    pub fn upgrade(
+        e: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), OracleError> {
+        require_admin_result(&e, &caller)?;
+        require_valid_wasm_hash(&e, &new_wasm_hash)?;
+        e.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    /// Migrate storage from a previous version to CURRENT_VERSION (admin-only).
+    pub fn migrate(e: Env, caller: Address, from_version: u32) -> Result<(), OracleError> {
+        require_admin_result(&e, &caller)?;
+
+        let stored_version = read_version(&e);
+        if stored_version == CURRENT_VERSION {
+            return Err(OracleError::AlreadyMigrated);
+        }
+        if from_version != stored_version || from_version > CURRENT_VERSION {
+            return Err(OracleError::InvalidVersion);
+        }
+
+        if from_version == 0 {
+            let existing = e
+                .storage()
+                .instance()
+                .get::<_, OracleConfig>(&DataKey::OracleConfig);
+            let max_staleness_seconds = if let Some(cfg) = existing {
+                cfg.max_staleness_seconds
+            } else {
+                e.storage()
+                    .instance()
+                    .get::<_, u64>(&DataKey::MaxStalenessSeconds)
+                    .unwrap_or(3600)
+            };
+            let config = OracleConfig {
+                max_staleness_seconds,
+            };
+            write_config(&e, &config);
+            e.storage().instance().remove(&DataKey::MaxStalenessSeconds);
+        }
+
+        write_version(&e, CURRENT_VERSION);
+        Ok(())
     }
 }
 

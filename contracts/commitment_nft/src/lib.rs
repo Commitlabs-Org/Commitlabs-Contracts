@@ -1,9 +1,10 @@
 #![no_std]
 use shared_utils::EmergencyControl;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
 };
+
+pub const CURRENT_VERSION: u32 = 1;
 
 // ============================================================================
 // Error Types
@@ -42,6 +43,12 @@ pub enum ContractError {
     InvalidAmount = 13,
     /// Reentrancy detected
     ReentrancyDetected = 14,
+    /// Invalid WASM hash
+    InvalidWasmHash = 15,
+    /// Invalid version
+    InvalidVersion = 16,
+    /// Migration already applied
+    AlreadyMigrated = 17,
 }
 
 // ============================================================================
@@ -96,6 +103,8 @@ pub enum DataKey {
     ActiveStatus(u32),
     /// Reentrancy guard flag
     ReentrancyGuard,
+    /// Contract version
+    Version,
 }
 
 // Events
@@ -129,6 +138,10 @@ impl CommitmentNFTContract {
         // Initialize empty token IDs vector
         let token_ids: Vec<u32> = Vec::new(&e);
         e.storage().instance().set(&DataKey::TokenIds, &token_ids);
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
 
         Ok(())
     }
@@ -176,6 +189,68 @@ impl CommitmentNFTContract {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(ContractError::NotInitialized)
+    }
+
+    /// Get current on-chain version (0 if legacy/uninitialized).
+    pub fn get_version(e: Env) -> u32 {
+        read_version(&e)
+    }
+
+    /// Update admin (admin-only).
+    pub fn set_admin(
+        e: Env,
+        caller: Address,
+        new_admin: Address,
+    ) -> Result<(), ContractError> {
+        require_admin(&e, &caller)?;
+        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    /// Upgrade contract WASM (admin-only).
+    pub fn upgrade(
+        e: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        require_admin(&e, &caller)?;
+        require_valid_wasm_hash(&e, &new_wasm_hash)?;
+        e.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    /// Migrate storage from a previous version to CURRENT_VERSION (admin-only).
+    pub fn migrate(
+        e: Env,
+        caller: Address,
+        from_version: u32,
+    ) -> Result<(), ContractError> {
+        require_admin(&e, &caller)?;
+
+        let stored_version = read_version(&e);
+        if stored_version == CURRENT_VERSION {
+            return Err(ContractError::AlreadyMigrated);
+        }
+        if from_version != stored_version || from_version > CURRENT_VERSION {
+            return Err(ContractError::InvalidVersion);
+        }
+
+        // Ensure essential counters are initialized
+        if !e.storage().instance().has(&DataKey::TokenCounter) {
+            e.storage().instance().set(&DataKey::TokenCounter, &0u32);
+        }
+        if !e.storage().instance().has(&DataKey::TokenIds) {
+            let token_ids: Vec<u32> = Vec::new(&e);
+            e.storage().instance().set(&DataKey::TokenIds, &token_ids);
+        }
+        if !e.storage().instance().has(&DataKey::ReentrancyGuard) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
+        Ok(())
     }
 
     // ========================================================================
@@ -664,6 +739,34 @@ impl CommitmentNFTContract {
         EmergencyControl::set_emergency_mode(&e, enabled);
         Ok(())
     }
+}
+
+fn read_version(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Version)
+        .unwrap_or(0)
+}
+
+fn require_admin(e: &Env, caller: &Address) -> Result<(), ContractError> {
+    caller.require_auth();
+    let admin: Address = e
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(ContractError::NotInitialized)?;
+    if *caller != admin {
+        return Err(ContractError::NotAuthorized);
+    }
+    Ok(())
+}
+
+fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), ContractError> {
+    let zero = BytesN::from_array(e, &[0; 32]);
+    if *wasm_hash == zero {
+        return Err(ContractError::InvalidWasmHash);
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "benchmark"))]

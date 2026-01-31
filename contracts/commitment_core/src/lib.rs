@@ -11,9 +11,11 @@ use shared_utils::{
     emit_error_event, EmergencyControl, RateLimiter, SafeMath, TimeUtils, Validation,
 };
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, Address, Env,
-    IntoVal, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, Address, BytesN,
+    Env, IntoVal, String, Symbol, Vec,
 };
+
+pub const CURRENT_VERSION: u32 = 1;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -282,6 +284,7 @@ pub enum DataKey {
     SupportedAssets,          // Vec<Address> — whitelist; empty = allow all
     AssetMetadata(Address),   // asset -> AssetMetadata (optional)
     TotalValueLockedByAsset(Address), // asset -> i128
+    Version,
 }
 
 /// Transfer assets from owner to contract
@@ -402,6 +405,24 @@ fn require_admin(e: &Env, caller: &Address) {
     }
 }
 
+fn read_version(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Version)
+        .unwrap_or(0)
+}
+
+fn write_version(e: &Env, version: u32) {
+    e.storage().instance().set(&DataKey::Version, &version);
+}
+
+fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) {
+    let zero = BytesN::from_array(e, &[0; 32]);
+    if *wasm_hash == zero {
+        panic!("Invalid wasm hash");
+    }
+}
+
 #[contract]
 pub struct CommitmentCoreContract;
 
@@ -507,6 +528,8 @@ impl CommitmentCoreContract {
         e.storage()
             .instance()
             .set(&DataKey::TotalValueLocked, &0i128);
+
+        write_version(&e, CURRENT_VERSION);
     }
 
     /// Create a new commitment

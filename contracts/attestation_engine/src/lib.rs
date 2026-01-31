@@ -1,9 +1,11 @@
 #![no_std]
 use shared_utils::RateLimiter;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, Map,
-    String, Symbol, TryIntoVal, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, IntoVal, Map, String,
+    Symbol, TryIntoVal, Val, Vec,
 };
+
+pub const CURRENT_VERSION: u32 = 1;
 
 // ============================================================================
 // Error Types
@@ -30,6 +32,12 @@ pub enum AttestationError {
     CommitmentNotFound = 7,
     /// Storage operation failed
     StorageError = 8,
+    /// Invalid WASM hash
+    InvalidWasmHash = 9,
+    /// Invalid version
+    InvalidVersion = 10,
+    /// Migration already applied
+    AlreadyMigrated = 11,
 }
 
 // ============================================================================
@@ -61,6 +69,8 @@ pub enum DataKey {
     TotalFees,
     /// Per-verifier analytics: attestation count by verifier
     VerifierAttestationCount(Address),
+    /// Contract version
+    Version,
 }
 
 #[contracttype]
@@ -279,6 +289,76 @@ impl AttestationEngineContract {
             .instance()
             .get(&DataKey::CoreContract)
             .ok_or(AttestationError::NotInitialized)
+    }
+
+    /// Get current on-chain version (0 if legacy/uninitialized).
+    pub fn get_version(e: Env) -> u32 {
+        read_version(&e)
+    }
+
+    /// Update admin (admin-only).
+    pub fn set_admin(
+        e: Env,
+        caller: Address,
+        new_admin: Address,
+    ) -> Result<(), AttestationError> {
+        require_admin(&e, &caller)?;
+        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    /// Upgrade contract WASM (admin-only).
+    pub fn upgrade(
+        e: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), AttestationError> {
+        require_admin(&e, &caller)?;
+        require_valid_wasm_hash(&e, &new_wasm_hash)?;
+        e.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    /// Migrate storage from a previous version to CURRENT_VERSION (admin-only).
+    pub fn migrate(
+        e: Env,
+        caller: Address,
+        from_version: u32,
+    ) -> Result<(), AttestationError> {
+        require_admin(&e, &caller)?;
+
+        let stored_version = read_version(&e);
+        if stored_version == CURRENT_VERSION {
+            return Err(AttestationError::AlreadyMigrated);
+        }
+        if from_version != stored_version || from_version > CURRENT_VERSION {
+            return Err(AttestationError::InvalidVersion);
+        }
+
+        // Ensure analytics counters are initialized
+        if !e.storage().instance().has(&DataKey::TotalAttestations) {
+            e.storage()
+                .instance()
+                .set(&DataKey::TotalAttestations, &0u64);
+        }
+        if !e.storage().instance().has(&DataKey::TotalViolations) {
+            e.storage()
+                .instance()
+                .set(&DataKey::TotalViolations, &0u64);
+        }
+        if !e.storage().instance().has(&DataKey::TotalFees) {
+            e.storage().instance().set(&DataKey::TotalFees, &0i128);
+        }
+        if !e.storage().instance().has(&DataKey::ReentrancyGuard) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
+        Ok(())
     }
 
     /// Get stored health metrics for a commitment (without recalculation)
@@ -1295,7 +1375,35 @@ impl AttestationEngineContract {
     }
 }
 
+fn read_version(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Version)
+        .unwrap_or(0)
+}
+
+fn require_admin(e: &Env, caller: &Address) -> Result<(), AttestationError> {
+    caller.require_auth();
+    let admin: Address = e
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(AttestationError::NotInitialized)?;
+    if *caller != admin {
+        return Err(AttestationError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), AttestationError> {
+    let zero = BytesN::from_array(e, &[0; 32]);
+    if *wasm_hash == zero {
+        return Err(AttestationError::InvalidWasmHash);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 mod tests;
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
-mod tests;
