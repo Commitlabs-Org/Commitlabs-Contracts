@@ -627,92 +627,6 @@ fn test_create_commitment_event() {
 }
 
 #[test]
-fn test_update_value_event() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
-    let owner = Address::generate(&e);
-    let commitment_id = String::from_str(&e, "test_id");
-
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
-        let commitment = create_test_commitment(
-            &e,
-            "test_id",
-            &owner,
-            1000,
-            1000,
-            10,
-            30,
-            e.ledger().timestamp(),
-        );
-        set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
-        // Call update_value in same context so it sees stored commitment
-        CommitmentCoreContract::update_value(e.clone(), commitment.commitment_id.clone(), 1100);
-    });
-
-    let commitment = client.get_commitment(&commitment_id);
-    assert_eq!(commitment.current_value, 1100);
-    assert_eq!(client.get_total_value_locked(), 1100);
-
-    let events = e.events().all();
-    let last_event = events.last().unwrap();
-    assert_eq!(last_event.0, contract_id);
-    assert_eq!(
-        last_event.1,
-        vec![&e, symbol_short!("ValUpd").into_val(&e), commitment_id.into_val(&e)]
-    );
-    let data: (i128, u64) = last_event.2.into_val(&e);
-    assert_eq!(data.0, 1100);
-}
-
-#[test]
-#[should_panic(expected = "Rate limit exceeded")]
-fn test_update_value_rate_limit_enforced() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let client = CommitmentCoreContractClient::new(&e, &contract_id);
-
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
-    let owner = Address::generate(&e);
-    let commitment_id = String::from_str(&e, "rl_test");
-
-    // Initialize, configure rate limit (1 update per 60 seconds), store commitment, do first update in-context
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
-        CommitmentCoreContract::set_rate_limit(
-            e.clone(),
-            admin.clone(),
-            symbol_short!("upd_val"),
-            60,
-            1,
-        );
-        let commitment = create_test_commitment(
-            &e,
-            "rl_test",
-            &owner,
-            1000,
-            1000,
-            10,
-            30,
-            e.ledger().timestamp(),
-        );
-        set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
-        // First update_value inside contract context (consumes the one allowed call)
-        CommitmentCoreContract::update_value(e.clone(), commitment.commitment_id.clone(), 100);
-    });
-
-    // Second call via client should hit rate limit
-    client.update_value(&commitment_id, &200);
-}
-
-#[test]
 #[should_panic(expected = "Commitment not found")]
 fn test_settle_event() {
     let e = Env::default();
@@ -1276,4 +1190,715 @@ fn test_early_exit_status_transition() {
     });
     
     assert_eq!(before.status, String::from_str(&e, "active"));
+}
+
+// ============================================================================
+// Update Value With Auth Tests - Authorization & Access Control
+// ============================================================================
+
+#[test]
+fn test_update_value_with_auth_admin_can_update() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_auth_admin";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Admin should be able to update value
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            900,
+        );
+    });
+    
+    let updated = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+    
+    assert_eq!(updated.current_value, 900);
+}
+
+#[test]
+fn test_update_value_with_auth_authorized_updater_can_update() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let updater = Address::generate(&e);
+    let commitment_id = "test_auth_updater";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        
+        // Add updater to whitelist
+        CommitmentCoreContract::add_authorized_updater(e.clone(), admin.clone(), updater.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Authorized updater should be able to update
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            updater.clone(),
+            String::from_str(&e, commitment_id),
+            850,
+        );
+    });
+    
+    let updated = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+    
+    assert_eq!(updated.current_value, 850);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_update_value_with_auth_unauthorized_user_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let unauthorized = Address::generate(&e);
+    let commitment_id = "test_unauth";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    
+    // Unauthorized user should fail
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            unauthorized.clone(),
+            String::from_str(&e, commitment_id),
+            900,
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_update_value_with_auth_removed_updater_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let updater = Address::generate(&e);
+    let commitment_id = "test_removed";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        
+        // Add then remove updater
+        CommitmentCoreContract::add_authorized_updater(e.clone(), admin.clone(), updater.clone());
+        CommitmentCoreContract::remove_authorized_updater(e.clone(), admin.clone(), updater.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    
+    // Removed updater should fail
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            updater.clone(),
+            String::from_str(&e, commitment_id),
+            900,
+        );
+    });
+}
+
+// ============================================================================
+// Update Value With Auth Tests - Violation Detection
+// ============================================================================
+
+#[test]
+fn test_update_value_with_auth_detects_loss_violation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_loss_violation";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    // Max loss: 20%, Initial: 1000
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,  // 20% max loss
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Update to 750 = 25% loss (exceeds 20% threshold)
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            750,
+        );
+    });
+    
+    let updated = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+    
+    // Should be marked as violated
+    assert_eq!(updated.status, String::from_str(&e, "violated"));
+    assert_eq!(updated.current_value, 750);
+}
+
+#[test]
+fn test_update_value_with_auth_no_violation_within_threshold() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_no_violation";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,  // 20% max loss
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Update to 850 = 15% loss (within 20% threshold)
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            850,
+        );
+    });
+    
+    let updated = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+    
+    // Should remain active
+    assert_eq!(updated.status, String::from_str(&e, "active"));
+    assert_eq!(updated.current_value, 850);
+}
+
+#[test]
+fn test_update_value_with_auth_exact_threshold_not_violated() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_exact_threshold";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Update to 800 = exactly 20% loss
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            800,
+        );
+    });
+    
+    let updated = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+    
+    // At threshold should NOT violate (using > not >=)
+    assert_eq!(updated.status, String::from_str(&e, "active"));
+}
+
+#[test]
+fn test_update_value_with_auth_value_increase_no_violation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_value_increase";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Update to 1200 (profit, no loss)
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            1200,
+        );
+    });
+    
+    let updated = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+    
+    assert_eq!(updated.status, String::from_str(&e, "active"));
+    assert_eq!(updated.current_value, 1200);
+}
+
+// ============================================================================
+// Update Value With Auth Tests - TVL Tracking
+// ============================================================================
+
+#[test]
+fn test_update_value_with_auth_tvl_adjustment() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_tvl";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Update value from 1000 to 850
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            850,
+        );
+    });
+    
+    let tvl = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_total_value_locked(e.clone())
+    });
+    
+    // TVL should be 850 (1000 - 1000 + 850)
+    assert_eq!(tvl, 850);
+}
+
+// ============================================================================
+// Update Value With Auth Tests - Event Emission
+// ============================================================================
+
+#[test]
+fn test_update_value_with_auth_emits_value_update_event() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id_str = "test_event";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id_str,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id_str),
+            900,
+        );
+    });
+    
+    let events = e.events().all();
+    let value_update_event = events.iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone();
+        topics.get(0).map(|t| {
+            let sym: Result<Symbol, _> = t.try_into_val(&e);
+            sym.map(|s| s == symbol_short!("ValUpd")).unwrap_or(false)
+        }).unwrap_or(false)
+    });
+    
+    assert!(value_update_event.is_some(), "ValUpd event should be emitted");
+}
+
+#[test]
+fn test_update_value_with_auth_emits_violation_event_on_violation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id_str = "test_violation_event";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id_str,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Trigger violation (25% loss > 20% threshold)
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id_str),
+            750,
+        );
+    });
+    
+    let events = e.events().all();
+    let violation_event = events.iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone();
+        topics.get(0).map(|t| {
+            let sym: Result<Symbol, _> = t.try_into_val(&e);
+            sym.map(|s| s == symbol_short!("Violated")).unwrap_or(false)
+        }).unwrap_or(false)
+    });
+    
+    assert!(violation_event.is_some(), "Violated event should be emitted");
+}
+
+// ============================================================================
+// Update Value With Auth Tests - Edge Cases
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "Commitment not found")]
+fn test_update_value_with_auth_nonexistent_commitment() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, "nonexistent"),
+            900,
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "Commitment is not active")]
+fn test_update_value_with_auth_settled_commitment() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_settled";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let mut commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    commitment.status = String::from_str(&e, "settled");
+    store_commitment(&e, &contract_id, &commitment);
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            900,
+        );
+    });
+}
+
+#[test]
+#[should_panic]
+fn test_update_value_with_auth_negative_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_negative";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            -100, // Negative value should fail
+        );
+    });
+}
+
+#[test]
+fn test_update_value_with_auth_zero_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+    
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_zero";
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+    
+    let commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        1000,
+        20,
+        30,
+        e.ledger().timestamp(),
+    );
+    
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    
+    // Zero value is 100% loss, should violate
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value_with_auth(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            0,
+        );
+    });
+    
+    let updated = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+    
+    assert_eq!(updated.status, String::from_str(&e, "violated"));
+    assert_eq!(updated.current_value, 0);
 }

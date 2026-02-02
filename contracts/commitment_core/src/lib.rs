@@ -102,7 +102,8 @@ pub enum DataKey {
     OwnerCommitments(Address), // owner -> Vec<commitment_id>
     TotalCommitments,          // counter
     ReentrancyGuard,           // reentrancy protection flag
-    TotalValueLocked,          // aggregate value locked across active commitments
+    TotalValueLocked, 
+    AuthorizedUpdater(Address),         // aggregate value locked across active commitments
 }
 
 /// Transfer assets from owner to contract
@@ -371,6 +372,11 @@ impl CommitmentCoreContract {
         let fn_symbol = symbol_short!("create");
         RateLimiter::check(&e, &owner, &fn_symbol);
 
+        if amount == 0 {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::InvalidAmount, "create_commitment: amount must be greater than zero");
+        }
+
         // Validate amount > 0 using shared utilities
         Validation::require_positive(amount);
 
@@ -537,91 +543,105 @@ impl CommitmentCoreContract {
 
     /// Add an authorized updater to the whitelist (admin only)
     /// Panics if caller is not admin
-    pub fn add_authorized_updater(e: Env, updater: Address) {
-        let caller = e.invoker();
+    pub fn add_authorized_updater(e: Env, caller: Address, updater: Address) {
         require_admin(&e, &caller);
-    
         let key = DataKey::AuthorizedUpdater(updater.clone());
         e.storage().instance().set(&key, &true);
-    
-        e.events().publish(
-            (symbol_short!("AuthAdd"),),
-            updater,
-        );
+        e.events().publish((symbol_short!("AuthAdd"),), updater);
     }
+    
 
     /// Remove an authorized updater from the whitelist (admin only)
     /// Panics if caller is not admin
-    pub fn remove_authorized_updater(e: Env, updater: Address) {
-        let caller = e.invoker();
+    pub fn remove_authorized_updater(e: Env, caller: Address, updater: Address) {
         require_admin(&e, &caller);
-
         let key = DataKey::AuthorizedUpdater(updater.clone());
         e.storage().instance().remove(&key);
-
-        e.events().publish(
-            (symbol_short!("AuthRem"),),
-            updater,
-        );
+        e.events().publish((symbol_short!("AuthRem"),), updater);
     }
 
     /// Check if caller is an authorized updater
     /// Returns true if caller is admin or in the authorized updaters whitelist
     fn is_authorized_updater(e: &Env, caller: &Address) -> bool {
-    let admin_result = e.storage().instance().get::<_, Address>(&DataKey::Admin);
-    if let Some(admin) = admin_result {
-        if *caller == admin {
-            return true;
+        // Check if caller is admin
+        if let Some(admin) = e.storage().instance().get::<_, Address>(&DataKey::Admin) {
+            if *caller == admin {
+                return true;
+            }
         }
-    }
-    
-    // Check if caller is in the authorized updaters whitelist
-    let key = DataKey::AuthorizedUpdater(caller.clone());
-    e.storage()
-        .instance()
-        .get::<_, bool>(&key)
-        .unwrap_or(false)
-    }
-
-    /// Check if an address is authorized to update values
-    pub fn is_updater_authorized(e: Env, address: Address) -> bool {
-        is_authorized_updater(&e, &address)
+        
+        // Check whitelist
+        let key = DataKey::AuthorizedUpdater(caller.clone());
+        e.storage().instance().get::<_, bool>(&key).unwrap_or(false)
     }
 
     /// Calculate drawdown percentage with edge case handling
     /// Formula: (initial_value - current_value) / initial_value * 100
     fn calculate_drawdown_percent(initial_value: i128, current_value: i128) -> i128 {
-        // Handle edge case: zero initial value
         if initial_value == 0 {
             return 0;
         }
-
-        // Handle edge case: current value >= initial (no loss, profit scenario)
         if current_value >= initial_value {
             return 0;
         }
-
-        // Calculate loss percentage
         let loss = initial_value - current_value;
-        // Multiply by 100 first to maintain precision before division
-        let drawdown = (loss * 100) / initial_value;
-        
-        drawdown
+        (loss * 100) / initial_value
     }
 
     /// Update commitment value (called by allocation logic or oracle-fed keeper).
     /// Persists new_value to commitment.current_value and updates TotalValueLocked.
+    pub fn update_value(e: Env, commitment_id: String, new_value: i128) {
+        // Global per-function rate limit (per contract instance)
+        let fn_symbol = symbol_short!("upd_val");
+        let contract_address = e.current_contract_address();
+        RateLimiter::check(&e, &contract_address, &fn_symbol);
+
+        Validation::require_non_negative(new_value);
+
+        let mut commitment = read_commitment(&e, &commitment_id)
+            .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "update_value"));
+
+        let active_status = String::from_str(&e, "active");
+        if commitment.status != active_status {
+            fail(&e, CommitmentError::NotActive, "update_value");
+        }
+
+        let old_value = commitment.current_value;
+        commitment.current_value = new_value;
+        set_commitment(&e, &commitment);
+
+        // Adjust TotalValueLocked: TVL -= old_value, TVL += new_value
+        let current_tvl = e
+            .storage()
+            .instance()
+            .get::<_, i128>(&DataKey::TotalValueLocked)
+            .unwrap_or(0);
+        let new_tvl = current_tvl - old_value + new_value;
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &new_tvl);
+
+        e.events().publish(
+            (symbol_short!("ValUpd"), commitment_id),
+            (new_value, e.ledger().timestamp()),
+        );
+    }
+    
+    /// Update commitment value (called by allocation logic or oracle-fed keeper).
+    /// Persists new_value to commitment.current_value and updates TotalValueLocked.
     /// Detects violations based on max_loss_percent threshold.
     /// Only authorized updaters (allocation contract or admin) can call this function.
-    pub fn update_value(e: Env, commitment_id: String, new_value: i128) {
+    pub fn update_value_with_auth(e: Env, caller: Address, commitment_id: String, new_value: i128) {
+        // Require authentication from caller
+        caller.require_auth();
+    
         // Global per-function rate limit (per contract instance)
         let fn_symbol = symbol_short!("upd_val");
         let contract_address = e.current_contract_address();
         RateLimiter::check(&e, &contract_address, &fn_symbol);
     
         // Access Control: Verify caller is authorized (allocation contract or admin)
-        let caller = e.invoker();
-        let is_authorized = is_authorized_updater(&e, &caller);
+        let is_authorized = Self::is_authorized_updater(&e, &caller);
         if !is_authorized {
             fail(&e, CommitmentError::Unauthorized, "update_value");
         }
@@ -641,7 +661,7 @@ impl CommitmentCoreContract {
     
         // Violation Detection: Calculate drawdown percentage
         // Use initial amount (not old_value) as the baseline
-        let drawdown_percent = calculate_drawdown_percent(commitment.amount, new_value);
+        let drawdown_percent = Self::calculate_drawdown_percent(commitment.amount, new_value);
         
         // Check if max_loss_percent is violated
         let max_loss = commitment.rules.max_loss_percent as i128;
@@ -677,6 +697,7 @@ impl CommitmentCoreContract {
             (old_value, new_value, drawdown_percent, e.ledger().timestamp()),
         );
     }
+
     /// Check if commitment rules are violated
     /// Returns true if any rule violation is detected (loss limit or duration)
     ///
