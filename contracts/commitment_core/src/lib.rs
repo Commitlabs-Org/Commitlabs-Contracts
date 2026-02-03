@@ -1,6 +1,6 @@
 #![no_std]
 
-use shared_utils::{emit_error_event, Pausable, RateLimiter, SafeMath, TimeUtils, Validation};
+use shared_utils::{emit_error_event, Pausable, RateLimiter, SafeMath, time::TimeUtils, validation::Validation};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, symbol_short, token, Address, Env,
     IntoVal, String, Symbol, Vec,
@@ -210,8 +210,8 @@ fn require_admin(e: &Env, caller: &Address) {
 ///
 /// # Panics
 /// Panics if caller is not admin or if contract is already paused
-pub fn pause(e: Env) {
-    require_admin(&e, &e.caller());
+pub fn pause(e: Env, caller: &Address) {
+    require_admin(&e, caller);
     Pausable::pause(&e);
 }
 
@@ -222,8 +222,8 @@ pub fn pause(e: Env) {
 ///
 /// # Panics
 /// Panics if caller is not admin or if contract is already unpaused
-pub fn unpause(e: Env) {
-    require_admin(&e, &e.caller());
+pub fn unpause(e: Env, caller: &Address) {
+    require_admin(&e, caller);
     Pausable::unpause(&e);
 }
 
