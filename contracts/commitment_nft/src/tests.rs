@@ -1186,13 +1186,19 @@ fn test_unpause_restores_transfer() {
     let token_id = client.mint(
         &owner1,
         &String::from_str(&e, "commitment_002"),
-        &30,
+        &1,
         &10,
         &String::from_str(&e, "balanced"),
         &1000,
         &asset_address,
         &5,
     );
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 172800;
+    });
+    client.settle(&token_id);
+    assert_eq!(client.is_active(&token_id), false);
 
     client.pause();
     client.unpause();

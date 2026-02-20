@@ -1,6 +1,12 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Address, Env, String, Vec, Symbol};
-use shared_utils::Pausable;
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, symbol_short, Address, BytesN, Env,
+    String, Vec, Symbol,
+};
+use shared_utils::{EmergencyControl, Pausable};
+
+// Current storage version for migrations
+pub const CURRENT_VERSION: u32 = 1;
 
 // ============================================================================
 // Error Types

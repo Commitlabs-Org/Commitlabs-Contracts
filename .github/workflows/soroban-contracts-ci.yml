@@ -26,8 +26,10 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Add Soroban Rust target
-        run: rustup target add wasm32-unknown-unknown
+      - name: Add Soroban Rust targets
+        run: |
+          rustup target add wasm32-unknown-unknown
+          rustup target add wasm32v1-none
 
       - name: Install Stellar CLI via Homebrew
         run: |

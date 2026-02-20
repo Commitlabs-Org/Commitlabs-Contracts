@@ -41,14 +41,10 @@
                     "storage": [
                       {
                         "key": {
-                          "vec": [
-                            {
-                              "symbol": "ActiveCommitments"
-                            }
-                          ]
+                          "symbol": "paused"
                         },
                         "val": {
-                          "vec": []
+                          "bool": false
                         }
                       },
                       {
@@ -61,18 +57,6 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "CreationFeeBps"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 0
                         }
                       },
                       {

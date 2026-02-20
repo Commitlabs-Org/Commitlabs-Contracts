@@ -194,15 +194,17 @@ fn require_admin(e: &Env, caller: &Address) {
     }
 }
 
-/// Pause the contract
-    /// 
+    /// Pause the contract
+    ///
     /// # Arguments
     /// * `e` - The environment
-    /// 
+    /// * `caller` - Must be admin 
+    ///
     /// # Panics
     /// Panics if caller is not admin or if contract is already paused
-    pub fn pause(e: Env) {
-        require_admin(&e, &e.caller());
+    pub fn pause(e: Env, caller: Address) {
+        caller.require_auth();
+        require_admin(&e, &caller);
         Pausable::pause(&e);
     }
 
@@ -210,11 +212,13 @@ fn require_admin(e: &Env, caller: &Address) {
     /// 
     /// # Arguments
     /// * `e` - The environment
+    /// * `caller` - Must be admin 
     /// 
     /// # Panics
     /// Panics if caller is not admin or if contract is already unpaused
-    pub fn unpause(e: Env) {
-        require_admin(&e, &e.caller());
+    pub fn unpause(e: Env, caller: Address) {
+        caller.require_auth();
+        require_admin(&e, &caller);
         Pausable::unpause(&e);
     }
 
@@ -462,7 +466,11 @@ impl CommitmentCoreContract {
 
         // Emit creation event
         e.events().publish(
-            (symbol_short!("Created"), commitment_id.clone(), owner.clone()),
+            (
+                Symbol::new(&e, "CommitmentCreated"),
+                commitment_id.clone(),
+                owner.clone(),
+            ),
             (amount, rules, nft_token_id, e.ledger().timestamp()),
         );
         commitment_id
@@ -548,7 +556,10 @@ impl CommitmentCoreContract {
             .set(&DataKey::TotalValueLocked, &new_tvl);
 
         e.events().publish(
-            (symbol_short!("ValUpd"), commitment_id),
+            (
+                Symbol::new(&e, "ValueUpdated"),
+                commitment_id.clone(),
+            ),
             (new_value, e.ledger().timestamp()),
         );
     }
@@ -602,10 +613,20 @@ impl CommitmentCoreContract {
         let violated = loss_violated || duration_violated;
 
         if violated {
-            // Emit violation event
+            // Emit ViolationDetected
+            let violation_type = if loss_violated && duration_violated {
+                String::from_str(&e, "loss_and_duration")
+            } else if loss_violated {
+                String::from_str(&e, "loss_limit")
+            } else {
+                String::from_str(&e, "duration_expired")
+            };
             e.events().publish(
-                (symbol_short!("Violated"), commitment_id),
-                (symbol_short!("RuleViol"), e.ledger().timestamp()),
+                (
+                    Symbol::new(&e, "ViolationDetected"),
+                    commitment_id.clone(),
+                ),
+                (violation_type, e.ledger().timestamp()),
             );
         }
 
@@ -723,10 +744,17 @@ impl CommitmentCoreContract {
         // Clear reentrancy guard
         set_reentrancy_guard(&e, false);
 
-        // Emit settlement event
+        // Emit CommitmentSettled
         e.events().publish(
-            (symbol_short!("Settled"), commitment_id),
-            (settlement_amount, e.ledger().timestamp()),
+            (
+                Symbol::new(&e, "CommitmentSettled"),
+                commitment_id.clone(),
+            ),
+            (
+                commitment.owner.clone(),
+                settlement_amount,
+                e.ledger().timestamp(),
+            ),
         );
     }
 
@@ -763,19 +791,20 @@ impl CommitmentCoreContract {
         let penalty_amount =
             SafeMath::penalty_amount(commitment.current_value, commitment.rules.early_exit_penalty);
         let returned_amount = SafeMath::sub(commitment.current_value, penalty_amount);
+        let value_released = commitment.current_value;
 
         // Update commitment status to early_exit
         commitment.status = String::from_str(&e, "early_exit");
         commitment.current_value = 0; // All value has been distributed
         set_commitment(&e, &commitment);
 
-        // Decrease total value locked by full current value (no longer locked)
+        // Decrease total value locked by the value that was released
         let current_tvl = e
             .storage()
             .instance()
             .get::<_, i128>(&DataKey::TotalValueLocked)
             .unwrap_or(0);
-        let new_tvl = current_tvl - commitment.current_value;
+        let new_tvl = current_tvl - value_released;
         e.storage()
             .instance()
             .set(&DataKey::TotalValueLocked, &new_tvl);
@@ -807,9 +836,13 @@ impl CommitmentCoreContract {
         // Clear reentrancy guard
         set_reentrancy_guard(&e, false);
 
-        // Emit early exit event with detailed information
+        // Emit EarlyExit event
         e.events().publish(
-            (symbol_short!("EarlyExt"), commitment_id.clone(), caller.clone()),
+            (
+                Symbol::new(&e, "EarlyExit"),
+                commitment_id.clone(),
+                caller.clone(),
+            ),
             (penalty_amount, returned_amount, e.ledger().timestamp()),
         );
     }
@@ -871,7 +904,11 @@ impl CommitmentCoreContract {
 
         // Emit allocation event
         e.events().publish(
-            (symbol_short!("Alloc"), commitment_id, target_pool),
+            (
+                Symbol::new(&e, "Allocation"),
+                commitment_id.clone(),
+                target_pool.clone(),
+            ),
             (amount, e.ledger().timestamp()),
         );
     }

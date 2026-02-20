@@ -21,6 +21,10 @@ pub mod events;
 pub mod math;
 pub mod rate_limiting;
 pub mod pausable;
+pub mod storage;
+pub mod time;
+pub mod validation;
+pub mod batch;
 
 #[cfg(test)]
 mod tests;
@@ -34,3 +38,5 @@ pub use events::*;
 pub use math::*;
 pub use rate_limiting::*;
 pub use pausable::*;
+pub use time::TimeUtils;
+pub use validation::Validation;
