@@ -1,10 +1,9 @@
 {
   "generators": {
-    "address": 4,
+    "address": 3,
     "nonce": 0
   },
   "auth": [
-    [],
     [],
     []
   ],
@@ -40,71 +39,7 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": [
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Admin"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "CreationFeeBps"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 0
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "NftContract"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "TotalCommitments"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 0
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "TotalValueLocked"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "i128": {
-                            "hi": 0,
-                            "lo": 0
-                          }
-                        }
-                      }
-                    ]
+                    "storage": null
                   }
                 }
               }
@@ -117,7 +52,7 @@
       [
         {
           "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
             "key": "ledger_key_contract_instance",
             "durability": "persistent"
           }
@@ -128,7 +63,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
                 "key": "ledger_key_contract_instance",
                 "durability": "persistent",
                 "val": {

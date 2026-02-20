@@ -155,14 +155,6 @@
                                   },
                                   {
                                     "key": {
-                                      "symbol": "grace_period_days"
-                                    },
-                                    "val": {
-                                      "u32": 3
-                                    }
-                                  },
-                                  {
-                                    "key": {
                                       "symbol": "max_loss_percent"
                                     },
                                     "val": {
@@ -237,7 +229,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Violated"
+                "symbol": "ViolationDetected"
               },
               {
                 "string": "test_commitment_9"
@@ -246,7 +238,7 @@
             "data": {
               "vec": [
                 {
-                  "symbol": "RuleViol"
+                  "string": "duration_expired"
                 },
                 {
                   "u64": 2593000

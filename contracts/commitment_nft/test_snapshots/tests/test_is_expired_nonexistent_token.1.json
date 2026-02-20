@@ -42,6 +42,14 @@
                     "storage": [
                       {
                         "key": {
+                          "symbol": "paused"
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
                           "vec": [
                             {
                               "symbol": "Admin"
@@ -74,18 +82,6 @@
                         },
                         "val": {
                           "vec": []
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Version"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 1
                         }
                       }
                     ]
