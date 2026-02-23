@@ -46,6 +46,7 @@ fn test_e2e_complete_commitment_lifecycle() {
         commitment_type: String::from_str(&harness.env, "balanced"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness
@@ -183,6 +184,7 @@ fn test_e2e_early_exit_with_penalty() {
         commitment_type: String::from_str(&harness.env, "aggressive"),
         early_exit_penalty,
         min_fee_threshold: 500,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness
@@ -384,6 +386,7 @@ fn test_e2e_violation_detection_flow() {
         commitment_type: String::from_str(&harness.env, "safe"),
         early_exit_penalty: 3,
         min_fee_threshold: 100,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness

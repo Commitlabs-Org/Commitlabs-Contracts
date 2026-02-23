@@ -6,7 +6,7 @@ use crate::*;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger},
-    Address, Env, vec, IntoVal,
+    vec, Address, Env, IntoVal,
 };
 
 // ============================================================================
@@ -137,7 +137,11 @@ fn test_cancel_listing() {
 
     assert_eq!(
         last_event.1,
-        vec![&e, symbol_short!("ListCncl").into_val(&e), token_id.into_val(&e)]
+        vec![
+            &e,
+            symbol_short!("ListCncl").into_val(&e),
+            token_id.into_val(&e)
+        ]
     );
 }
 

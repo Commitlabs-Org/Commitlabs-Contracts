@@ -1,6 +1,12 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Address, Env, String, Vec, Symbol};
-use shared_utils::Pausable;
+use shared_utils::{EmergencyControl, Pausable};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    String, Symbol, Vec,
+};
+
+/// Current storage/contract version for migrations
+const CURRENT_VERSION: u32 = 1;
 
 // ============================================================================
 // Error Types
@@ -232,11 +238,7 @@ impl CommitmentNFTContract {
     }
 
     /// Update admin (admin-only).
-    pub fn set_admin(
-        e: Env,
-        caller: Address,
-        new_admin: Address,
-    ) -> Result<(), ContractError> {
+    pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&e, &caller)?;
         e.storage().instance().set(&DataKey::Admin, &new_admin);
         Ok(())
@@ -255,11 +257,7 @@ impl CommitmentNFTContract {
     }
 
     /// Migrate storage from a previous version to CURRENT_VERSION (admin-only).
-    pub fn migrate(
-        e: Env,
-        caller: Address,
-        from_version: u32,
-    ) -> Result<(), ContractError> {
+    pub fn migrate(e: Env, caller: Address, from_version: u32) -> Result<(), ContractError> {
         require_admin(&e, &caller)?;
 
         let stored_version = read_version(&e);
@@ -279,7 +277,9 @@ impl CommitmentNFTContract {
             e.storage().instance().set(&DataKey::TokenIds, &token_ids);
         }
         if !e.storage().instance().has(&DataKey::ReentrancyGuard) {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
         }
 
         e.storage()
@@ -690,12 +690,13 @@ impl CommitmentNFTContract {
     // Settlement (Issue #5 - Main Implementation)
     // ========================================================================
 
-    /// Mark NFT as settled (after maturity)
+    /// Mark NFT as settled (after maturity).
+    /// Only the configured commitment_core contract or admin may call this; pass the caller address.
     ///
     /// # Reentrancy Protection
     /// Uses checks-effects-interactions pattern. This function only writes to storage
     /// and doesn't make external calls, but still protected for consistency.
-    pub fn settle(e: Env, token_id: u32) -> Result<(), ContractError> {
+    pub fn settle(e: Env, caller: Address, token_id: u32) -> Result<(), ContractError> {
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -711,6 +712,31 @@ impl CommitmentNFTContract {
 
         // Check if contract is paused
         Pausable::require_not_paused(&e);
+
+        // Access control (Issue #108): only the authorized commitment_core contract or admin may call settle.
+        // Caller must be passed and authorized; admin is allowed for emergency/operational use.
+        let core_contract: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::CoreContract)
+            .ok_or_else(|| {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                ContractError::NotInitialized
+            })?;
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::NotInitialized)?;
+        if caller != core_contract && caller != admin {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::NotAuthorized);
+        }
+        caller.require_auth();
 
         // CHECKS: Get the NFT
         let mut nft: CommitmentNFT = e

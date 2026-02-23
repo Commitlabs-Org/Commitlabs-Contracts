@@ -9,7 +9,7 @@
 //! - Error conditions
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env, Map, Symbol, symbol_short,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol,
 };
 
 /// Oracle-specific errors
@@ -73,11 +73,7 @@ impl MockOracleContract {
     /// # Arguments
     /// * `admin` - The admin address for the contract
     /// * `staleness_threshold` - Maximum age of price data in seconds before considered stale
-    pub fn initialize(
-        e: Env,
-        admin: Address,
-        staleness_threshold: u64,
-    ) -> Result<(), OracleError> {
+    pub fn initialize(e: Env, admin: Address, staleness_threshold: u64) -> Result<(), OracleError> {
         if e.storage().instance().has(&DataKey::Admin) {
             return Err(OracleError::AlreadyInitialized);
         }
@@ -301,12 +297,12 @@ impl MockOracleContract {
             return Err(OracleError::Unauthorized);
         }
 
-        e.storage().instance().remove(&DataKey::Price(asset.clone()));
+        e.storage()
+            .instance()
+            .remove(&DataKey::Price(asset.clone()));
 
-        e.events().publish(
-            (Symbol::new(&e, "PriceRemoved"),),
-            asset,
-        );
+        e.events()
+            .publish((Symbol::new(&e, "PriceRemoved"),), asset);
 
         Ok(())
     }
@@ -353,10 +349,8 @@ impl MockOracleContract {
             .instance()
             .set(&DataKey::Feeder(feeder.clone()), &true);
 
-        e.events().publish(
-            (Symbol::new(&e, "FeederAdded"),),
-            feeder,
-        );
+        e.events()
+            .publish((Symbol::new(&e, "FeederAdded"),), feeder);
 
         Ok(())
     }
@@ -373,10 +367,8 @@ impl MockOracleContract {
             .instance()
             .remove(&DataKey::Feeder(feeder.clone()));
 
-        e.events().publish(
-            (Symbol::new(&e, "FeederRemoved"),),
-            feeder,
-        );
+        e.events()
+            .publish((Symbol::new(&e, "FeederRemoved"),), feeder);
 
         Ok(())
     }
@@ -397,10 +389,8 @@ impl MockOracleContract {
             .instance()
             .set(&DataKey::StalenessThreshold, &threshold);
 
-        e.events().publish(
-            (Symbol::new(&e, "ThresholdUpdated"),),
-            threshold,
-        );
+        e.events()
+            .publish((Symbol::new(&e, "ThresholdUpdated"),), threshold);
 
         Ok(())
     }
@@ -475,8 +465,15 @@ mod tests {
 
         e.as_contract(&contract_id, || {
             MockOracleContract::initialize(e.clone(), admin.clone(), 3600).unwrap();
-            MockOracleContract::set_price(e.clone(), admin.clone(), asset.clone(), 100_000_000, 8, 1000)
-                .unwrap();
+            MockOracleContract::set_price(
+                e.clone(),
+                admin.clone(),
+                asset.clone(),
+                100_000_000,
+                8,
+                1000,
+            )
+            .unwrap();
 
             let price = MockOracleContract::get_price(e.clone(), asset.clone()).unwrap();
             assert_eq!(price, 100_000_000);

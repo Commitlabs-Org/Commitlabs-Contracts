@@ -26,8 +26,10 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Add Soroban Rust target
-        run: rustup target add wasm32-unknown-unknown
+      - name: Add Soroban Rust targets
+        run: |
+          rustup target add wasm32-unknown-unknown
+          rustup target add wasm32v1-none
 
       - name: Install Stellar CLI via Homebrew
         run: |
@@ -97,6 +99,18 @@ jobs:
           cd tests/integration
           cargo test
           echo "✓ Integration tests passed"
+          
+      - name: Validate monitoring config
+        run: |
+          chmod +x monitoring/scripts/validate_monitoring_config.sh
+          monitoring/scripts/validate_monitoring_config.sh
+          echo "✓ Monitoring config validated"
+
+      - name: Validate monitoring config
+        run: |
+          chmod +x monitoring/scripts/validate_monitoring_config.sh
+          monitoring/scripts/validate_monitoring_config.sh
+          echo "✓ Monitoring config validated"
 
       - name: Run performance benchmarks
         run: |

@@ -68,6 +68,7 @@ fn test_frontend_create_commitment_flow() {
         commitment_type: String::from_str(&harness.env, "balanced"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     // Step 3: Create commitment (frontend transaction submission)
@@ -428,6 +429,7 @@ fn test_frontend_commitment_type_rules_display() {
             commitment_type: String::from_str(&harness.env, type_str),
             early_exit_penalty: 5,
             min_fee_threshold: 1000,
+            grace_period_days: 0,
         };
 
         let id = harness

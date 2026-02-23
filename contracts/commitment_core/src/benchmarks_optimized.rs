@@ -39,6 +39,7 @@ fn benchmark_create_commitment_storage_reads() {
         commitment_type: String::from_str(&env, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
     
     // Measure CPU and memory before
@@ -73,6 +74,7 @@ fn benchmark_batch_counter_updates() {
         commitment_type: String::from_str(&env, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
     
     // Create multiple commitments to test counter updates
@@ -129,6 +131,7 @@ fn benchmark_check_violations() {
         commitment_type: String::from_str(&env, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
     
     let commitment_id = client.create_commitment(&owner, &10000, &asset, &rules);
@@ -214,6 +217,7 @@ fn benchmark_settle_function() {
         commitment_type: String::from_str(&env, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
     
     let commitment_id = client.create_commitment(&owner, &10000, &asset, &rules);
@@ -253,6 +257,7 @@ fn benchmark_memory_usage() {
         commitment_type: String::from_str(&env, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
     
     env.budget().reset_unlimited();

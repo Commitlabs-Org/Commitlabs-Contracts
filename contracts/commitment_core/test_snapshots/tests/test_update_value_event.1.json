@@ -43,6 +43,14 @@
                     "storage": [
                       {
                         "key": {
+                          "symbol": "paused"
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
                           "vec": [
                             {
                               "symbol": "Admin"
@@ -171,7 +179,7 @@
                                       "symbol": "grace_period_days"
                                     },
                                     "val": {
-                                      "u32": 3
+                                      "u32": 0
                                     }
                                   },
                                   {
@@ -211,18 +219,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "CreationFeeBps"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 0
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "NftContract"
                             }
                           ]
@@ -248,24 +244,6 @@
                           "vec": [
                             {
                               "symbol": "TotalValueLocked"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "i128": {
-                            "hi": 0,
-                            "lo": 1100
-                          }
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "TotalValueLockedByAsset"
-                            },
-                            {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                             }
                           ]
                         },
@@ -491,7 +469,7 @@
                           "symbol": "grace_period_days"
                         },
                         "val": {
-                          "u32": 3
+                          "u32": 0
                         }
                       },
                       {

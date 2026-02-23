@@ -1,0 +1,66 @@
+# Monitoring and alerting configuration (Issue #65)
+# Off-chain monitoring: event indexing, alert rules, notification channels.
+# Run scripts/validate_monitoring_config.sh in CI to validate this file.
+
+metrics:
+  # Commitment creation rate (commitments per hour)
+  commitment_creation_rate:
+    enabled: true
+    threshold_warn: 0
+    threshold_critical: 0
+  # Settlement rate (settlements per hour)
+  settlement_rate:
+    enabled: true
+    threshold_warn: 0
+    threshold_critical: 0
+  # Violation rate (violations per hour)
+  violation_rate:
+    enabled: true
+    threshold_warn: 10
+    threshold_critical: 50
+  # Attestation frequency (attestations per hour)
+  attestation_frequency:
+    enabled: true
+    threshold_warn: 0
+    threshold_critical: 0
+  # Gas usage (running average per tx)
+  gas_usage:
+    enabled: true
+    threshold_warn: 10000000
+    threshold_critical: 50000000
+  # Error rate (errors per 100 tx)
+  error_rate:
+    enabled: true
+    threshold_warn: 5
+    threshold_critical: 20
+
+events:
+  index:
+    - Mint
+    - Transfer
+    - Settle
+    - Pause
+    - Unpause
+    - CoreContractSet
+  commitment_core:
+    - create_commitment
+    - settle
+    - early_exit
+  attestation_engine:
+    - attest
+
+alerts:
+  critical:
+    - contract_paused
+    - emergency_mode_enabled
+    - error_rate_exceeded
+  anomaly:
+    - commitment_creation_spike
+    - settlement_rate_drop
+  threshold:
+    - violation_rate_high
+    - gas_usage_high
+
+notification:
+  channels: []
+  # Example: slack_webhook, pagerduty, email (configure per environment)

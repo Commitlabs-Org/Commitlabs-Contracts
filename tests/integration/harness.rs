@@ -273,6 +273,7 @@ impl TestHarness {
             commitment_type: String::from_str(&self.env, "balanced"),
             early_exit_penalty: 5,
             min_fee_threshold: 1000,
+            grace_period_days: 0,
         }
     }
 
@@ -284,6 +285,7 @@ impl TestHarness {
             commitment_type: String::from_str(&self.env, "safe"),
             early_exit_penalty: 3,
             min_fee_threshold: 500,
+            grace_period_days: 0,
         }
     }
 
@@ -295,6 +297,7 @@ impl TestHarness {
             commitment_type: String::from_str(&self.env, "aggressive"),
             early_exit_penalty: 10,
             min_fee_threshold: 2000,
+            grace_period_days: 0,
         }
     }
 

@@ -3,11 +3,14 @@
 
 #![cfg(test)]
 
+use attestation_engine::{AttestationEngineContract, AttestationEngineContractClient};
 use commitment_core::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
 use commitment_nft::{CommitmentNFTContract, CommitmentNFTContractClient};
-use attestation_engine::{AttestationEngineContract, AttestationEngineContractClient};
 use price_oracle::{PriceOracleContract, PriceOracleContractClient};
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String, Map};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, Map, String,
+};
 
 pub struct IntegrationTestFixture {
     pub env: Env,
@@ -44,7 +47,8 @@ impl IntegrationTestFixture {
 
         // Deploy Attestation Engine contract
         let attestation_contract_id = env.register_contract(None, AttestationEngineContract);
-        let attestation_client = AttestationEngineContractClient::new(&env, &attestation_contract_id);
+        let attestation_client =
+            AttestationEngineContractClient::new(&env, &attestation_contract_id);
         attestation_client.initialize(&admin, &core_contract_id);
 
         IntegrationTestFixture {
@@ -139,14 +143,22 @@ fn test_commitment_value_update_with_health_tracking() {
     );
 
     // Update value in core contract
-    fixture.core_client.update_value(&commitment_id, &1050_0000000);
+    fixture
+        .core_client
+        .update_value(&fixture.admin, &commitment_id, &1050_0000000);
 
     // Record health metrics in attestation engine
-    fixture.attestation_client.record_fees(&fixture.admin, &commitment_id, &50_0000000);
-    fixture.attestation_client.record_drawdown(&fixture.admin, &commitment_id, &0);
+    fixture
+        .attestation_client
+        .record_fees(&fixture.admin, &commitment_id, &50_0000000);
+    fixture
+        .attestation_client
+        .record_drawdown(&fixture.admin, &commitment_id, &0);
 
     // Verify metrics
-    let metrics = fixture.attestation_client.get_health_metrics(&commitment_id);
+    let metrics = fixture
+        .attestation_client
+        .get_health_metrics(&commitment_id);
     assert_eq!(metrics.fees_generated, 50_0000000);
 
     // Verify commitment status
@@ -171,7 +183,9 @@ fn test_settlement_flow_end_to_end() {
     );
 
     // Record some fees
-    fixture.attestation_client.record_fees(&fixture.admin, &commitment_id, &100_0000000);
+    fixture
+        .attestation_client
+        .record_fees(&fixture.admin, &commitment_id, &100_0000000);
 
     // Fast forward past expiration
     let commitment = fixture.core_client.get_commitment(&commitment_id);
@@ -184,7 +198,10 @@ fn test_settlement_flow_end_to_end() {
 
     // Verify commitment is settled
     let settled_commitment = fixture.core_client.get_commitment(&commitment_id);
-    assert_eq!(settled_commitment.status, String::from_str(&fixture.env, "settled"));
+    assert_eq!(
+        settled_commitment.status,
+        String::from_str(&fixture.env, "settled")
+    );
 }
 
 #[test]
@@ -210,7 +227,9 @@ fn test_early_exit_flow_end_to_end() {
     );
 
     // Update value
-    fixture.core_client.update_value(&commitment_id, &1100_0000000);
+    fixture
+        .core_client
+        .update_value(&fixture.admin, &commitment_id, &1100_0000000);
 
     // Record attestation for early exit
     let mut data = Map::new(&fixture.env);
@@ -228,11 +247,16 @@ fn test_early_exit_flow_end_to_end() {
     );
 
     // Perform early exit
-    fixture.core_client.early_exit(&commitment_id, &fixture.owner);
+    fixture
+        .core_client
+        .early_exit(&commitment_id, &fixture.owner);
 
     // Verify commitment is marked as early exit
     let commitment = fixture.core_client.get_commitment(&commitment_id);
-    assert_eq!(commitment.status, String::from_str(&fixture.env, "early_exit"));
+    assert_eq!(
+        commitment.status,
+        String::from_str(&fixture.env, "early_exit")
+    );
 }
 
 #[test]
@@ -251,7 +275,9 @@ fn test_compliance_verification_flow() {
     );
 
     // Record fees and attest - commitment in good standing
-    fixture.attestation_client.record_fees(&fixture.admin, &commitment_id, &100_0000000);
+    fixture
+        .attestation_client
+        .record_fees(&fixture.admin, &commitment_id, &100_0000000);
 
     let mut data = Map::new(&fixture.env);
     data.set(
@@ -272,7 +298,9 @@ fn test_compliance_verification_flow() {
     assert!(is_compliant);
 
     // Calculate compliance score
-    let score = fixture.attestation_client.calculate_compliance_score(&commitment_id);
+    let score = fixture
+        .attestation_client
+        .calculate_compliance_score(&commitment_id);
     assert!(score > 0);
 }
 
@@ -312,20 +340,34 @@ fn test_gas_multiple_operations() {
     );
 
     // Multiple update operations
-    fixture.core_client.update_value(&commitment_id, &1010_0000000);
-    fixture.core_client.update_value(&commitment_id, &1020_0000000);
-    fixture.core_client.update_value(&commitment_id, &1030_0000000);
+    fixture
+        .core_client
+        .update_value(&fixture.admin, &commitment_id, &1010_0000000);
+    fixture
+        .core_client
+        .update_value(&fixture.admin, &commitment_id, &1020_0000000);
+    fixture
+        .core_client
+        .update_value(&fixture.admin, &commitment_id, &1030_0000000);
 
     // Multiple attestation operations
-    fixture.attestation_client.record_fees(&fixture.admin, &commitment_id, &10_0000000);
-    fixture.attestation_client.record_fees(&fixture.admin, &commitment_id, &20_0000000);
-    fixture.attestation_client.record_fees(&fixture.admin, &commitment_id, &30_0000000);
+    fixture
+        .attestation_client
+        .record_fees(&fixture.admin, &commitment_id, &10_0000000);
+    fixture
+        .attestation_client
+        .record_fees(&fixture.admin, &commitment_id, &20_0000000);
+    fixture
+        .attestation_client
+        .record_fees(&fixture.admin, &commitment_id, &30_0000000);
 
     // Verify final state
     let commitment = fixture.core_client.get_commitment(&commitment_id);
     assert_eq!(commitment.current_value, 1030_0000000);
 
-    let metrics = fixture.attestation_client.get_health_metrics(&commitment_id);
+    let metrics = fixture
+        .attestation_client
+        .get_health_metrics(&commitment_id);
     assert_eq!(metrics.fees_generated, 60_0000000);
 }
 

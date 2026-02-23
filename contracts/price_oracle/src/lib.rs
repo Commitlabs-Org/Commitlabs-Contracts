@@ -99,7 +99,11 @@ fn write_version(e: &Env, version: u32) {
 }
 
 fn read_config(e: &Env) -> OracleConfig {
-    if let Some(config) = e.storage().instance().get::<_, OracleConfig>(&DataKey::OracleConfig) {
+    if let Some(config) = e
+        .storage()
+        .instance()
+        .get::<_, OracleConfig>(&DataKey::OracleConfig)
+    {
         return config;
     }
     let legacy = e
@@ -249,8 +253,8 @@ impl PriceOracleContract {
         if data.price < 0 {
             return Err(OracleError::InvalidPrice);
         }
-        let max_staleness = max_staleness_override
-            .unwrap_or_else(|| read_config(&e).max_staleness_seconds);
+        let max_staleness =
+            max_staleness_override.unwrap_or_else(|| read_config(&e).max_staleness_seconds);
         let now = e.ledger().timestamp();
         if now < data.updated_at || now - data.updated_at > max_staleness {
             return Err(OracleError::StalePrice);
@@ -288,11 +292,7 @@ impl PriceOracleContract {
     }
 
     /// Upgrade contract WASM (admin-only).
-    pub fn upgrade(
-        e: Env,
-        caller: Address,
-        new_wasm_hash: BytesN<32>,
-    ) -> Result<(), OracleError> {
+    pub fn upgrade(e: Env, caller: Address, new_wasm_hash: BytesN<32>) -> Result<(), OracleError> {
         require_admin_result(&e, &caller)?;
         require_valid_wasm_hash(&e, &new_wasm_hash)?;
         e.deployer().update_current_contract_wasm(new_wasm_hash);

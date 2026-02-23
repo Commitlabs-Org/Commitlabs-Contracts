@@ -1,5 +1,5 @@
 #![allow(unused)]
-use soroban_sdk::{contracttype, Env, String, Vec, Address, Map, IntoVal, TryFromVal, Val};
+use soroban_sdk::{contracttype, Address, Env, IntoVal, Map, String, TryFromVal, Val, Vec};
 
 /// Batch processing mode for handling multiple operations
 #[contracttype]
@@ -191,7 +191,8 @@ impl StateSnapshot {
 
     /// Record a commitment state change
     pub fn record_commitment_change(&mut self, commitment_id: String, old_state: String) {
-        self.commitment_changes.push_back((commitment_id, old_state));
+        self.commitment_changes
+            .push_back((commitment_id, old_state));
     }
 
     /// Record a counter change
@@ -224,7 +225,12 @@ impl RollbackHelper {
     }
 
     /// Create an error indicating rollback is needed
-    pub fn create_rollback_error(e: &Env, index: u32, error_code: u32, context: &str) -> BatchError {
+    pub fn create_rollback_error(
+        e: &Env,
+        index: u32,
+        error_code: u32,
+        context: &str,
+    ) -> BatchError {
         BatchError {
             index,
             error_code,
@@ -258,9 +264,7 @@ impl BatchProcessor {
 
     /// Set batch configuration (admin only)
     pub fn set_config(e: &Env, config: BatchConfig) {
-        e.storage()
-            .instance()
-            .set(&BatchDataKey::Config, &config);
+        e.storage().instance().set(&BatchDataKey::Config, &config);
     }
 
     /// Check if batch operations are enabled
@@ -290,7 +294,11 @@ impl BatchProcessor {
 
     /// Validate and enforce batch size limits
     /// Returns Ok(()) if valid, Err(error_code) if invalid
-    pub fn enforce_batch_limits(e: &Env, batch_size: u32, contract_name: Option<String>) -> Result<(), u32> {
+    pub fn enforce_batch_limits(
+        e: &Env,
+        batch_size: u32,
+        contract_name: Option<String>,
+    ) -> Result<(), u32> {
         // Check if batch operations are enabled
         if !Self::is_enabled(e) {
             return Err(3); // Error code: Batch operations disabled
@@ -340,7 +348,7 @@ impl BatchProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{Env, String, Vec, contract, contractimpl};
+    use soroban_sdk::{contract, contractimpl, Env, String, Vec};
 
     // Test contract for batch operations
     #[contract]

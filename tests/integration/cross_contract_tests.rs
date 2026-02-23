@@ -231,6 +231,7 @@ fn test_commitment_settlement_calls_nft_settle() {
         commitment_type: String::from_str(&harness.env, "balanced"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness

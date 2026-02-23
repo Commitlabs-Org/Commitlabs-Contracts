@@ -86,6 +86,7 @@ fn benchmark_create_commitment() {
         commitment_type: String::from_str(&e, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let mut metrics = BenchmarkMetrics::new("create_commitment");
@@ -119,6 +120,7 @@ fn benchmark_get_commitment() {
         commitment_type: String::from_str(&e, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let commitment_id = e.as_contract(&contract_id, || {
@@ -156,6 +158,7 @@ fn benchmark_check_violations() {
         commitment_type: String::from_str(&e, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let commitment_id = e.as_contract(&contract_id, || {
@@ -226,6 +229,7 @@ fn benchmark_batch_create_commitments() {
         commitment_type: String::from_str(&e, "balanced"),
         early_exit_penalty: 10,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let mut metrics = BenchmarkMetrics::new("batch_create_commitments_10");

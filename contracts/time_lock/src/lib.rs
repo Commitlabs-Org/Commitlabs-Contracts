@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec, symbol_short,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
 
 /// Minimum delay for any timelock action (1 day in seconds)
@@ -84,20 +84,24 @@ impl TimelockContract {
         }
 
         env.storage().instance().set(&StorageKey::Admin, &admin);
-        env.storage().instance().set(&StorageKey::ActionCounter, &0u64);
-        
+        env.storage()
+            .instance()
+            .set(&StorageKey::ActionCounter, &0u64);
+
         let empty_vec: Vec<u64> = Vec::new(&env);
-        env.storage().instance().set(&StorageKey::ActionIds, &empty_vec);
+        env.storage()
+            .instance()
+            .set(&StorageKey::ActionIds, &empty_vec);
     }
 
     /// Queue a new action with timelock
-    /// 
+    ///
     /// # Arguments
     /// * `action_type` - Type of action being queued
     /// * `target` - Target address for the action
     /// * `data` - Action data/parameters as string
     /// * `delay` - Custom delay in seconds (must be >= action type minimum)
-    /// 
+    ///
     /// # Returns
     /// * Action ID
     pub fn queue_action(
@@ -120,9 +124,15 @@ impl TimelockContract {
         }
 
         // Get and increment counter
-        let mut counter: u64 = env.storage().instance().get(&StorageKey::ActionCounter).unwrap();
+        let mut counter: u64 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ActionCounter)
+            .unwrap();
         counter += 1;
-        env.storage().instance().set(&StorageKey::ActionCounter, &counter);
+        env.storage()
+            .instance()
+            .set(&StorageKey::ActionCounter, &counter);
 
         // Create queued action
         let current_time = env.ledger().timestamp();
@@ -151,7 +161,9 @@ impl TimelockContract {
             .get(&StorageKey::ActionIds)
             .unwrap();
         action_ids.push_back(counter);
-        env.storage().instance().set(&StorageKey::ActionIds, &action_ids);
+        env.storage()
+            .instance()
+            .set(&StorageKey::ActionIds, &action_ids);
 
         // Emit event
         env.events().publish(
@@ -164,7 +176,7 @@ impl TimelockContract {
 
     /// Execute a queued action after the delay has passed
     /// Anyone can execute a queued action once the delay has passed
-    /// 
+    ///
     /// # Arguments
     /// * `action_id` - ID of the action to execute
     pub fn execute_action(env: Env, action_id: u64) -> Result<(), Error> {
@@ -207,7 +219,7 @@ impl TimelockContract {
 
     /// Cancel a queued action
     /// Only admin can cancel actions, and only before they are executed
-    /// 
+    ///
     /// # Arguments
     /// * `action_id` - ID of the action to cancel
     pub fn cancel_action(env: Env, action_id: u64) -> Result<(), Error> {
@@ -246,10 +258,10 @@ impl TimelockContract {
     }
 
     /// Get details of a queued action
-    /// 
+    ///
     /// # Arguments
     /// * `action_id` - ID of the action
-    /// 
+    ///
     /// # Returns
     /// * QueuedAction details
     pub fn get_action(env: Env, action_id: u64) -> Result<QueuedAction, Error> {
@@ -260,7 +272,7 @@ impl TimelockContract {
     }
 
     /// Get all queued action IDs
-    /// 
+    ///
     /// # Returns
     /// * Vector of action IDs
     pub fn get_all_actions(env: Env) -> Vec<u64> {
@@ -271,7 +283,7 @@ impl TimelockContract {
     }
 
     /// Get pending actions (not executed and not cancelled)
-    /// 
+    ///
     /// # Returns
     /// * Vector of pending action IDs
     pub fn get_pending_actions(env: Env) -> Vec<u64> {
@@ -279,7 +291,11 @@ impl TimelockContract {
         let mut pending = Vec::new(&env);
 
         for id in all_ids.iter() {
-            if let Some(action) = env.storage().persistent().get::<StorageKey, QueuedAction>(&StorageKey::Action(id)) {
+            if let Some(action) = env
+                .storage()
+                .persistent()
+                .get::<StorageKey, QueuedAction>(&StorageKey::Action(id))
+            {
                 if !action.executed && !action.cancelled {
                     pending.push_back(id);
                 }
@@ -290,7 +306,7 @@ impl TimelockContract {
     }
 
     /// Get executable actions (pending and past delay)
-    /// 
+    ///
     /// # Returns
     /// * Vector of executable action IDs
     pub fn get_executable_actions(env: Env) -> Vec<u64> {
@@ -299,7 +315,11 @@ impl TimelockContract {
         let current_time = env.ledger().timestamp();
 
         for id in pending.iter() {
-            if let Some(action) = env.storage().persistent().get::<StorageKey, QueuedAction>(&StorageKey::Action(id)) {
+            if let Some(action) = env
+                .storage()
+                .persistent()
+                .get::<StorageKey, QueuedAction>(&StorageKey::Action(id))
+            {
                 if current_time >= action.executable_at {
                     executable.push_back(id);
                 }
@@ -310,7 +330,7 @@ impl TimelockContract {
     }
 
     /// Get the current admin address
-    /// 
+    ///
     /// # Returns
     /// * Admin address
     pub fn get_admin(env: Env) -> Address {
@@ -318,10 +338,10 @@ impl TimelockContract {
     }
 
     /// Get the minimum delay for an action type
-    /// 
+    ///
     /// # Arguments
     /// * `action_type` - Type of action
-    /// 
+    ///
     /// # Returns
     /// * Minimum delay in seconds
     pub fn get_min_delay(env: Env, action_type: ActionType) -> u64 {
@@ -330,7 +350,7 @@ impl TimelockContract {
     }
 
     /// Get the maximum allowed delay
-    /// 
+    ///
     /// # Returns
     /// * Maximum delay in seconds
     pub fn get_max_delay(env: Env) -> u64 {
@@ -339,7 +359,7 @@ impl TimelockContract {
     }
 
     /// Get the action counter (total actions queued)
-    /// 
+    ///
     /// # Returns
     /// * Total number of actions queued
     pub fn get_action_count(env: Env) -> u64 {

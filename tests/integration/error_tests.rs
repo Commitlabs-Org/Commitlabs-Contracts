@@ -218,6 +218,7 @@ fn test_error_zero_duration_commitment() {
         commitment_type: String::from_str(&harness.env, "balanced"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     harness
@@ -249,6 +250,7 @@ fn test_error_invalid_max_loss_percent() {
         commitment_type: String::from_str(&harness.env, "balanced"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     harness
@@ -280,6 +282,7 @@ fn test_error_invalid_commitment_type() {
         commitment_type: String::from_str(&harness.env, "invalid_type"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     harness
@@ -495,6 +498,7 @@ fn test_error_double_settlement() {
         commitment_type: String::from_str(&harness.env, "balanced"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness
@@ -549,6 +553,7 @@ fn test_boundary_max_duration() {
         commitment_type: String::from_str(&harness.env, "balanced"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     // This should succeed (no explicit max duration)
@@ -617,6 +622,7 @@ fn test_boundary_max_loss_percent_100() {
         commitment_type: String::from_str(&harness.env, "aggressive"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness
@@ -654,6 +660,7 @@ fn test_boundary_max_loss_percent_0() {
         commitment_type: String::from_str(&harness.env, "safe"),
         early_exit_penalty: 0,
         min_fee_threshold: 0,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness

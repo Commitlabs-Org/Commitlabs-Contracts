@@ -46,6 +46,7 @@ fn test_create_commitment_forbidden_in_emergency() {
         commitment_type: String::from_str(&e, "safe"),
         early_exit_penalty: 5,
         min_fee_threshold: 100,
+        grace_period_days: 0,
     };
 
     // This should panic because of emergency mode

@@ -158,7 +158,7 @@
                                       "symbol": "grace_period_days"
                                     },
                                     "val": {
-                                      "u32": 3
+                                      "u32": 0
                                     }
                                   },
                                   {

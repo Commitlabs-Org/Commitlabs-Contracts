@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, symbol_short,
-    Address, Env, Vec, Symbol, token
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
+    Vec,
 };
 
 // ============================================================================
@@ -161,15 +161,25 @@ impl CommitmentMarketplace {
         admin.require_auth();
 
         e.storage().instance().set(&DataKey::Admin, &admin);
-        e.storage().instance().set(&DataKey::NFTContract, &nft_contract);
-        e.storage().instance().set(&DataKey::MarketplaceFee, &fee_basis_points);
-        e.storage().instance().set(&DataKey::FeeRecipient, &fee_recipient);
+        e.storage()
+            .instance()
+            .set(&DataKey::NFTContract, &nft_contract);
+        e.storage()
+            .instance()
+            .set(&DataKey::MarketplaceFee, &fee_basis_points);
+        e.storage()
+            .instance()
+            .set(&DataKey::FeeRecipient, &fee_recipient);
 
         let active_listings: Vec<u32> = Vec::new(&e);
-        e.storage().instance().set(&DataKey::ActiveListings, &active_listings);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveListings, &active_listings);
 
         let active_auctions: Vec<u32> = Vec::new(&e);
-        e.storage().instance().set(&DataKey::ActiveAuctions, &active_auctions);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveAuctions, &active_auctions);
 
         Ok(())
     }
@@ -187,12 +197,12 @@ impl CommitmentMarketplace {
         let admin: Address = Self::get_admin(e.clone())?;
         admin.require_auth();
 
-        e.storage().instance().set(&DataKey::MarketplaceFee, &fee_basis_points);
+        e.storage()
+            .instance()
+            .set(&DataKey::MarketplaceFee, &fee_basis_points);
 
-        e.events().publish(
-            (Symbol::new(&e, "FeeUpdated"),),
-            fee_basis_points,
-        );
+        e.events()
+            .publish((Symbol::new(&e, "FeeUpdated"),), fee_basis_points);
 
         Ok(())
     }
@@ -219,7 +229,8 @@ impl CommitmentMarketplace {
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -232,22 +243,29 @@ impl CommitmentMarketplace {
         seller.require_auth();
 
         if price <= 0 {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidPrice);
         }
 
         // Check if listing already exists
         if e.storage().persistent().has(&DataKey::Listing(token_id)) {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::ListingExists);
         }
 
         // Verify seller owns the NFT (external call - after checks)
-        let _nft_contract: Address = e.storage()
+        let _nft_contract: Address = e
+            .storage()
             .instance()
             .get(&DataKey::NFTContract)
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::NotInitialized
             })?;
 
@@ -264,18 +282,25 @@ impl CommitmentMarketplace {
             listed_at: e.ledger().timestamp(),
         };
 
-        e.storage().persistent().set(&DataKey::Listing(token_id), &listing);
+        e.storage()
+            .persistent()
+            .set(&DataKey::Listing(token_id), &listing);
 
         // Add to active listings
-        let mut active_listings: Vec<u32> = e.storage()
+        let mut active_listings: Vec<u32> = e
+            .storage()
             .instance()
             .get(&DataKey::ActiveListings)
             .unwrap_or(Vec::new(&e));
         active_listings.push_back(token_id);
-        e.storage().instance().set(&DataKey::ActiveListings, &active_listings);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveListings, &active_listings);
 
         // Clear reentrancy guard
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
         e.events().publish(
@@ -292,7 +317,8 @@ impl CommitmentMarketplace {
     /// Uses checks-effects-interactions pattern
     pub fn cancel_listing(e: Env, seller: Address, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -304,16 +330,21 @@ impl CommitmentMarketplace {
         // CHECKS
         seller.require_auth();
 
-        let listing: Listing = e.storage()
+        let listing: Listing = e
+            .storage()
             .persistent()
             .get(&DataKey::Listing(token_id))
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::ListingNotFound
             })?;
 
         if listing.seller != seller {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::NotSeller);
         }
 
@@ -322,23 +353,26 @@ impl CommitmentMarketplace {
         e.storage().persistent().remove(&DataKey::Listing(token_id));
 
         // Remove from active listings
-        let mut active_listings: Vec<u32> = e.storage()
+        let mut active_listings: Vec<u32> = e
+            .storage()
             .instance()
             .get(&DataKey::ActiveListings)
             .unwrap_or(Vec::new(&e));
         if let Some(index) = active_listings.iter().position(|id| id == token_id) {
             active_listings.remove(index as u32);
         }
-        e.storage().instance().set(&DataKey::ActiveListings, &active_listings);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveListings, &active_listings);
 
         // Clear reentrancy guard
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
-        e.events().publish(
-            (symbol_short!("ListCncl"), token_id),
-            seller,
-        );
+        e.events()
+            .publish((symbol_short!("ListCncl"), token_id), seller);
 
         Ok(())
     }
@@ -353,7 +387,8 @@ impl CommitmentMarketplace {
     /// Critical - handles token transfers. Protected with reentrancy guard.
     pub fn buy_nft(e: Env, buyer: Address, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -365,37 +400,49 @@ impl CommitmentMarketplace {
         // CHECKS
         buyer.require_auth();
 
-        let listing: Listing = e.storage()
+        let listing: Listing = e
+            .storage()
             .persistent()
             .get(&DataKey::Listing(token_id))
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::ListingNotFound
             })?;
 
         if listing.seller == buyer {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::CannotBuyOwnListing);
         }
 
-        let fee_basis_points: u32 = e.storage()
+        let fee_basis_points: u32 = e
+            .storage()
             .instance()
             .get(&DataKey::MarketplaceFee)
             .unwrap_or(0);
 
-        let fee_recipient: Address = e.storage()
+        let fee_recipient: Address = e
+            .storage()
             .instance()
             .get(&DataKey::FeeRecipient)
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::NotInitialized
             })?;
 
-        let _nft_contract: Address = e.storage()
+        let _nft_contract: Address = e
+            .storage()
             .instance()
             .get(&DataKey::NFTContract)
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::NotInitialized
             })?;
 
@@ -408,14 +455,17 @@ impl CommitmentMarketplace {
         e.storage().persistent().remove(&DataKey::Listing(token_id));
 
         // Remove from active listings
-        let mut active_listings: Vec<u32> = e.storage()
+        let mut active_listings: Vec<u32> = e
+            .storage()
             .instance()
             .get(&DataKey::ActiveListings)
             .unwrap_or(Vec::new(&e));
         if let Some(index) = active_listings.iter().position(|id| id == token_id) {
             active_listings.remove(index as u32);
         }
-        e.storage().instance().set(&DataKey::ActiveListings, &active_listings);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveListings, &active_listings);
 
         // INTERACTIONS - External calls AFTER state changes
         // Transfer payment token from buyer to seller
@@ -434,7 +484,9 @@ impl CommitmentMarketplace {
         // For this implementation, we assume the transfer happens correctly
 
         // Clear reentrancy guard
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
         e.events().publish(
@@ -455,7 +507,8 @@ impl CommitmentMarketplace {
 
     /// Get all active listings
     pub fn get_all_listings(e: Env) -> Vec<Listing> {
-        let active_listings: Vec<u32> = e.storage()
+        let active_listings: Vec<u32> = e
+            .storage()
             .instance()
             .get(&DataKey::ActiveListings)
             .unwrap_or(Vec::new(&e));
@@ -463,7 +516,11 @@ impl CommitmentMarketplace {
         let mut listings: Vec<Listing> = Vec::new(&e);
 
         for token_id in active_listings.iter() {
-            if let Some(listing) = e.storage().persistent().get::<_, Listing>(&DataKey::Listing(token_id)) {
+            if let Some(listing) = e
+                .storage()
+                .persistent()
+                .get::<_, Listing>(&DataKey::Listing(token_id))
+            {
                 listings.push_back(listing);
             }
         }
@@ -487,7 +544,8 @@ impl CommitmentMarketplace {
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -500,7 +558,9 @@ impl CommitmentMarketplace {
         offerer.require_auth();
 
         if amount <= 0 {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidOfferAmount);
         }
 
@@ -513,7 +573,8 @@ impl CommitmentMarketplace {
             created_at: e.ledger().timestamp(),
         };
 
-        let mut offers: Vec<Offer> = e.storage()
+        let mut offers: Vec<Offer> = e
+            .storage()
             .persistent()
             .get(&DataKey::Offers(token_id))
             .unwrap_or(Vec::new(&e));
@@ -521,16 +582,22 @@ impl CommitmentMarketplace {
         // Check if offerer already has an offer
         for existing_offer in offers.iter() {
             if existing_offer.offerer == offerer {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 return Err(MarketplaceError::OfferExists);
             }
         }
 
         offers.push_back(offer);
-        e.storage().persistent().set(&DataKey::Offers(token_id), &offers);
+        e.storage()
+            .persistent()
+            .set(&DataKey::Offers(token_id), &offers);
 
         // Clear reentrancy guard
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
         e.events().publish(
@@ -552,7 +619,8 @@ impl CommitmentMarketplace {
         offerer: Address,
     ) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -564,33 +632,44 @@ impl CommitmentMarketplace {
         // CHECKS
         seller.require_auth();
 
-        let offers: Vec<Offer> = e.storage()
+        let offers: Vec<Offer> = e
+            .storage()
             .persistent()
             .get(&DataKey::Offers(token_id))
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::OfferNotFound
             })?;
 
         // Find the offer
-        let offer_index = offers.iter().position(|o| o.offerer == offerer)
+        let offer_index = offers
+            .iter()
+            .position(|o| o.offerer == offerer)
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::OfferNotFound
             })?;
 
         let offer = offers.get(offer_index as u32).unwrap();
 
-        let fee_basis_points: u32 = e.storage()
+        let fee_basis_points: u32 = e
+            .storage()
             .instance()
             .get(&DataKey::MarketplaceFee)
             .unwrap_or(0);
 
-        let fee_recipient: Address = e.storage()
+        let fee_recipient: Address = e
+            .storage()
             .instance()
             .get(&DataKey::FeeRecipient)
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::NotInitialized
             })?;
 
@@ -606,14 +685,17 @@ impl CommitmentMarketplace {
         if e.storage().persistent().has(&DataKey::Listing(token_id)) {
             e.storage().persistent().remove(&DataKey::Listing(token_id));
 
-            let mut active_listings: Vec<u32> = e.storage()
+            let mut active_listings: Vec<u32> = e
+                .storage()
                 .instance()
                 .get(&DataKey::ActiveListings)
                 .unwrap_or(Vec::new(&e));
             if let Some(index) = active_listings.iter().position(|id| id == token_id) {
                 active_listings.remove(index as u32);
             }
-            e.storage().instance().set(&DataKey::ActiveListings, &active_listings);
+            e.storage()
+                .instance()
+                .set(&DataKey::ActiveListings, &active_listings);
         }
 
         // INTERACTIONS
@@ -629,7 +711,9 @@ impl CommitmentMarketplace {
         // Note: Use NFT contract client in production
 
         // Clear reentrancy guard
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
         e.events().publish(
@@ -644,12 +728,15 @@ impl CommitmentMarketplace {
     pub fn cancel_offer(e: Env, offerer: Address, token_id: u32) -> Result<(), MarketplaceError> {
         offerer.require_auth();
 
-        let mut offers: Vec<Offer> = e.storage()
+        let mut offers: Vec<Offer> = e
+            .storage()
             .persistent()
             .get(&DataKey::Offers(token_id))
             .ok_or(MarketplaceError::OfferNotFound)?;
 
-        let offer_index = offers.iter().position(|o| o.offerer == offerer)
+        let offer_index = offers
+            .iter()
+            .position(|o| o.offerer == offerer)
             .ok_or(MarketplaceError::OfferNotFound)?;
 
         offers.remove(offer_index as u32);
@@ -657,13 +744,13 @@ impl CommitmentMarketplace {
         if offers.is_empty() {
             e.storage().persistent().remove(&DataKey::Offers(token_id));
         } else {
-            e.storage().persistent().set(&DataKey::Offers(token_id), &offers);
+            e.storage()
+                .persistent()
+                .set(&DataKey::Offers(token_id), &offers);
         }
 
-        e.events().publish(
-            (symbol_short!("OfferCanc"), token_id),
-            offerer,
-        );
+        e.events()
+            .publish((symbol_short!("OfferCanc"), token_id), offerer);
 
         Ok(())
     }
@@ -693,7 +780,8 @@ impl CommitmentMarketplace {
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -706,17 +794,23 @@ impl CommitmentMarketplace {
         seller.require_auth();
 
         if starting_price <= 0 {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidPrice);
         }
 
         if duration_seconds == 0 {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidDuration);
         }
 
         if e.storage().persistent().has(&DataKey::Auction(token_id)) {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::ListingExists);
         }
 
@@ -736,17 +830,24 @@ impl CommitmentMarketplace {
             ended: false,
         };
 
-        e.storage().persistent().set(&DataKey::Auction(token_id), &auction);
+        e.storage()
+            .persistent()
+            .set(&DataKey::Auction(token_id), &auction);
 
-        let mut active_auctions: Vec<u32> = e.storage()
+        let mut active_auctions: Vec<u32> = e
+            .storage()
             .instance()
             .get(&DataKey::ActiveAuctions)
             .unwrap_or(Vec::new(&e));
         active_auctions.push_back(token_id);
-        e.storage().instance().set(&DataKey::ActiveAuctions, &active_auctions);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveAuctions, &active_auctions);
 
         // Clear reentrancy guard
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
         e.events().publish(
@@ -768,7 +869,8 @@ impl CommitmentMarketplace {
         bid_amount: i128,
     ) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -780,27 +882,36 @@ impl CommitmentMarketplace {
         // CHECKS
         bidder.require_auth();
 
-        let mut auction: Auction = e.storage()
+        let mut auction: Auction = e
+            .storage()
             .persistent()
             .get(&DataKey::Auction(token_id))
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::AuctionNotFound
             })?;
 
         let current_time = e.ledger().timestamp();
         if current_time >= auction.ends_at {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::AuctionEnded);
         }
 
         if bid_amount <= auction.current_bid {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::BidTooLow);
         }
 
         if auction.seller == bidder {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::CannotBuyOwnListing);
         }
 
@@ -811,7 +922,9 @@ impl CommitmentMarketplace {
         auction.current_bid = bid_amount;
         auction.highest_bidder = Some(bidder.clone());
 
-        e.storage().persistent().set(&DataKey::Auction(token_id), &auction);
+        e.storage()
+            .persistent()
+            .set(&DataKey::Auction(token_id), &auction);
 
         // INTERACTIONS
         let payment_token_client = token::Client::new(&e, &auction.payment_token);
@@ -821,17 +934,21 @@ impl CommitmentMarketplace {
 
         // Refund previous bidder if exists
         if let Some(prev_bidder) = previous_bidder {
-            payment_token_client.transfer(&e.current_contract_address(), &prev_bidder, &previous_bid);
+            payment_token_client.transfer(
+                &e.current_contract_address(),
+                &prev_bidder,
+                &previous_bid,
+            );
         }
 
         // Clear reentrancy guard
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
-        e.events().publish(
-            (symbol_short!("BidPlaced"), token_id),
-            (bidder, bid_amount),
-        );
+        e.events()
+            .publish((symbol_short!("BidPlaced"), token_id), (bidder, bid_amount));
 
         Ok(())
     }
@@ -842,7 +959,8 @@ impl CommitmentMarketplace {
     /// Critical - handles final settlement. Protected with reentrancy guard.
     pub fn end_auction(e: Env, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
-        let guard: bool = e.storage()
+        let guard: bool = e
+            .storage()
             .instance()
             .get(&DataKey::ReentrancyGuard)
             .unwrap_or(false);
@@ -852,51 +970,67 @@ impl CommitmentMarketplace {
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
 
         // CHECKS
-        let mut auction: Auction = e.storage()
+        let mut auction: Auction = e
+            .storage()
             .persistent()
             .get(&DataKey::Auction(token_id))
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::AuctionNotFound
             })?;
 
         let current_time = e.ledger().timestamp();
         if current_time < auction.ends_at {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::AuctionNotEnded);
         }
 
         if auction.ended {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::AuctionEnded);
         }
 
-        let fee_basis_points: u32 = e.storage()
+        let fee_basis_points: u32 = e
+            .storage()
             .instance()
             .get(&DataKey::MarketplaceFee)
             .unwrap_or(0);
 
-        let fee_recipient: Address = e.storage()
+        let fee_recipient: Address = e
+            .storage()
             .instance()
             .get(&DataKey::FeeRecipient)
             .ok_or_else(|| {
-                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::NotInitialized
             })?;
 
         // EFFECTS
         auction.ended = true;
-        e.storage().persistent().set(&DataKey::Auction(token_id), &auction);
+        e.storage()
+            .persistent()
+            .set(&DataKey::Auction(token_id), &auction);
 
         // Remove from active auctions
-        let mut active_auctions: Vec<u32> = e.storage()
+        let mut active_auctions: Vec<u32> = e
+            .storage()
             .instance()
             .get(&DataKey::ActiveAuctions)
             .unwrap_or(Vec::new(&e));
         if let Some(index) = active_auctions.iter().position(|id| id == token_id) {
             active_auctions.remove(index as u32);
         }
-        e.storage().instance().set(&DataKey::ActiveAuctions, &active_auctions);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveAuctions, &active_auctions);
 
         // INTERACTIONS
         if let Some(winner) = auction.highest_bidder {
@@ -907,18 +1041,28 @@ impl CommitmentMarketplace {
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
 
             // Transfer payment from escrow to seller
-            payment_token_client.transfer(&e.current_contract_address(), &auction.seller, &seller_proceeds);
+            payment_token_client.transfer(
+                &e.current_contract_address(),
+                &auction.seller,
+                &seller_proceeds,
+            );
 
             // Transfer fee
             if marketplace_fee > 0 {
-                payment_token_client.transfer(&e.current_contract_address(), &fee_recipient, &marketplace_fee);
+                payment_token_client.transfer(
+                    &e.current_contract_address(),
+                    &fee_recipient,
+                    &marketplace_fee,
+                );
             }
 
             // Transfer NFT to winner
             // Note: Use NFT contract client in production
 
             // Clear reentrancy guard
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
 
             // Emit event
             e.events().publish(
@@ -929,12 +1073,12 @@ impl CommitmentMarketplace {
             // No bids - return NFT to seller
 
             // Clear reentrancy guard
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
 
-            e.events().publish(
-                (symbol_short!("AucNoBid"), token_id),
-                auction.seller,
-            );
+            e.events()
+                .publish((symbol_short!("AucNoBid"), token_id), auction.seller);
         }
 
         Ok(())
@@ -950,7 +1094,8 @@ impl CommitmentMarketplace {
 
     /// Get all active auctions
     pub fn get_all_auctions(e: Env) -> Vec<Auction> {
-        let active_auctions: Vec<u32> = e.storage()
+        let active_auctions: Vec<u32> = e
+            .storage()
             .instance()
             .get(&DataKey::ActiveAuctions)
             .unwrap_or(Vec::new(&e));
@@ -958,7 +1103,11 @@ impl CommitmentMarketplace {
         let mut auctions: Vec<Auction> = Vec::new(&e);
 
         for token_id in active_auctions.iter() {
-            if let Some(auction) = e.storage().persistent().get::<_, Auction>(&DataKey::Auction(token_id)) {
+            if let Some(auction) = e
+                .storage()
+                .persistent()
+                .get::<_, Auction>(&DataKey::Auction(token_id))
+            {
                 auctions.push_back(auction);
             }
         }
@@ -967,5 +1116,5 @@ impl CommitmentMarketplace {
     }
 }
 
-#[cfg(all(test, feature = "benchmark"))]
-mod benchmarks;
+// #[cfg(all(test, feature = "benchmark"))]
+// mod benchmarks;

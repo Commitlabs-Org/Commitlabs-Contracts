@@ -5,10 +5,11 @@
 
 #![no_std]
 
+use shared_utils::{emit_error_event, Validation};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String,
+    Vec,
 };
-use shared_utils::{Validation, emit_error_event};
 
 // ============================================================================
 // Errors (aligned with shared_utils::error_codes)
@@ -179,12 +180,18 @@ fn require_no_reentrancy(e: &Env) {
         .get::<_, bool>(&DataKey::ReentrancyGuard)
         .unwrap_or(false);
     if guard {
-        fail(e, TransformationError::ReentrancyDetected, "require_no_reentrancy");
+        fail(
+            e,
+            TransformationError::ReentrancyDetected,
+            "require_no_reentrancy",
+        );
     }
 }
 
 fn set_reentrancy_guard(e: &Env, value: bool) {
-    e.storage().instance().set(&DataKey::ReentrancyGuard, &value);
+    e.storage()
+        .instance()
+        .set(&DataKey::ReentrancyGuard, &value);
 }
 
 // ============================================================================
@@ -202,18 +209,30 @@ impl CommitmentTransformationContract {
             fail(&e, TransformationError::AlreadyInitialized, "initialize");
         }
         e.storage().instance().set(&DataKey::Admin, &admin);
-        e.storage().instance().set(&DataKey::CoreContract, &core_contract);
-        e.storage().instance().set(&DataKey::TransformationFeeBps, &0u32);
-        e.storage().instance().set(&DataKey::TrancheSetCounter, &0u64);
+        e.storage()
+            .instance()
+            .set(&DataKey::CoreContract, &core_contract);
+        e.storage()
+            .instance()
+            .set(&DataKey::TransformationFeeBps, &0u32);
+        e.storage()
+            .instance()
+            .set(&DataKey::TrancheSetCounter, &0u64);
     }
 
     /// Set transformation fee in basis points (0-10000). Admin only.
     pub fn set_transformation_fee(e: Env, caller: Address, fee_bps: u32) {
         require_admin(&e, &caller);
         if fee_bps > 10000 {
-            fail(&e, TransformationError::InvalidFeeBps, "set_transformation_fee");
+            fail(
+                &e,
+                TransformationError::InvalidFeeBps,
+                "set_transformation_fee",
+            );
         }
-        e.storage().instance().set(&DataKey::TransformationFeeBps, &fee_bps);
+        e.storage()
+            .instance()
+            .set(&DataKey::TransformationFeeBps, &fee_bps);
         e.events().publish(
             (symbol_short!("FeeSet"), caller),
             (fee_bps, e.ledger().timestamp()),
@@ -221,11 +240,17 @@ impl CommitmentTransformationContract {
     }
 
     /// Set or clear authorized transformer contract. Admin only.
-    pub fn set_authorized_transformer(e: Env, caller: Address, transformer: Address, allowed: bool) {
+    pub fn set_authorized_transformer(
+        e: Env,
+        caller: Address,
+        transformer: Address,
+        allowed: bool,
+    ) {
         require_admin(&e, &caller);
-        e.storage()
-            .instance()
-            .set(&DataKey::AuthorizedTransformer(transformer.clone()), &allowed);
+        e.storage().instance().set(
+            &DataKey::AuthorizedTransformer(transformer.clone()),
+            &allowed,
+        );
         e.events().publish(
             (symbol_short!("AuthSet"), transformer),
             (allowed, e.ledger().timestamp()),
@@ -251,7 +276,11 @@ impl CommitmentTransformationContract {
         Validation::require_positive(total_value);
         if tranche_share_bps.len() != risk_levels.len() || tranche_share_bps.len() == 0 {
             set_reentrancy_guard(&e, false);
-            fail(&e, TransformationError::InvalidTrancheRatios, "create_tranches");
+            fail(
+                &e,
+                TransformationError::InvalidTrancheRatios,
+                "create_tranches",
+            );
         }
         let mut sum_bps: u32 = 0;
         for bps in tranche_share_bps.iter() {
@@ -259,7 +288,11 @@ impl CommitmentTransformationContract {
         }
         if sum_bps != 10000 {
             set_reentrancy_guard(&e, false);
-            fail(&e, TransformationError::InvalidTrancheRatios, "create_tranches");
+            fail(
+                &e,
+                TransformationError::InvalidTrancheRatios,
+                "create_tranches",
+            );
         }
 
         let fee_bps: u32 = e
@@ -324,13 +357,18 @@ impl CommitmentTransformationContract {
             .get::<_, Vec<String>>(&DataKey::CommitmentTrancheSets(commitment_id.clone()))
             .unwrap_or(Vec::new(&e));
         sets.push_back(transformation_id.clone());
-        e.storage()
-            .instance()
-            .set(&DataKey::CommitmentTrancheSets(commitment_id.clone()), &sets);
+        e.storage().instance().set(
+            &DataKey::CommitmentTrancheSets(commitment_id.clone()),
+            &sets,
+        );
 
         set_reentrancy_guard(&e, false);
         e.events().publish(
-            (symbol_short!("TrCreated"), transformation_id.clone(), caller),
+            (
+                symbol_short!("TrCreated"),
+                transformation_id.clone(),
+                caller,
+            ),
             (total_value, fee_amount, e.ledger().timestamp()),
         );
         transformation_id
@@ -385,7 +423,12 @@ impl CommitmentTransformationContract {
         set_reentrancy_guard(&e, false);
         e.events().publish(
             (symbol_short!("Collater"), asset_id.clone(), caller),
-            (commitment_id, collateral_amount, asset_address, e.ledger().timestamp()),
+            (
+                commitment_id,
+                collateral_amount,
+                asset_address,
+                e.ledger().timestamp(),
+            ),
         );
         asset_id
     }
@@ -422,9 +465,10 @@ impl CommitmentTransformationContract {
             amount,
             created_at: e.ledger().timestamp(),
         };
-        e.storage()
-            .instance()
-            .set(&DataKey::SecondaryInstrument(instrument_id.clone()), &instrument);
+        e.storage().instance().set(
+            &DataKey::SecondaryInstrument(instrument_id.clone()),
+            &instrument,
+        );
 
         let mut list = e
             .storage()
@@ -432,14 +476,20 @@ impl CommitmentTransformationContract {
             .get::<_, Vec<String>>(&DataKey::CommitmentInstruments(commitment_id.clone()))
             .unwrap_or(Vec::new(&e));
         list.push_back(instrument_id.clone());
-        e.storage()
-            .instance()
-            .set(&DataKey::CommitmentInstruments(commitment_id.clone()), &list);
+        e.storage().instance().set(
+            &DataKey::CommitmentInstruments(commitment_id.clone()),
+            &list,
+        );
 
         set_reentrancy_guard(&e, false);
         e.events().publish(
             (symbol_short!("SecCreat"), instrument_id.clone(), caller),
-            (commitment_id, instrument_type, amount, e.ledger().timestamp()),
+            (
+                commitment_id,
+                instrument_type,
+                amount,
+                e.ledger().timestamp(),
+            ),
         );
         instrument_id
     }
@@ -473,9 +523,10 @@ impl CommitmentTransformationContract {
             terms_hash: terms_hash.clone(),
             created_at: e.ledger().timestamp(),
         };
-        e.storage()
-            .instance()
-            .set(&DataKey::ProtocolGuarantee(guarantee_id.clone()), &guarantee);
+        e.storage().instance().set(
+            &DataKey::ProtocolGuarantee(guarantee_id.clone()),
+            &guarantee,
+        );
 
         let mut list = e
             .storage()
@@ -490,7 +541,12 @@ impl CommitmentTransformationContract {
         set_reentrancy_guard(&e, false);
         e.events().publish(
             (symbol_short!("GuarAdded"), guarantee_id.clone(), caller),
-            (commitment_id, guarantee_type, terms_hash, e.ledger().timestamp()),
+            (
+                commitment_id,
+                guarantee_type,
+                terms_hash,
+                e.ledger().timestamp(),
+            ),
         );
         guarantee_id
     }
@@ -500,7 +556,13 @@ impl CommitmentTransformationContract {
         e.storage()
             .instance()
             .get::<_, TrancheSet>(&DataKey::TrancheSet(transformation_id.clone()))
-            .unwrap_or_else(|| fail(&e, TransformationError::TransformationNotFound, "get_tranche_set"))
+            .unwrap_or_else(|| {
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "get_tranche_set",
+                )
+            })
     }
 
     /// Get collateralized asset by ID.
@@ -508,7 +570,13 @@ impl CommitmentTransformationContract {
         e.storage()
             .instance()
             .get::<_, CollateralizedAsset>(&DataKey::CollateralizedAsset(asset_id.clone()))
-            .unwrap_or_else(|| fail(&e, TransformationError::TransformationNotFound, "get_collateralized_asset"))
+            .unwrap_or_else(|| {
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "get_collateralized_asset",
+                )
+            })
     }
 
     /// Get secondary instrument by ID.
@@ -516,7 +584,13 @@ impl CommitmentTransformationContract {
         e.storage()
             .instance()
             .get::<_, SecondaryInstrument>(&DataKey::SecondaryInstrument(instrument_id.clone()))
-            .unwrap_or_else(|| fail(&e, TransformationError::TransformationNotFound, "get_secondary_instrument"))
+            .unwrap_or_else(|| {
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "get_secondary_instrument",
+                )
+            })
     }
 
     /// Get protocol guarantee by ID.
@@ -524,7 +598,13 @@ impl CommitmentTransformationContract {
         e.storage()
             .instance()
             .get::<_, ProtocolGuarantee>(&DataKey::ProtocolGuarantee(guarantee_id.clone()))
-            .unwrap_or_else(|| fail(&e, TransformationError::TransformationNotFound, "get_protocol_guarantee"))
+            .unwrap_or_else(|| {
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "get_protocol_guarantee",
+                )
+            })
     }
 
     /// List tranche set IDs for a commitment.
@@ -576,7 +656,9 @@ impl CommitmentTransformationContract {
     /// Set fee recipient (protocol treasury). Admin only.
     pub fn set_fee_recipient(e: Env, caller: Address, recipient: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().set(&DataKey::FeeRecipient, &recipient);
+        e.storage()
+            .instance()
+            .set(&DataKey::FeeRecipient, &recipient);
         e.events().publish(
             (symbol_short!("FeeRecip"), caller),
             (recipient, e.ledger().timestamp()),

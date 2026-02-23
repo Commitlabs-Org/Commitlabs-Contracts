@@ -7,7 +7,7 @@
 //! - Resource: 300-399 (insufficient balance, not found)
 //! - System: 400-499 (storage failures, contract failures)
 
-use soroban_sdk::{Env, symbol_short, String as SorobanString};
+use soroban_sdk::{symbol_short, Env, String as SorobanString};
 
 /// Error category boundaries for documentation and indexing.
 pub mod category {
@@ -89,11 +89,7 @@ pub fn message_for_code(code: u32) -> &'static str {
 
 /// Emit an error event for off-chain indexing and debugging.
 /// Call this before panicking or returning an error so indexers can record it.
-pub fn emit_error_event(
-    e: &Env,
-    error_code: u32,
-    context: &str,
-) {
+pub fn emit_error_event(e: &Env, error_code: u32, context: &str) {
     let msg = message_for_code(error_code);
     let context_str = SorobanString::from_str(e, context);
     let msg_str = SorobanString::from_str(e, msg);
@@ -109,8 +105,14 @@ mod tests {
 
     #[test]
     fn test_message_for_code() {
-        assert_eq!(message_for_code(code::INVALID_AMOUNT), "Invalid amount: must be greater than zero");
-        assert_eq!(message_for_code(code::UNAUTHORIZED), "Unauthorized: caller not allowed");
+        assert_eq!(
+            message_for_code(code::INVALID_AMOUNT),
+            "Invalid amount: must be greater than zero"
+        );
+        assert_eq!(
+            message_for_code(code::UNAUTHORIZED),
+            "Unauthorized: caller not allowed"
+        );
         assert_eq!(message_for_code(code::NOT_FOUND), "Resource not found");
         assert_eq!(message_for_code(999), "Unknown error");
     }

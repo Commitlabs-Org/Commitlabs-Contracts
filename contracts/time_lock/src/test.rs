@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, String,
+};
 
 fn create_test_env() -> (Env, Address, Address) {
     let env = Env::default();
@@ -46,12 +49,7 @@ fn test_queue_action_success() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64; // 1 day
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     assert_eq!(action_id, 1);
     assert_eq!(client.get_action_count(), 1);
@@ -101,7 +99,7 @@ fn test_delay_validation_too_short() {
     env.mock_all_auths();
 
     let data = String::from_str(&env, "test_data");
-    
+
     // Try to queue with delay shorter than minimum for AdminChange (2 days)
     let result = client.try_queue_action(
         &ActionType::AdminChange,
@@ -123,7 +121,7 @@ fn test_delay_validation_too_long() {
     env.mock_all_auths();
 
     let data = String::from_str(&env, "test_data");
-    
+
     // Try to queue with delay longer than maximum (30 days)
     let result = client.try_queue_action(
         &ActionType::ParameterChange,
@@ -147,12 +145,7 @@ fn test_execute_action_success() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     // Fast forward time past the delay
     env.ledger().with_mut(|li| {
@@ -178,12 +171,7 @@ fn test_execute_action_before_delay() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     // Try to execute before delay
     let result = client.try_execute_action(&action_id);
@@ -202,12 +190,7 @@ fn test_execute_already_executed_action() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     // Fast forward and execute
     env.ledger().with_mut(|li| {
@@ -233,12 +216,7 @@ fn test_cancel_action_success() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     client.cancel_action(&action_id);
 
@@ -258,12 +236,7 @@ fn test_cancel_already_cancelled_action() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     client.cancel_action(&action_id);
 
@@ -284,12 +257,7 @@ fn test_cancel_executed_action() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     // Fast forward and execute
     env.ledger().with_mut(|li| {
@@ -315,12 +283,7 @@ fn test_execute_cancelled_action() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     client.cancel_action(&action_id);
 
@@ -483,7 +446,7 @@ fn test_complex_workflow() {
     // Execute parameter change
     client.execute_action(&param_id);
     assert_eq!(client.get_pending_actions().len(), 2);
-    
+
     // Verify executable actions
     let executable = client.get_executable_actions();
     assert_eq!(executable.len(), 0); // Only admin and upgrade remain, both need more time
@@ -528,12 +491,7 @@ fn test_edge_case_exact_delay_time() {
     let data = String::from_str(&env, "test_data");
     let delay = 86400u64;
 
-    let action_id = client.queue_action(
-        &ActionType::ParameterChange,
-        &target,
-        &data,
-        &delay,
-    );
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
 
     // Fast forward to exactly the delay time (not past it)
     env.ledger().with_mut(|li| {
