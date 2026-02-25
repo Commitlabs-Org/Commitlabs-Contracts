@@ -23,6 +23,7 @@ impl MockNftContract {
         _commitment_type: String,
         _initial_amount: i128,
         _asset_address: Address,
+        _early_exit_penalty: u32,
     ) -> u32 {
         1
     }
@@ -33,8 +34,9 @@ fn test_rules(e: &Env) -> CommitmentRules {
         duration_days: 30,
         max_loss_percent: 10,
         commitment_type: String::from_str(e, "balanced"),
-        early_exit_penalty: 5,
+        early_exit_penalty: 10,
         min_fee_threshold: 100,
+        grace_period_days: 0,
     }
 }
 
@@ -442,7 +444,7 @@ fn test_create_commitment_amount_zero() {
         duration_days: 30,
         max_loss_percent: 10,
         commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 5,
+        early_exit_penalty: 15,
         min_fee_threshold: 100,
         grace_period_days: 0,
     };
@@ -521,7 +523,7 @@ fn test_create_commitment_amount_negative() {
         duration_days: 30,
         max_loss_percent: 10,
         commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 5,
+        early_exit_penalty: 15,
         min_fee_threshold: 100,
         grace_period_days: 0,
     };
@@ -581,7 +583,7 @@ fn test_create_commitment_valid_rules() {
         duration_days: 30,
         max_loss_percent: 10,
         commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 5,
+        early_exit_penalty: 15,
         min_fee_threshold: 100,
         grace_period_days: 0,
     };
@@ -2129,12 +2131,13 @@ fn test_update_value_no_violation() {
     assert_eq!(updated.current_value, 950);
     assert_eq!(updated.status, String::from_str(&e, "active"));
     assert_eq!(client.get_total_value_locked(), 950);
-    
+
     // Verify ValueUpdated event was emitted
     let events = e.events().all();
     let val_upd_symbol = symbol_short!("ValUpd").into_val(&e);
     let has_val_upd = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |t| t.shallow_eq(&val_upd_symbol))
+        ev.1.first()
+            .map_or(false, |t| t.shallow_eq(&val_upd_symbol))
     });
     assert!(has_val_upd, "ValueUpdated event should be emitted");
 }
@@ -2163,12 +2166,13 @@ fn test_update_value_triggers_violation() {
     let updated = client.get_commitment(&String::from_str(&e, "test_id"));
     assert_eq!(updated.current_value, 850);
     assert_eq!(updated.status, String::from_str(&e, "violated"));
-    
+
     // Verify ViolationDetected event was emitted
     let events = e.events().all();
     let violated_symbol = symbol_short!("Violated").into_val(&e);
     let has_violation = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |t| t.shallow_eq(&violated_symbol))
+        ev.1.first()
+            .map_or(false, |t| t.shallow_eq(&violated_symbol))
     });
     assert!(has_violation, "ViolationDetected event should be emitted");
 }
@@ -2191,17 +2195,17 @@ fn test_check_violations_after_update_value() {
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    
+
     // Before update, no violations
     assert!(!client.check_violations(&String::from_str(&e, "test_id")));
-    
+
     // Manually update value to trigger violation without auto-detection
     e.as_contract(&contract_id, || {
         let mut commitment = read_commitment(&e, &String::from_str(&e, "test_id")).unwrap();
         commitment.current_value = 850; // 15% loss > 10% max
         set_commitment(&e, &commitment);
     });
-    
+
     // After manual update, check_violations should return true
     assert!(client.check_violations(&String::from_str(&e, "test_id")));
 }

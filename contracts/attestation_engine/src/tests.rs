@@ -42,4 +42,3 @@ fn test_initialize_twice_fails() {
     });
     assert_eq!(second, Err(AttestationError::AlreadyInitialized));
 }
-

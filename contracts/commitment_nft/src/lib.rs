@@ -757,8 +757,10 @@ impl CommitmentNFTContract {
             .set(&DataKey::ReentrancyGuard, &false);
 
         // Emit event
-        e.events()
-            .publish((symbol_short!("Inactive"), token_id), e.ledger().timestamp());
+        e.events().publish(
+            (symbol_short!("Inactive"), token_id),
+            e.ledger().timestamp(),
+        );
 
         Ok(())
     }

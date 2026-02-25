@@ -76,7 +76,7 @@ pub struct CommitmentCreatedEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Rules governing a commitment, including risk parameters and penalties.
-/// 
+///
 /// ### Commitment Types Semantics:
 /// - **Safe**: Low risk. Max loss ≤ 10%, Early exit penalty ≥ 15%. Target: Stable yield pools.
 /// - **Balanced**: Medium risk. Max loss ≤ 30%, Early exit penalty ≥ 10%. Target: Mixed yield/growth pools.
@@ -897,7 +897,7 @@ impl CommitmentCoreContract {
                 set_reentrancy_guard(&e, false);
                 fail(&e, CommitmentError::NotInitialized, "early_exit")
             });
-        
+
         // Call mark_inactive on NFT instead of settle (since not expired)
         let mut args = Vec::new(&e);
         args.push_back(commitment.nft_token_id.into_val(&e));

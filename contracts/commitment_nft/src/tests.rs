@@ -949,7 +949,7 @@ fn test_transfer_locked_nft() {
 
     // Transfer active NFT (now allowed for secondary market)
     client.transfer(&owner, &recipient, &token_id);
-    
+
     // Verify ownership changed
     assert_eq!(client.owner_of(&token_id), recipient);
     assert_eq!(client.is_active(&token_id), true); // Still active after transfer
