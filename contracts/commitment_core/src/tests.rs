@@ -2124,3 +2124,131 @@ fn test_check_violations_after_update_value() {
     // After manual update, check_violations should return true
     assert!(client.check_violations(&String::from_str(&e, "test_id")));
 }
+
+#[test]
+#[should_panic(expected = "Unauthorized: caller not allowed")]
+fn test_rescue_assets_non_admin_cannot_call() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+
+    let admin = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let to = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+
+    let core_address = e.as_contract(&contract_id, || e.current_contract_address());
+    token_admin_client.mint(&core_address, &1000);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &nft_contract);
+
+    // Attacker tries to rescue
+    client.rescue_assets(&attacker, &asset_address, &to, &1);
+}
+
+#[test]
+fn test_rescue_assets_allows_only_excess_and_emits_event() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let to = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+
+    let amount = 1_000i128;
+    token_admin_client.mint(&owner, &(amount * 2));
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &nft_contract);
+
+    let rules = test_rules(&e);
+    let _commitment_id = client.create_commitment(&owner, &amount, &asset_address, &rules);
+
+    // Simulate accidental extra tokens sent to the contract.
+    let core_address = e.as_contract(&contract_id, || e.current_contract_address());
+    token_admin_client.mint(&core_address, &500);
+
+    // Rescue the allowed excess.
+    e.ledger().with_mut(|l| {
+        l.timestamp = 12345;
+    });
+    client.rescue_assets(&admin, &asset_address, &to, &500);
+
+    // Verify Rescued event (topics include recipient, data includes amount).
+    let events = e.events().all();
+    let rescued_symbol = symbol_short!("Rescued").into_val(&e);
+    let mut found = false;
+    for ev in events.iter() {
+        if ev.0 != client.address {
+            continue;
+        }
+        if ev.1.first().map_or(false, |t| t.shallow_eq(&rescued_symbol)) {
+            assert_eq!(
+                ev.1,
+                vec![
+                    &e,
+                    rescued_symbol,
+                    asset_address.into_val(&e),
+                    to.into_val(&e)
+                ]
+            );
+            let data: (i128, i128, u64) = ev.2.into_val(&e);
+            assert_eq!(data.0, 500);
+            assert_eq!(data.1, 1000); // reserved for the active commitment
+            assert_eq!(data.2, 12345);
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "Rescued event should be emitted");
+}
+
+#[test]
+#[should_panic(expected = "Rescue not allowed: amount exceeds excess balance")]
+fn test_rescue_assets_rejects_when_not_excess() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let to = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+
+    let amount = 1_000i128;
+    token_admin_client.mint(&owner, &(amount * 2));
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &nft_contract);
+
+    let rules = test_rules(&e);
+    let _commitment_id = client.create_commitment(&owner, &amount, &asset_address, &rules);
+
+    // Only 500 excess available.
+    let core_address = e.as_contract(&contract_id, || e.current_contract_address());
+    token_admin_client.mint(&core_address, &500);
+
+    // Attempt to rescue more than excess.
+    client.rescue_assets(&admin, &asset_address, &to, &600);
+}
