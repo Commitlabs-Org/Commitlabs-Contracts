@@ -271,7 +271,7 @@ impl TestHarness {
             duration_days: 30,
             max_loss_percent: 10,
             commitment_type: String::from_str(&self.env, "balanced"),
-            early_exit_penalty: 5,
+            early_exit_penalty: 10, // Satisfies Balanced: ≥ 10
             min_fee_threshold: 1000,
             grace_period_days: 0,
         }
@@ -283,7 +283,7 @@ impl TestHarness {
             duration_days: 90,
             max_loss_percent: 5,
             commitment_type: String::from_str(&self.env, "safe"),
-            early_exit_penalty: 3,
+            early_exit_penalty: 15, // Satisfies Safe: ≥ 15
             min_fee_threshold: 500,
             grace_period_days: 0,
         }

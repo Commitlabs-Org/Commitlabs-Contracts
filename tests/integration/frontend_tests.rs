@@ -66,9 +66,9 @@ fn test_frontend_create_commitment_flow() {
         duration_days: 30,
         max_loss_percent: 10,
         commitment_type: String::from_str(&harness.env, "balanced"),
-        early_exit_penalty: 5,
+        early_exit_penalty: 10, // Satisfies Balanced: ≥ 10
         min_fee_threshold: 1000,
-            grace_period_days: 0,
+        grace_period_days: 0,
     };
 
     // Step 3: Create commitment (frontend transaction submission)
@@ -393,7 +393,7 @@ fn test_frontend_early_exit_flow() {
 
     // Verify user received funds back (minus penalty)
     let balance_after = harness.balance(user);
-    let penalty_percent = 5u32; // From default_rules
+    let penalty_percent = 10u32; // From default_rules (Balanced)
     let expected_return = amount - (amount * penalty_percent as i128 / 100);
     assert_eq!(balance_after - balance_before, expected_return);
 
@@ -423,11 +423,16 @@ fn test_frontend_commitment_type_rules_display() {
     let mut commitment_ids = vec![];
 
     for type_str in types.iter() {
+        let penalty = match *type_str {
+            "safe" => 15,
+            "balanced" => 10,
+            _ => 5,
+        };
         let rules = CommitmentRules {
             duration_days: 30,
             max_loss_percent: 10,
             commitment_type: String::from_str(&harness.env, type_str),
-            early_exit_penalty: 5,
+            early_exit_penalty: penalty,
             min_fee_threshold: 1000,
             grace_period_days: 0,
         };
