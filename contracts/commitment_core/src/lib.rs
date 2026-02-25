@@ -27,6 +27,7 @@ pub enum CommitmentError {
     NotExpired = 15,
     /// Duration would cause expires_at to overflow u64
     ExpirationOverflow = 16,
+    RescueNotAllowed = 17,
 }
 
 impl CommitmentError {
@@ -50,6 +51,9 @@ impl CommitmentError {
             CommitmentError::NotExpired => "Commitment has not expired yet",
             CommitmentError::ExpirationOverflow => {
                 "Duration would cause expiration timestamp overflow"
+            }
+            CommitmentError::RescueNotAllowed => {
+                "Rescue not allowed: amount exceeds excess balance"
             }
         }
     }
@@ -979,6 +983,63 @@ impl CommitmentCoreContract {
     pub fn set_rate_limit_exempt(e: Env, caller: Address, address: Address, exempt: bool) {
         require_admin(&e, &caller);
         RateLimiter::set_exempt(&e, &address, exempt);
+    }
+
+    /// Admin-only rescue function to recover tokens accidentally sent to this contract.
+    ///
+    /// Safety rule: can only transfer up to the "excess" token balance for the asset,
+    /// where excess = contract_balance - reserved_for_active_commitments(asset).
+    pub fn rescue_assets(
+        e: Env,
+        caller: Address,
+        asset_address: Address,
+        to: Address,
+        amount: i128,
+    ) {
+        require_admin(&e, &caller);
+        Validation::require_positive(amount);
+
+        require_no_reentrancy(&e);
+        set_reentrancy_guard(&e, true);
+
+        let contract_address = e.current_contract_address();
+        let token_client = token::Client::new(&e, &asset_address);
+        let balance_before = token_client.balance(&contract_address);
+
+        // Compute how much of this asset is reserved for active commitments.
+        let total_commitments = e
+            .storage()
+            .instance()
+            .get::<_, u64>(&DataKey::TotalCommitments)
+            .unwrap_or(0);
+        let active_status = String::from_str(&e, "active");
+
+        let mut reserved: i128 = 0;
+        let mut i: u64 = 0;
+        while i < total_commitments {
+            let commitment_id = Self::generate_commitment_id(&e, i);
+            if let Some(c) = read_commitment(&e, &commitment_id) {
+                if c.status == active_status && c.asset_address == asset_address {
+                    reserved = SafeMath::add(reserved, c.current_value);
+                }
+            }
+            i += 1;
+        }
+
+        let excess = balance_before - reserved;
+        if excess < amount {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::RescueNotAllowed, "rescue_assets");
+        }
+
+        token_client.transfer(&contract_address, &to, &amount);
+
+        set_reentrancy_guard(&e, false);
+
+        e.events().publish(
+            (symbol_short!("Rescued"), asset_address, to),
+            (amount, reserved, e.ledger().timestamp()),
+        );
     }
 }
 
