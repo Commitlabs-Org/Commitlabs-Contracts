@@ -949,7 +949,7 @@ impl AttestationEngineContract {
 
     /// Verify commitment compliance
     /// Verify commitment compliance
-    /// 
+    ///
     /// Returns compliance status based on commitment state:
     /// - "settled": true (compliant until settlement)
     /// - "violated": false (rule violation occurred)

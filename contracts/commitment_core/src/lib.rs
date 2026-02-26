@@ -482,11 +482,7 @@ impl CommitmentCoreContract {
 
     /// Get commitment IDs created between two timestamps (inclusive).
     /// For analytics/dashboards. Gas cost is O(n) in total commitments; consider pagination for large n.
-    pub fn get_commitments_created_between(
-        e: Env,
-        from_ts: u64,
-        to_ts: u64,
-    ) -> Vec<String> {
+    pub fn get_commitments_created_between(e: Env, from_ts: u64, to_ts: u64) -> Vec<String> {
         let all_ids = e
             .storage()
             .instance()
@@ -808,4 +804,11 @@ impl CommitmentCoreContract {
 }
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(all(test, feature = "benchmark"))]
+mod benchmarks;
+
+#[cfg(test)]
+mod test_zero_address;
 mod tests;

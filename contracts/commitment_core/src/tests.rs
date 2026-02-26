@@ -834,11 +834,7 @@ fn test_list_commitments_by_owner_matches_get_owner_commitments() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
 
         // Manually seed owner commitments to avoid full token setup.
-        let ids = vec![
-            &e,
-            String::from_str(&e, "c_1"),
-            String::from_str(&e, "c_2"),
-        ];
+        let ids = vec![&e, String::from_str(&e, "c_1"), String::from_str(&e, "c_2")];
         e.storage()
             .instance()
             .set(&DataKey::OwnerCommitments(owner.clone()), &ids);
@@ -949,7 +945,9 @@ fn test_get_total_commitments_not_initialized_returns_zero() {
     let e = Env::default();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
 
-    let total = e.as_contract(&contract_id, || CommitmentCoreContract::get_total_commitments(e.clone()));
+    let total = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_total_commitments(e.clone())
+    });
     assert_eq!(total, 0);
 }
 
@@ -958,8 +956,9 @@ fn test_get_total_value_locked_not_initialized_returns_zero() {
     let e = Env::default();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
 
-    let total_value_locked = e
-        .as_contract(&contract_id, || CommitmentCoreContract::get_total_value_locked(e.clone()));
+    let total_value_locked = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_total_value_locked(e.clone())
+    });
     assert_eq!(total_value_locked, 0);
 }
 
@@ -2460,7 +2459,10 @@ fn test_owner_multiple_commitments_creation() {
         owner_commitments.push_back(c1.commitment_id.clone());
         owner_commitments.push_back(c2.commitment_id.clone());
         owner_commitments.push_back(c3.commitment_id.clone());
-        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
+        e.storage().instance().set(
+            &DataKey::OwnerCommitments(owner.clone()),
+            &owner_commitments,
+        );
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -2496,7 +2498,10 @@ fn test_owner_multiple_commitments_get_each() {
         owner_commitments.push_back(c1.commitment_id.clone());
         owner_commitments.push_back(c2.commitment_id.clone());
         owner_commitments.push_back(c3.commitment_id.clone());
-        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
+        e.storage().instance().set(
+            &DataKey::OwnerCommitments(owner.clone()),
+            &owner_commitments,
+        );
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -2541,6 +2546,10 @@ fn test_owner_multiple_commitments_settle_one() {
         owner_commitments.push_back(c1.commitment_id.clone());
         owner_commitments.push_back(c2.commitment_id.clone());
         owner_commitments.push_back(c3.commitment_id.clone());
+        e.storage().instance().set(
+            &DataKey::OwnerCommitments(owner.clone()),
+            &owner_commitments,
+        );
         e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
 
         // Manually settle one commitment (simulating what settle() would do)

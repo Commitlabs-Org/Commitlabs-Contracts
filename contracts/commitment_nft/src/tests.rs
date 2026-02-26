@@ -447,11 +447,17 @@ fn test_mint_valid_commitment_types_all_three() {
         String::from_str(&e, "safe")
     );
     assert_eq!(
-        client.get_metadata(&token_id_balanced).metadata.commitment_type,
+        client
+            .get_metadata(&token_id_balanced)
+            .metadata
+            .commitment_type,
         String::from_str(&e, "balanced")
     );
     assert_eq!(
-        client.get_metadata(&token_id_aggressive).metadata.commitment_type,
+        client
+            .get_metadata(&token_id_aggressive)
+            .metadata
+            .commitment_type,
         String::from_str(&e, "aggressive")
     );
 }
@@ -485,7 +491,10 @@ fn test_mint_empty_commitment_id() {
 
     // Verify the auto-generated commitment_id was used
     let metadata = client.get_metadata(&token_id);
-    assert_eq!(metadata.metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        metadata.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 }
 
 /// Test that very long commitment_id parameter is ignored and auto-generated ID is used
@@ -517,7 +526,10 @@ fn test_mint_commitment_id_very_long() {
 
     // Verify the auto-generated commitment_id was used instead
     let metadata = client.get_metadata(&token_id);
-    assert_eq!(metadata.metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        metadata.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 }
 
 /// Test that commitment_id at the maximum allowed length is ignored and auto-generated ID is used
@@ -549,7 +561,10 @@ fn test_mint_commitment_id_max_allowed_length() {
 
     // Verify the auto-generated commitment_id was used instead
     let metadata = client.get_metadata(&token_id);
-    assert_eq!(metadata.metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        metadata.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 }
 
 /// Test that normal length commitment_id works correctly
@@ -577,7 +592,10 @@ fn test_mint_commitment_id_normal_length() {
     // Verify the commitment_id is stored and retrieved correctly
     // Since commitment_id is now auto-generated, it will be COMMIT_0
     let metadata = client.get_metadata(&token_id);
-    assert_eq!(metadata.metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        metadata.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 }
 
 /// Issue #139: Test retrieval operations with long commitment_id
@@ -610,17 +628,26 @@ fn test_get_metadata_with_long_commitment_id() {
     // Retrieve metadata - should not panic
     // Now commitment_id is auto-generated as COMMIT_0
     let metadata = client.get_metadata(&token_id);
-    assert_eq!(metadata.metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        metadata.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 
     // Retrieve all metadata - should not panic
     let all_nfts = client.get_all_metadata();
     assert_eq!(all_nfts.len(), 1);
-    assert_eq!(all_nfts.get(0).unwrap().metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        all_nfts.get(0).unwrap().metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 
     // Retrieve by owner - should not panic
     let owner_nfts = client.get_nfts_by_owner(&owner);
     assert_eq!(owner_nfts.len(), 1);
-    assert_eq!(owner_nfts.get(0).unwrap().metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        owner_nfts.get(0).unwrap().metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 }
 
 // ============================================
@@ -2699,11 +2726,20 @@ fn test_commitment_id_uniqueness() {
     // Verify commitment_ids are different
     let metadata1 = client.get_metadata(&token_id_1);
     let metadata2 = client.get_metadata(&token_id_2);
-    assert_ne!(metadata1.metadata.commitment_id, metadata2.metadata.commitment_id);
+    assert_ne!(
+        metadata1.metadata.commitment_id,
+        metadata2.metadata.commitment_id
+    );
 
     // Verify they follow the expected format: COMMIT_0, COMMIT_1
-    assert_eq!(metadata1.metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
-    assert_eq!(metadata2.metadata.commitment_id, String::from_str(&e, "COMMIT_1"));
+    assert_eq!(
+        metadata1.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
+    assert_eq!(
+        metadata2.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_1")
+    );
 }
 
 /// Test that commitment_id format is consistent across multiple mints
@@ -2728,7 +2764,10 @@ fn test_commitment_id_format_consistency() {
         &5,
     );
     let metadata_0 = client.get_metadata(&token_id_0);
-    assert_eq!(metadata_0.metadata.commitment_id, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(
+        metadata_0.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_0")
+    );
 
     // Mint second commitment - should have COMMIT_1
     let token_id_1 = client.mint(
@@ -2742,7 +2781,10 @@ fn test_commitment_id_format_consistency() {
         &5,
     );
     let metadata_1 = client.get_metadata(&token_id_1);
-    assert_eq!(metadata_1.metadata.commitment_id, String::from_str(&e, "COMMIT_1"));
+    assert_eq!(
+        metadata_1.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_1")
+    );
 
     // Mint third commitment - should have COMMIT_2
     let token_id_2 = client.mint(
@@ -2756,7 +2798,10 @@ fn test_commitment_id_format_consistency() {
         &5,
     );
     let metadata_2 = client.get_metadata(&token_id_2);
-    assert_eq!(metadata_2.metadata.commitment_id, String::from_str(&e, "COMMIT_2"));
+    assert_eq!(
+        metadata_2.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_2")
+    );
 
     // Mint fourth commitment - should have COMMIT_3
     let token_id_3 = client.mint(
@@ -2770,7 +2815,10 @@ fn test_commitment_id_format_consistency() {
         &5,
     );
     let metadata_3 = client.get_metadata(&token_id_3);
-    assert_eq!(metadata_3.metadata.commitment_id, String::from_str(&e, "COMMIT_3"));
+    assert_eq!(
+        metadata_3.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_3")
+    );
 
     // Mint fifth commitment - should have COMMIT_4
     let token_id_4 = client.mint(
@@ -2784,7 +2832,10 @@ fn test_commitment_id_format_consistency() {
         &5,
     );
     let metadata_4 = client.get_metadata(&token_id_4);
-    assert_eq!(metadata_4.metadata.commitment_id, String::from_str(&e, "COMMIT_4"));
+    assert_eq!(
+        metadata_4.metadata.commitment_id,
+        String::from_str(&e, "COMMIT_4")
+    );
 
     // Verify total supply matches what we created
     assert_eq!(client.total_supply(), 5);
