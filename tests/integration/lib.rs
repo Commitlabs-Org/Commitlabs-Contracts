@@ -26,6 +26,7 @@ pub mod oracle_tests;
 pub mod token_tests;
 pub mod e2e_tests;
 pub mod error_tests;
+pub mod health_metrics_consistency_tests;
 // TODO: Update attestation_validation_test to use new Soroban SDK API
 // pub mod attestation_validation_test;
 

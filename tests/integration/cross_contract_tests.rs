@@ -14,7 +14,7 @@ use soroban_sdk::{
 
 use commitment_core::{CommitmentCoreContract, CommitmentRules};
 use commitment_nft::{CommitmentNFTContract, ContractError as NftContractError};
-use attestation_engine::{AttestationEngineContract, AttestationError};
+use attestation_engine::{AttestationEngineContract, AttestationError, AttestationsPage};
 use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
 
 /// Verify compliance integration between commitment_core and attestation_engine.
@@ -195,7 +195,8 @@ fn test_create_commitment_mints_nft_metadata_matches() {
             CommitmentNFTContract::get_metadata(harness.env.clone(), token_id).unwrap()
         });
 
-    assert_eq!(nft.metadata.commitment_id, commitment_id);
+    // Verify auto-generated commitment_id format: COMMIT_{token_id}
+    assert_eq!(nft.metadata.commitment_id, String::from_str(&harness.env, "COMMIT_0"));
     assert_eq!(nft.metadata.duration_days, rules.duration_days);
     assert_eq!(nft.metadata.max_loss_percent, rules.max_loss_percent);
     assert_eq!(nft.metadata.commitment_type, rules.commitment_type);
@@ -766,7 +767,8 @@ fn test_commitment_settlement_calls_nft_settle() {
             CommitmentNFTContract::get_metadata(harness.env.clone(), 0).unwrap()
         });
     assert!(!nft_after_settle.is_active);
-    assert_eq!(nft_after_settle.metadata.commitment_id, commitment_id);
+    // Verify auto-generated commitment_id format: COMMIT_{token_id}
+    assert_eq!(nft_after_settle.metadata.commitment_id, String::from_str(&harness.env, "COMMIT_0"));
     assert_eq!(nft_after_settle.owner, *user);
 
     // Verify commitment status
@@ -913,7 +915,8 @@ fn test_cross_contract_state_consistency() {
         });
     assert_eq!(nft.owner, *user);
     assert_eq!(nft.metadata.initial_amount, amount);
-    assert_eq!(nft.metadata.commitment_id, commitment_id);
+    // Verify auto-generated commitment_id format: COMMIT_{token_id}
+    assert_eq!(nft.metadata.commitment_id, String::from_str(&harness.env, "COMMIT_0"));
 
     // 3. Token balances are correct
     let user_balance = harness.balance(user);
@@ -1372,4 +1375,90 @@ fn test_record_fees_record_drawdown_access_control() {
             )
             .unwrap();
         });
+}
+
+// =============================================================================
+// #TBD: record_fees fee amount validation
+// =============================================================================
+
+/// Test: record_fees rejects negative or invalid fee amounts
+#[test]
+fn test_record_fees_validation() {
+    let harness = TestHarness::new();
+    let user = &harness.accounts.user1;
+    let verifier = &harness.accounts.verifier;
+    let amount = 1_000_000_000_000i128;
+
+    harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
+
+    // Test 1: Negative fee amount (-1) should be rejected
+    let result_negative_one = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                -1,
+            )
+        });
+    assert_eq!(result_negative_one, Err(AttestationError::InvalidFeeAmount));
+
+    // Test 2: Zero fee amount should be allowed
+    let result_zero = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                0,
+            )
+        });
+    assert_eq!(result_zero, Ok(()));
+
+    // Test 3: Positive fee amount should be allowed
+    let result_positive = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                50_000_000,
+            )
+        });
+    assert_eq!(result_positive, Ok(()));
+
+    // Test 4: Large positive fee amount should be allowed
+    let result_large_positive = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                1_000_000_000_000,
+            )
+        });
+    assert_eq!(result_large_positive, Ok(()));
+
+    // Test 5: Minimum i128 value should be rejected
+    let result_min_i128 = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                i128::MIN,
+            )
+        });
+    assert_eq!(result_min_i128, Err(AttestationError::InvalidFeeAmount));
 }

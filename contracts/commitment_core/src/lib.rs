@@ -20,17 +20,20 @@ pub enum CommitmentError {
     CommitmentNotFound = 8,
     Unauthorized = 9,
     AlreadyInitialized = 10,
-    ReentrancyDetected = 11,
-    NotActive = 12,
-    InvalidStatus = 13,
-    NotInitialized = 14,
-    NotExpired = 15,
+    AlreadySettled = 11,
+    ReentrancyDetected = 12,
+    NotActive = 13,
+    InvalidStatus = 14,
+    NotInitialized = 15,
+    NotExpired = 16,
+    ValueUpdateViolation = 17,
+    NotAuthorizedUpdater = 18,
+    ZeroAddress = 19,
     /// Duration would cause expires_at to overflow u64
-    ExpirationOverflow = 16,
+    ExpirationOverflow = 20,
 }
 
 impl CommitmentError {
-    /// Human-readable message for debugging and error events.
     pub fn message(&self) -> &'static str {
         match self {
             CommitmentError::InvalidDuration => "Invalid duration: must be greater than zero",
@@ -43,22 +46,32 @@ impl CommitmentError {
             CommitmentError::CommitmentNotFound => "Commitment not found",
             CommitmentError::Unauthorized => "Unauthorized: caller not allowed",
             CommitmentError::AlreadyInitialized => "Contract already initialized",
+            CommitmentError::AlreadySettled => "Commitment already settled",
             CommitmentError::ReentrancyDetected => "Reentrancy detected",
             CommitmentError::NotActive => "Commitment is not active",
             CommitmentError::InvalidStatus => "Invalid commitment status for this operation",
             CommitmentError::NotInitialized => "Contract not initialized",
             CommitmentError::NotExpired => "Commitment has not expired yet",
-            CommitmentError::ExpirationOverflow => {
-                "Duration would cause expiration timestamp overflow"
-            }
+            CommitmentError::ValueUpdateViolation => "Commitment has value update violation",
+            CommitmentError::NotAuthorizedUpdater => "Commitment has not auth updater",
+            CommitmentError::ZeroAddress => "Zero address is not allowed",
+            CommitmentError::ExpirationOverflow => "Duration would cause expiration timestamp overflow",
         }
     }
 }
 
-/// Emit error event and panic with standardized message (for indexers and UX).
 fn fail(e: &Env, err: CommitmentError, context: &str) -> ! {
     emit_error_event(e, err as u32, context);
     panic!("{}", err.message());
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct CommitmentSettledEvent {
+    pub commitment_id: String,
+    pub owner: Address,
+    pub settlement_amount: i128,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -84,7 +97,7 @@ pub struct CommitmentCreatedEvent {
 pub struct CommitmentRules {
     pub duration_days: u32,
     pub max_loss_percent: u32,
-    pub commitment_type: String, // "safe", "balanced", "aggressive"
+    pub commitment_type: String, 
     pub early_exit_penalty: u32,
     pub min_fee_threshold: i128,
     pub grace_period_days: u32,
@@ -102,7 +115,7 @@ pub struct Commitment {
     pub created_at: u64,
     pub expires_at: u64,
     pub current_value: i128,
-    pub status: String, // "active", "settled", "violated", "early_exit"
+    pub status: String, 
 }
 
 #[contracttype]
@@ -110,30 +123,48 @@ pub struct Commitment {
 pub enum DataKey {
     Admin,
     NftContract,
+    AllocationContract,
+    Commitment(String),
+    OwnerCommitments(Address),
+    TotalCommitments,
+    ReentrancyGuard,
+    TotalValueLocked,
+    AuthorizedUpdaters,
     Commitment(String),        // commitment_id -> Commitment
     OwnerCommitments(Address), // owner -> Vec<commitment_id>
     TotalCommitments,          // counter
     ReentrancyGuard,           // reentrancy protection flag
     TotalValueLocked,          // aggregate value locked across active commitments
+    AuthorizedAllocator(Address), // contract address -> authorized for allocate()
+    AuthorizedUpdaters,        // whitelist of authorized updaters
     /// All commitment IDs for time-range queries (analytics). Appended on create.
     AllCommitmentIds,
 }
 
-/// Transfer assets from owner to contract
-fn transfer_assets(e: &Env, from: &Address, to: &Address, asset_address: &Address, amount: i128) {
-    let token_client = token::Client::new(e, asset_address);
+// --- Internal Helpers ---
 
-    // Check balance first
-    let balance = token_client.balance(from);
+fn is_zero_address(e: &Env, address: &Address) -> bool {
+    let zero_str = String::from_str(e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero_addr = Address::from_string(&zero_str);
+    address == &zero_addr
+}
+
+fn check_sufficient_balance(e: &Env, owner: &Address, asset_address: &Address, amount: i128) {
+    let token_client = token::Client::new(e, asset_address);
+    let balance = token_client.balance(owner);
     if balance < amount {
         log!(e, "Insufficient balance: {} < {}", balance, amount);
-        fail(e, CommitmentError::InsufficientBalance, "transfer_assets");
+        fail(e, CommitmentError::InsufficientBalance, "check_sufficient_balance");
     }
+}
 
-    // Transfer tokens (fails transaction if unsuccessful)
+fn transfer_assets(e: &Env, from: &Address, to: &Address, asset_address: &Address, amount: i128) {
+    let token_client = token::Client::new(e, asset_address);
     token_client.transfer(from, to, &amount);
 }
 
+/// Helper function to call NFT contract mint function. Passes current contract as caller for access control.
+/// Call the NFT contract mint function.
 /// Helper function to call NFT contract mint function
 fn call_nft_mint(
     e: &Env,
@@ -147,7 +178,9 @@ fn call_nft_mint(
     asset_address: &Address,
     early_exit_penalty: u32,
 ) -> u32 {
+    let caller = e.current_contract_address();
     let mut args = Vec::new(e);
+    args.push_back(caller.into_val(e));
     args.push_back(owner.clone().into_val(e));
     args.push_back(commitment_id.clone().into_val(e));
     args.push_back(duration_days.into_val(e));
@@ -157,110 +190,62 @@ fn call_nft_mint(
     args.push_back(asset_address.clone().into_val(e));
     args.push_back(early_exit_penalty.into_val(e));
 
-    // In Soroban, contract calls return the value directly
-    // Failures cause the entire transaction to fail
     e.invoke_contract::<u32>(nft_contract, &Symbol::new(e, "mint"), args)
 }
 
-// Storage helpers
 fn read_commitment(e: &Env, commitment_id: &String) -> Option<Commitment> {
-    e.storage()
-        .instance()
-        .get::<_, Commitment>(&DataKey::Commitment(commitment_id.clone()))
+    e.storage().instance().get::<_, Commitment>(&DataKey::Commitment(commitment_id.clone()))
 }
 
 fn set_commitment(e: &Env, commitment: &Commitment) {
-    e.storage().instance().set(
-        &DataKey::Commitment(commitment.commitment_id.clone()),
-        commitment,
-    );
+    e.storage().instance().set(&DataKey::Commitment(commitment.commitment_id.clone()), commitment);
 }
 
 fn has_commitment(e: &Env, commitment_id: &String) -> bool {
-    e.storage()
-        .instance()
-        .has(&DataKey::Commitment(commitment_id.clone()))
+    e.storage().instance().has(&DataKey::Commitment(commitment_id.clone()))
 }
 
-/// Reentrancy protection helpers
 fn require_no_reentrancy(e: &Env) {
-    let guard: bool = e
-        .storage()
-        .instance()
-        .get::<_, bool>(&DataKey::ReentrancyGuard)
-        .unwrap_or(false);
-
-    if guard {
-        fail(
-            e,
-            CommitmentError::ReentrancyDetected,
-            "require_no_reentrancy",
-        );
+    if e.storage().instance().get::<_, bool>(&DataKey::ReentrancyGuard).unwrap_or(false) {
+        fail(e, CommitmentError::ReentrancyDetected, "require_no_reentrancy");
     }
 }
 
 fn set_reentrancy_guard(e: &Env, value: bool) {
-    e.storage()
-        .instance()
-        .set(&DataKey::ReentrancyGuard, &value);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &value);
 }
 
-/// Require that the caller is the admin stored in this contract.
 fn require_admin(e: &Env, caller: &Address) {
     caller.require_auth();
-    let admin = e
-        .storage()
-        .instance()
-        .get::<_, Address>(&DataKey::Admin)
+    let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin)
         .unwrap_or_else(|| fail(e, CommitmentError::NotInitialized, "require_admin"));
     if *caller != admin {
         fail(e, CommitmentError::Unauthorized, "require_admin");
     }
 }
 
-/// Pause the contract
-///
-/// # Arguments
-/// * `e` - The environment
-///
-/// # Panics
-/// Panics if caller is not admin or if contract is already paused
-pub fn pause(e: Env) {
-    let admin = e
-        .storage()
-        .instance()
-        .get::<_, Address>(&DataKey::Admin)
-        .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "pause"));
-    admin.require_auth();
-    Pausable::pause(&e);
+fn add_authorized_updater(e: &Env, updater: &Address) {
+    let mut updaters: Vec<Address> = e.storage().instance().get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters).unwrap_or(Vec::new(e));
+    if !updaters.contains(updater) {
+        updaters.push_back(updater.clone());
+        e.storage().instance().set(&DataKey::AuthorizedUpdaters, &updaters);
+    }
 }
 
-/// Unpause the contract
-///
-/// # Arguments
-/// * `e` - The environment
-///
-/// # Panics
-/// Panics if caller is not admin or if contract is already unpaused
-pub fn unpause(e: Env) {
-    let admin = e
-        .storage()
-        .instance()
-        .get::<_, Address>(&DataKey::Admin)
-        .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "unpause"));
-    admin.require_auth();
-    Pausable::unpause(&e);
+fn remove_authorized_updater(e: &Env, updater: &Address) {
+    let mut updaters: Vec<Address> = e.storage().instance().get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters).unwrap_or(Vec::new(e));
+    if let Some(idx) = updaters.iter().position(|a| a == *updater) {
+        updaters.remove(idx as u32);
+        e.storage().instance().set(&DataKey::AuthorizedUpdaters, &updaters);
+    }
 }
 
-/// Check if the contract is paused
-///
-/// # Arguments
-/// * `e` - The environment
-///
-/// # Returns
-/// `true` if paused, `false` otherwise
-pub fn is_paused(e: Env) -> bool {
-    Pausable::is_paused(&e)
+fn remove_from_owner_commitments(e: &Env, owner: &Address, commitment_id: &String) {
+    let mut commitments: Vec<String> = e.storage().instance().get::<_, Vec<String>>(&DataKey::OwnerCommitments(owner.clone())).unwrap_or(Vec::new(e));
+    if let Some(idx) = commitments.iter().position(|id| id == *commitment_id) {
+        commitments.remove(idx as u32);
+        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &commitments);
+    }
 }
 
 #[contract]
@@ -269,14 +254,23 @@ pub struct CommitmentCoreContract;
 #[contractimpl]
 impl CommitmentCoreContract {
     /// Validate commitment rules using shared utilities and type-specific constraints
+    pub fn pause(e: Env, caller: Address) {
+        require_admin(&e, &caller);
+        Pausable::pause(&e);
+    }
+
+    pub fn unpause(e: Env, caller: Address) {
+        require_admin(&e, &caller);
+        Pausable::unpause(&e);
+    }
+
+    pub fn is_paused(e: Env) -> bool {
+        Pausable::is_paused(&e)
+    }
+
     fn validate_rules(e: &Env, rules: &CommitmentRules) {
-        // Duration must be > 0
         Validation::require_valid_duration(rules.duration_days);
-
-        // Max loss percent must be between 0 and 100
         Validation::require_valid_percent(rules.max_loss_percent);
-
-        // Commitment type must be valid
         let valid_types = ["safe", "balanced", "aggressive"];
         Validation::require_valid_commitment_type(e, &rules.commitment_type, &valid_types);
 
@@ -302,49 +296,26 @@ impl CommitmentCoreContract {
         }
     }
 
-    /// Generate unique commitment ID
-    /// Optimized: Uses counter to create unique ID efficiently
     fn generate_commitment_id(e: &Env, counter: u64) -> String {
-        // OPTIMIZATION: Use counter directly as string to minimize allocations
-        // This is more gas-efficient than string concatenation
         let mut buf = [0u8; 32];
-        let prefix = b"c_";
-        buf[0] = prefix[0];
-        buf[1] = prefix[1];
-
-        // Convert counter to string representation
+        buf[0] = b'c'; buf[1] = b'_';
         let mut n = counter;
         let mut i = 2;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
+        if n == 0 { buf[i] = b'0'; i += 1; } else {
             let mut digits = [0u8; 20];
-            let mut digit_count = 0;
-            while n > 0 {
-                digits[digit_count] = (n % 10) as u8 + b'0';
-                n /= 10;
-                digit_count += 1;
-            }
-            // Reverse digits
-            for j in 0..digit_count {
-                buf[i] = digits[digit_count - 1 - j];
-                i += 1;
-            }
+            let mut count = 0;
+            while n > 0 { digits[count] = (n % 10) as u8 + b'0'; n /= 10; count += 1; }
+            for j in 0..count { buf[i] = digits[count - 1 - j]; i += 1; }
         }
-
         String::from_str(e, core::str::from_utf8(&buf[..i]).unwrap_or("c_0"))
     }
 
-    /// Initialize the core commitment contract
     pub fn initialize(e: Env, admin: Address, nft_contract: Address) {
-        // Check if already initialized
-        if e.storage().instance().has(&DataKey::Admin) {
-            fail(&e, CommitmentError::AlreadyInitialized, "initialize");
-        }
-
-        // Store admin and NFT contract address
+        if e.storage().instance().has(&DataKey::Admin) { fail(&e, CommitmentError::AlreadyInitialized, "initialize"); }
         e.storage().instance().set(&DataKey::Admin, &admin);
+        e.storage().instance().set(&DataKey::NftContract, &nft_contract);
+        e.storage().instance().set(&DataKey::TotalCommitments, &0u64);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &0i128);
         e.storage()
             .instance()
             .set(&DataKey::NftContract, &nft_contract);
@@ -368,133 +339,45 @@ impl CommitmentCoreContract {
         e.storage().instance().set(&Pausable::PAUSED_KEY, &false);
     }
 
-    /// Create a new commitment
-    ///
-    /// # Reentrancy Protection
-    /// This function uses checks-effects-interactions pattern:
-    /// 1. Checks: Validate inputs
-    /// 2. Effects: Update state (commitment storage, counters)
-    /// 3. Interactions: External calls (token transfer, NFT mint)
-    /// Reentrancy guard prevents recursive calls.
-    ///
-    /// # Formal Verification
-    /// **Preconditions:**
-    /// - `amount > 0`
-    /// - `rules.duration_days > 0`
-    /// - `rules.max_loss_percent <= 100`
-    /// - `rules.commitment_type ∈ {"safe", "balanced", "aggressive"}`
-    /// - Contract is initialized
-    /// - `reentrancy_guard == false`
-    ///
-    /// **Postconditions:**
-    /// - Returns unique `commitment_id`
-    /// - `get_commitment(commitment_id).owner == owner`
-    /// - `get_commitment(commitment_id).amount == amount`
-    /// - `get_commitment(commitment_id).status == "active"`
-    /// - `get_total_commitments() == old(get_total_commitments()) + 1`
-    /// - `reentrancy_guard == false`
-    ///
-    /// **Invariants Maintained:**
-    /// - INV-1: Total commitments consistency
-    /// - INV-2: Commitment balance conservation
-    /// - INV-3: Owner commitment list consistency
-    /// - INV-4: Reentrancy guard invariant
-    ///
-    /// **Security Properties:**
-    /// - SP-1: Reentrancy protection
-    /// - SP-2: Access control
-    /// - SP-4: State consistency
-    /// - SP-5: Token conservation
-    pub fn create_commitment(
-        e: Env,
-        owner: Address,
-        amount: i128,
-        asset_address: Address,
-        rules: CommitmentRules,
-    ) -> String {
-        // Reentrancy protection
+    pub fn create_commitment(e: Env, owner: Address, amount: i128, asset_address: Address, rules: CommitmentRules) -> String {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
-
-        // Check if contract is paused
         Pausable::require_not_paused(&e);
-
-        // Rate limit: per-owner commitment creation
-        let fn_symbol = symbol_short!("create");
-        RateLimiter::check(&e, &owner, &fn_symbol);
-
-        // Validate amount > 0 using shared utilities
+        if is_zero_address(&e, &owner) { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::ZeroAddress, "create"); }
+        RateLimiter::check(&e, &owner, &symbol_short!("create"));
         Validation::require_positive(amount);
-
-        // Validate rules
         Self::validate_rules(&e, &rules);
+        check_sufficient_balance(&e, &owner, &asset_address, amount);
 
-        // Reject duration_days that would cause expires_at to overflow u64
         let expires_at = TimeUtils::checked_calculate_expiration(&e, rules.duration_days)
-            .unwrap_or_else(|| {
-                set_reentrancy_guard(&e, false);
-                fail(&e, CommitmentError::ExpirationOverflow, "create_commitment")
-            });
+            .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::ExpirationOverflow, "create") });
 
-        // OPTIMIZATION: Read both counters and NFT contract once to minimize storage operations
-        let (current_total, current_tvl, nft_contract) = {
-            let total = e
-                .storage()
-                .instance()
-                .get::<_, u64>(&DataKey::TotalCommitments)
-                .unwrap_or(0);
-            let tvl = e
-                .storage()
-                .instance()
-                .get::<_, i128>(&DataKey::TotalValueLocked)
-                .unwrap_or(0);
-            let nft = e
-                .storage()
-                .instance()
-                .get::<_, Address>(&DataKey::NftContract)
-                .unwrap_or_else(|| {
-                    set_reentrancy_guard(&e, false);
-                    fail(&e, CommitmentError::NotInitialized, "create_commitment")
-                });
-            (total, tvl, nft)
-        };
+        let current_total = e.storage().instance().get::<_, u64>(&DataKey::TotalCommitments).unwrap_or(0);
+        let nft_contract = e.storage().instance().get::<_, Address>(&DataKey::NftContract)
+            .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::NotInitialized, "create") });
 
-        // Generate unique commitment ID using counter
         let commitment_id = Self::generate_commitment_id(&e, current_total);
-
-        // CHECKS: Validate commitment doesn't already exist
-        if has_commitment(&e, &commitment_id) {
-            set_reentrancy_guard(&e, false);
-            fail(&e, CommitmentError::InvalidStatus, "create_commitment");
-        }
-
-        // EFFECTS: Update state before external calls (expires_at already computed above with overflow check)
-        let current_timestamp = TimeUtils::now(&e);
-
-        // Create commitment data
         let commitment = Commitment {
             commitment_id: commitment_id.clone(),
             owner: owner.clone(),
-            nft_token_id: 0, // Will be set after NFT mint
+            nft_token_id: 0,
             rules: rules.clone(),
             amount,
             asset_address: asset_address.clone(),
-            created_at: current_timestamp,
+            created_at: TimeUtils::now(&e),
             expires_at,
-            current_value: amount, // Initially same as amount
+            current_value: amount,
             status: String::from_str(&e, "active"),
         };
 
-        // Store commitment data (before external calls)
         set_commitment(&e, &commitment);
-
-        // Update owner's commitment list
-        let mut owner_commitments = e
-            .storage()
-            .instance()
-            .get::<_, Vec<String>>(&DataKey::OwnerCommitments(owner.clone()))
-            .unwrap_or(Vec::new(&e));
+        let mut owner_commitments = e.storage().instance().get::<_, Vec<String>>(&DataKey::OwnerCommitments(owner.clone())).unwrap_or(Vec::new(&e));
         owner_commitments.push_back(commitment_id.clone());
+        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
+        e.storage().instance().set(&DataKey::TotalCommitments, &(current_total + 1));
+        
+        let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl + amount));
         e.storage().instance().set(
             &DataKey::OwnerCommitments(owner.clone()),
             &owner_commitments,
@@ -543,21 +426,22 @@ impl CommitmentCoreContract {
         updated_commitment.nft_token_id = nft_token_id;
         set_commitment(&e, &updated_commitment);
 
-        // Clear reentrancy guard
+        transfer_assets(&e, &owner, &e.current_contract_address(), &asset_address, amount);
+        let nft_token_id = call_nft_mint(&e, &nft_contract, &owner, &commitment_id, rules.duration_days, rules.max_loss_percent, &rules.commitment_type, amount, &asset_address, rules.early_exit_penalty);
+        
+        let mut updated = commitment;
+        updated.nft_token_id = nft_token_id;
+        set_commitment(&e, &updated);
         set_reentrancy_guard(&e, false);
 
-        // Emit creation event
-        e.events().publish(
-            (
-                symbol_short!("Created"),
-                commitment_id.clone(),
-                owner.clone(),
-            ),
-            (amount, rules, nft_token_id, e.ledger().timestamp()),
-        );
+        e.events().publish((symbol_short!("Created"), commitment_id.clone(), owner), (amount, rules, nft_token_id, e.ledger().timestamp()));
         commitment_id
     }
 
+    pub fn update_value(e: Env, caller: Address, commitment_id: String, new_value: i128) {
+        let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin).unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "upd"));
+        let alloc = e.storage().instance().get::<_, Address>(&DataKey::AllocationContract);
+        let updaters = e.storage().instance().get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters).unwrap_or(Vec::new(&e));
     /// Get commitment details
     pub fn get_commitment(e: Env, commitment_id: String) -> Commitment {
         read_commitment(&e, &commitment_id)
@@ -635,6 +519,74 @@ impl CommitmentCoreContract {
             .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "get_nft_contract"))
     }
 
+        if caller != admin && !updaters.contains(&caller) && (alloc.is_none() || caller != alloc.unwrap()) {
+            fail(&e, CommitmentError::Unauthorized, "upd");
+        }
+    /// Pause the contract (admin-only).
+    pub fn pause(e: Env) {
+        let admin = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::Admin)
+            .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "pause"));
+        admin.require_auth();
+        Pausable::pause(&e);
+    }
+
+    /// Unpause the contract (admin-only).
+    pub fn unpause(e: Env) {
+        let admin = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::Admin)
+            .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "unpause"));
+        admin.require_auth();
+        Pausable::unpause(&e);
+    }
+
+    /// Check if the contract is paused.
+    pub fn is_paused(e: Env) -> bool {
+        Pausable::is_paused(&e)
+    }
+
+    /// Add an authorized contract that may call allocate() (admin-only).
+    pub fn add_authorized_contract(e: Env, caller: Address, contract_address: Address) {
+        require_admin(&e, &caller);
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedAllocator(contract_address.clone()), &true);
+        e.events().publish(
+            (Symbol::new(&e, "AuthorizedContractAdded"),),
+            (contract_address, e.ledger().timestamp()),
+        );
+    }
+
+    /// Remove an authorized contract from the allocator whitelist (admin-only).
+    pub fn remove_authorized_contract(e: Env, caller: Address, contract_address: Address) {
+        require_admin(&e, &caller);
+        e.storage()
+            .instance()
+            .remove(&DataKey::AuthorizedAllocator(contract_address.clone()));
+        e.events().publish(
+            (Symbol::new(&e, "AuthorizedContractRemoved"),),
+            (contract_address, e.ledger().timestamp()),
+        );
+    }
+
+    /// Check if a contract address is authorized to call allocate().
+    pub fn is_authorized(e: Env, contract_address: Address) -> bool {
+        let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
+        if let Some(a) = admin {
+            if contract_address == a {
+                return true;
+            }
+        }
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::AuthorizedAllocator(contract_address))
+            .unwrap_or(false)
+    }
+
     /// Update commitment value (called by allocation logic or oracle-fed keeper).
     /// Persists new_value to commitment.current_value and updates TotalValueLocked.
     pub fn update_value(e: Env, commitment_id: String, new_value: i128) {
@@ -643,295 +595,100 @@ impl CommitmentCoreContract {
         let contract_address = e.current_contract_address();
         RateLimiter::check(&e, &contract_address, &fn_symbol);
 
+        RateLimiter::check(&e, &e.current_contract_address(), &symbol_short!("upd_val"));
         Validation::require_non_negative(new_value);
 
-        let mut commitment = read_commitment(&e, &commitment_id)
-            .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "update_value"));
-
-        let active_status = String::from_str(&e, "active");
-        if commitment.status != active_status {
-            fail(&e, CommitmentError::NotActive, "update_value");
-        }
+        let mut commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "upd"));
+        if commitment.status != String::from_str(&e, "active") { fail(&e, CommitmentError::NotActive, "upd"); }
 
         let old_value = commitment.current_value;
         commitment.current_value = new_value;
 
-        // Check for violations after updating value
-        let loss_percent = if commitment.amount > 0 {
-            SafeMath::loss_percent(commitment.amount, commitment.current_value)
-        } else {
-            0
-        };
-        let max_loss = commitment.rules.max_loss_percent as i128;
-        let loss_violated = loss_percent > max_loss;
-
-        if loss_violated {
-            commitment.status = String::from_str(&e, "violated");
-            set_commitment(&e, &commitment);
-            e.events().publish(
-                (symbol_short!("Violated"), commitment_id.clone()),
-                (symbol_short!("RuleViol"), e.ledger().timestamp()),
-            );
-        } else {
-            set_commitment(&e, &commitment);
-            e.events().publish(
-                (symbol_short!("ValUpd"), commitment_id),
-                (new_value, e.ledger().timestamp()),
-            );
-        }
-
-        // Adjust TotalValueLocked: TVL -= old_value, TVL += new_value
-        let current_tvl = e
-            .storage()
-            .instance()
-            .get::<_, i128>(&DataKey::TotalValueLocked)
-            .unwrap_or(0);
-        let new_tvl = current_tvl - old_value + new_value;
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalValueLocked, &new_tvl);
-    }
-
-    /// Check if commitment rules are violated
-    /// Returns true if any rule violation is detected (loss limit or duration)
-    ///
-    /// # Formal Verification
-    /// **Preconditions:**
-    /// - `commitment_id` exists
-    ///
-    /// **Postconditions:**
-    /// - Returns `true` if `loss_percent > max_loss_percent OR current_time >= expires_at`
-    /// - Returns `false` otherwise
-    /// - Pure function (no state changes)
-    ///
-    /// **Invariants Maintained:**
-    /// - INV-2: Commitment balance conservation
-    ///
-    /// **Security Properties:**
-    /// - SP-4: State consistency (read-only)
-    pub fn check_violations(e: Env, commitment_id: String) -> bool {
-        let commitment = read_commitment(&e, &commitment_id)
-            .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "check_violations"));
-
-        // Skip check if already settled or violated
-        let active_status = String::from_str(&e, "active");
-        if commitment.status != active_status {
-            return false; // Already processed
-        }
-
-        let current_time = e.ledger().timestamp();
-
-        // Check loss limit violation
-        // Calculate loss percentage using shared utilities, but handle zero-amount
-        // commitments gracefully to avoid panics. A zero-amount commitment cannot
-        // meaningfully violate a loss limit, so we treat its loss percent as 0.
-        let loss_percent = if commitment.amount > 0 {
-            SafeMath::loss_percent(commitment.amount, commitment.current_value)
-        } else {
-            0
-        };
-
-        // Convert max_loss_percent (u32) to i128 for comparison
-        let max_loss = commitment.rules.max_loss_percent as i128;
-        let loss_violated = loss_percent > max_loss;
-
-        // Check duration violation (expired)
-        let duration_violated = current_time >= commitment.expires_at;
-
-        let violated = loss_violated || duration_violated;
+        let loss_percent = if commitment.amount > 0 { (commitment.amount - new_value) * 100 / commitment.amount } else { 0 };
+        let violated = loss_percent > commitment.rules.max_loss_percent as i128;
 
         if violated {
-            // Emit violation event
-            e.events().publish(
-                (symbol_short!("Violated"), commitment_id),
-                (symbol_short!("RuleViol"), e.ledger().timestamp()),
-            );
+            commitment.status = String::from_str(&e, "violated");
+            e.events().publish((symbol_short!("Violated"), commitment_id.clone()), (loss_percent, commitment.rules.max_loss_percent, e.ledger().timestamp()));
+        } else {
+            e.events().publish((symbol_short!("ValUpd"), commitment_id.clone()), (new_value, e.ledger().timestamp()));
         }
 
-        // Return true if any violation exists
+        set_commitment(&e, &commitment);
+        let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl - old_value + new_value));
+    }
+
+    pub fn check_violations(e: Env, commitment_id: String) -> bool {
+        let commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "chk"));
+        if commitment.status != String::from_str(&e, "active") { return false; }
+
+        let current_time = e.ledger().timestamp();
+        let loss_percent = if commitment.amount > 0 { SafeMath::loss_percent(commitment.amount, commitment.current_value) } else { 0 };
+        let violated = (loss_percent > commitment.rules.max_loss_percent as i128) || (current_time >= commitment.expires_at);
+
+        if violated {
+            e.events().publish((symbol_short!("Violated"), commitment_id), (symbol_short!("RuleViol"), e.ledger().timestamp()));
+        }
         violated
     }
 
-    /// Get detailed violation information
-    /// Returns a tuple: (has_violations, loss_violated, duration_violated, loss_percent, time_remaining)
-    pub fn get_violation_details(e: Env, commitment_id: String) -> (bool, bool, bool, i128, u64) {
-        let commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| {
-            fail(
-                &e,
-                CommitmentError::CommitmentNotFound,
-                "get_violation_details",
-            )
-        });
-
-        let current_time = e.ledger().timestamp();
-
-        // Calculate loss percentage
-        let loss_amount = commitment.amount - commitment.current_value;
-        let loss_percent = if commitment.amount > 0 {
-            (loss_amount * 100) / commitment.amount
-        } else {
-            0
-        };
-
-        // Check loss limit violation
-        let max_loss = commitment.rules.max_loss_percent as i128;
-        let loss_violated = loss_percent > max_loss;
-
-        // Check duration violation
-        let duration_violated = current_time >= commitment.expires_at;
-
-        // Calculate time remaining (0 if expired)
-        let time_remaining = if current_time < commitment.expires_at {
-            commitment.expires_at - current_time
-        } else {
-            0
-        };
-
-        let has_violations = loss_violated || duration_violated;
-
-        (
-            has_violations,
-            loss_violated,
-            duration_violated,
-            loss_percent,
-            time_remaining,
-        )
-    }
-
-    /// Settle commitment at maturity
-    ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern with reentrancy guard.
     pub fn settle(e: Env, commitment_id: String) {
-        // Reentrancy protection
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
-
-        // Check if contract is paused
         Pausable::require_not_paused(&e);
 
-        // CHECKS: Get and validate commitment
-        let mut commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| {
-            set_reentrancy_guard(&e, false);
-            fail(&e, CommitmentError::CommitmentNotFound, "settle")
-        });
-
-        // Verify commitment is expired
+        let mut commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::CommitmentNotFound, "settle") });
         let current_time = e.ledger().timestamp();
-        if current_time < commitment.expires_at {
-            set_reentrancy_guard(&e, false);
-            fail(&e, CommitmentError::NotExpired, "settle");
-        }
 
-        // Verify commitment is active
-        let active_status = String::from_str(&e, "active");
-        if commitment.status != active_status {
-            set_reentrancy_guard(&e, false);
-            fail(&e, CommitmentError::NotActive, "settle");
-        }
+        if current_time < commitment.expires_at { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::NotExpired, "settle"); }
+        let settled_status = String::from_str(&e, "settled");
+        if commitment.status == settled_status { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::AlreadySettled, "settle"); }
+        if commitment.status != String::from_str(&e, "active") { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::NotActive, "settle"); }
 
-        // EFFECTS: Update state before external calls
         let settlement_amount = commitment.current_value;
-        commitment.status = String::from_str(&e, "settled");
+        let owner = commitment.owner.clone();
+        commitment.status = settled_status;
         set_commitment(&e, &commitment);
+        remove_from_owner_commitments(&e, &owner, &commitment_id);
 
-        // Decrease total value locked
-        let current_tvl = e
-            .storage()
-            .instance()
-            .get::<_, i128>(&DataKey::TotalValueLocked)
-            .unwrap_or(0);
-        let new_tvl = current_tvl - settlement_amount;
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalValueLocked, &new_tvl);
+        let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &(if tvl > settlement_amount { tvl - settlement_amount } else { 0 }));
 
-        // INTERACTIONS: External calls (token transfer, NFT settlement)
-        // Transfer assets back to owner
-        let contract_address = e.current_contract_address();
-        let token_client = token::Client::new(&e, &commitment.asset_address);
-        token_client.transfer(&contract_address, &commitment.owner, &settlement_amount);
-
-        // Call NFT contract to mark NFT as settled
-        let nft_contract = e
-            .storage()
-            .instance()
-            .get::<_, Address>(&DataKey::NftContract)
-            .unwrap_or_else(|| {
-                set_reentrancy_guard(&e, false);
-                fail(&e, CommitmentError::NotInitialized, "settle")
-            });
-
+        transfer_assets(&e, &e.current_contract_address(), &owner, &commitment.asset_address, settlement_amount);
+        
+        let nft_contract = e.storage().instance().get::<_, Address>(&DataKey::NftContract).unwrap();
         let mut args = Vec::new(&e);
+        args.push_back(e.current_contract_address().into_val(&e));
         args.push_back(commitment.nft_token_id.into_val(&e));
         e.invoke_contract::<()>(&nft_contract, &Symbol::new(&e, "settle"), args);
 
-        // Clear reentrancy guard
         set_reentrancy_guard(&e, false);
-
-        // Emit settlement event
-        e.events().publish(
-            (symbol_short!("Settled"), commitment_id),
-            (settlement_amount, e.ledger().timestamp()),
-        );
+        e.events().publish((symbol_short!("Settled"), commitment_id, owner), (settlement_amount, e.ledger().timestamp()));
     }
 
     pub fn early_exit(e: Env, commitment_id: String, caller: Address) {
-        // Reentrancy protection
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
-
-        // Check if contract is paused
         Pausable::require_not_paused(&e);
 
-        // CHECKS: Get and validate commitment
-        let mut commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| {
-            set_reentrancy_guard(&e, false);
-            fail(&e, CommitmentError::CommitmentNotFound, "early_exit")
-        });
-
-        // Verify caller is owner
+        let mut commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::CommitmentNotFound, "exit") });
         caller.require_auth();
-        if commitment.owner != caller {
-            set_reentrancy_guard(&e, false);
-            fail(&e, CommitmentError::Unauthorized, "early_exit");
-        }
+        if commitment.owner != caller { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::Unauthorized, "exit"); }
+        if commitment.status != String::from_str(&e, "active") { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::NotActive, "exit"); }
 
-        // Verify commitment is active
-        let active_status = String::from_str(&e, "active");
-        if commitment.status != active_status {
-            set_reentrancy_guard(&e, false);
-            fail(&e, CommitmentError::NotActive, "early_exit");
-        }
+        let penalty = SafeMath::penalty_amount(commitment.current_value, commitment.rules.early_exit_penalty);
+        let returned = SafeMath::sub(commitment.current_value, penalty);
+        let original_val = commitment.current_value;
 
-        // EFFECTS: Calculate penalty using shared utilities
-        let penalty_amount = SafeMath::penalty_amount(
-            commitment.current_value,
-            commitment.rules.early_exit_penalty,
-        );
-        let returned_amount = SafeMath::sub(commitment.current_value, penalty_amount);
-        let original_value = commitment.current_value;
-
-        // Update commitment status to early_exit
         commitment.status = String::from_str(&e, "early_exit");
-        commitment.current_value = 0; // All value has been distributed
+        commitment.current_value = 0;
         set_commitment(&e, &commitment);
 
-        // Decrease total value locked by full current value (no longer locked)
-        let current_tvl = e
-            .storage()
-            .instance()
-            .get::<_, i128>(&DataKey::TotalValueLocked)
-            .unwrap_or(0);
-        let new_tvl = current_tvl - original_value;
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalValueLocked, &new_tvl);
+        let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl - original_val));
 
-        // INTERACTIONS: External calls (token transfer)
-        // Transfer remaining amount (after penalty) to owner
-        let contract_address = e.current_contract_address();
-        let token_client = token::Client::new(&e, &commitment.asset_address);
+        if returned > 0 { transfer_assets(&e, &e.current_contract_address(), &commitment.owner, &commitment.asset_address, returned); }
 
         if returned_amount > 0 {
             token_client.transfer(&contract_address, &commitment.owner, &returned_amount);
@@ -948,37 +705,45 @@ impl CommitmentCoreContract {
             });
 
         // Call mark_inactive on NFT instead of settle (since not expired)
+        let nft_contract = e.storage().instance().get::<_, Address>(&DataKey::NftContract).unwrap();
         let mut args = Vec::new(&e);
+        args.push_back(e.current_contract_address().into_val(&e));
         args.push_back(commitment.nft_token_id.into_val(&e));
         e.invoke_contract::<()>(&nft_contract, &Symbol::new(&e, "mark_inactive"), args);
 
-        // Clear reentrancy guard
         set_reentrancy_guard(&e, false);
-
-        // Emit early exit event with detailed information
-        e.events().publish(
-            (
-                symbol_short!("EarlyExt"),
-                commitment_id.clone(),
-                caller.clone(),
-            ),
-            (penalty_amount, returned_amount, e.ledger().timestamp()),
-        );
+        e.events().publish((symbol_short!("EarlyExt"), commitment_id, caller), (penalty, returned, e.ledger().timestamp()));
     }
 
-    /// Allocate liquidity (called by allocation strategy)
+    pub fn add_updater(e: Env, caller: Address, updater: Address) {
+        require_admin(&e, &caller);
+        add_authorized_updater(&e, &updater);
+    /// Allocate liquidity (called by admin or authorized allocator contract)
+    ///
+    /// # Access Control
+    /// Caller must be admin or an address in the authorized allocator whitelist.
     ///
     /// # Reentrancy Protection
     /// Uses checks-effects-interactions pattern with reentrancy guard.
-    pub fn allocate(e: Env, commitment_id: String, target_pool: Address, amount: i128) {
+    pub fn allocate(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        target_pool: Address,
+        amount: i128,
+    ) {
         // Reentrancy protection
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
 
-        // Check if contract is paused
         Pausable::require_not_paused(&e);
 
-        // Rate limit allocations per target pool address
+        caller.require_auth();
+        if !Self::is_authorized(e.clone(), caller.clone()) {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::Unauthorized, "allocate: caller not admin or authorized allocator");
+        }
+
         let fn_symbol = symbol_short!("alloc");
         RateLimiter::check(&e, &target_pool, &fn_symbol);
 
@@ -1027,31 +792,20 @@ impl CommitmentCoreContract {
         );
     }
 
-    /// Configure rate limits for this contract's functions.
-    ///
-    /// This function is restricted to the contract admin.
-    pub fn set_rate_limit(
-        e: Env,
-        caller: Address,
-        function: Symbol,
-        window_seconds: u64,
-        max_calls: u32,
-    ) {
+    pub fn remove_updater(e: Env, caller: Address, updater: Address) {
         require_admin(&e, &caller);
-        RateLimiter::set_limit(&e, &function, window_seconds, max_calls);
+        remove_authorized_updater(&e, &updater);
     }
 
-    /// Set or clear rate limit exemption for an address.
-    ///
-    /// This function is restricted to the contract admin.
-    pub fn set_rate_limit_exempt(e: Env, caller: Address, address: Address, exempt: bool) {
+    pub fn set_allocation_contract(e: Env, caller: Address, addr: Address) {
         require_admin(&e, &caller);
-        RateLimiter::set_exempt(&e, &address, exempt);
+        e.storage().instance().set(&DataKey::AllocationContract, &addr);
+    }
+
+    pub fn get_authorized_updaters(e: Env) -> Vec<Address> {
+        e.storage().instance().get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters).unwrap_or(Vec::new(&e))
     }
 }
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(test, feature = "benchmark"))]
-mod benchmarks;

@@ -28,6 +28,141 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "CommitmentIdIndex"
+                },
+                {
+                  "string": "COMMIT_0"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CommitmentIdIndex"
+                    },
+                    {
+                      "string": "COMMIT_0"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "u32": 0
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "CommitmentIdIndex"
+                },
+                {
+                  "string": "COMMIT_1"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CommitmentIdIndex"
+                    },
+                    {
+                      "string": "COMMIT_1"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "u32": 1
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "CommitmentIdIndex"
+                },
+                {
+                  "string": "COMMIT_2"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CommitmentIdIndex"
+                    },
+                    {
+                      "string": "COMMIT_2"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "u32": 2
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "NFT"
                 },
                 {
@@ -93,7 +228,7 @@
                               "symbol": "commitment_id"
                             },
                             "val": {
-                              "string": "commitment_0"
+                              "string": "COMMIT_0"
                             }
                           },
                           {
@@ -247,7 +382,7 @@
                               "symbol": "commitment_id"
                             },
                             "val": {
-                              "string": "commitment_1"
+                              "string": "COMMIT_1"
                             }
                           },
                           {
@@ -401,7 +536,7 @@
                               "symbol": "commitment_id"
                             },
                             "val": {
-                              "string": "commitment_2"
+                              "string": "COMMIT_2"
                             }
                           },
                           {
@@ -828,7 +963,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "commitment_0"
+                  "string": "COMMIT_0"
                 },
                 {
                   "u64": 0
@@ -938,7 +1073,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "commitment_1"
+                  "string": "COMMIT_1"
                 },
                 {
                   "u64": 0
@@ -1048,7 +1183,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "commitment_2"
+                  "string": "COMMIT_2"
                 },
                 {
                   "u64": 0

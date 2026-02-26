@@ -335,9 +335,33 @@ impl AttestationEngineContract {
         Pausable::is_paused(&e)
     }
 
+/// Check if an address is a verifier (public version).
     /// Check if an address is a verifier (public version)
     pub fn is_verifier(e: Env, address: Address) -> bool {
         Self::is_authorized_verifier(&e, &address)
+    }
+
+    /// Return true if the given address is authorized (admin or in verifier whitelist). Same as is_verifier.
+    pub fn is_authorized(e: Env, contract_address: Address) -> bool {
+        Self::is_authorized_verifier(&e, &contract_address)
+    }
+
+    /// Add an authorized contract (verifier) to the whitelist. Admin-only. Same as add_verifier.
+    pub fn add_authorized_contract(
+        e: Env,
+        caller: Address,
+        contract_address: Address,
+    ) -> Result<(), AttestationError> {
+        Self::add_verifier(e, caller, contract_address)
+    }
+
+    /// Remove an authorized contract (verifier) from the whitelist. Admin-only. Same as remove_verifier.
+    pub fn remove_authorized_contract(
+        e: Env,
+        caller: Address,
+        contract_address: Address,
+    ) -> Result<(), AttestationError> {
+        Self::remove_verifier(e, caller, contract_address)
     }
 
     /// Get the admin address
@@ -719,6 +743,10 @@ impl AttestationEngineContract {
             timestamp,
             attestation_type: attestation_type.clone(),
             data: data.clone(),
+            timestamp,
+            data,
+            timestamp: e.ledger().timestamp(),
+            verified_by: caller.clone(),
             is_compliant,
             verified_by: caller.clone(),
         };
@@ -920,6 +948,13 @@ impl AttestationEngineContract {
     }
 
     /// Verify commitment compliance
+    /// Verify commitment compliance
+    /// 
+    /// Returns compliance status based on commitment state:
+    /// - "settled": true (compliant until settlement)
+    /// - "violated": false (rule violation occurred)
+    /// - "early_exit": false (exited before maturity)
+    /// - "active": checks current metrics against rules
     pub fn verify_compliance(e: Env, commitment_id: String) -> bool {
         let commitment_core: Address = match e.storage().instance().get(&DataKey::CoreContract) {
             Some(addr) => addr,
@@ -941,9 +976,30 @@ impl AttestationEngineContract {
             Err(_) => return false,
         };
 
-        let metrics = Self::get_health_metrics(e.clone(), commitment_id);
-        let max_loss = commitment.rules.max_loss_percent as i128;
-        metrics.drawdown_percent <= max_loss && metrics.compliance_score >= 50
+        // Check commitment status
+        let status_settled = String::from_str(&e, "settled");
+        let status_violated = String::from_str(&e, "violated");
+        let status_early_exit = String::from_str(&e, "early_exit");
+        let status_active = String::from_str(&e, "active");
+
+        if commitment.status == status_settled {
+            // Settled commitments are considered compliant (they were compliant until settlement)
+            return true;
+        } else if commitment.status == status_violated {
+            // Violated commitments are non-compliant
+            return false;
+        } else if commitment.status == status_early_exit {
+            // Early exit commitments are non-compliant (didn't complete term)
+            return false;
+        } else if commitment.status == status_active {
+            // For active commitments, check current metrics
+            let metrics = Self::get_health_metrics(e.clone(), commitment_id);
+            let max_loss = commitment.rules.max_loss_percent as i128;
+            return metrics.drawdown_percent <= max_loss && metrics.compliance_score >= 50;
+        }
+
+        // Unknown status defaults to false
+        false
     }
 
     /// Convenience wrapper for fee_generation attestations
@@ -953,6 +1009,11 @@ impl AttestationEngineContract {
         commitment_id: String,
         fee_amount: i128,
     ) -> Result<(), AttestationError> {
+        // Validate fee amount must be non-negative
+        if fee_amount < 0 {
+            return Err(AttestationError::InvalidFeeAmount);
+        }
+
         let mut data = Map::new(&e);
         data.set(
             String::from_str(&e, "fee_amount"),

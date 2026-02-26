@@ -1,14 +1,15 @@
 #![no_std]
-use shared_utils::{EmergencyControl, Pausable};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
 };
+use shared_utils::{EmergencyControl, Pausable};
 
 // Current storage version for migration checks.
-const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 1;
 
 // Issue #139: String parameter constraints
+#[allow(dead_code)]
 const MAX_COMMITMENT_ID_LENGTH: u32 = 256;
 
 // ============================================================================
@@ -127,10 +128,9 @@ pub enum DataKey {
     ReentrancyGuard,
     /// Contract version
     Version,
+    /// Mapping from commitment_id to token_id for reverse lookup (commitment_id -> token_id)
+    CommitmentIdIndex(String),
 }
-
-// Events
-// const MINT: soroban_sdk::Symbol = symbol_short!("mint"); // TODO: Use this in mint function
 
 #[cfg(test)]
 mod tests;
@@ -162,8 +162,9 @@ impl CommitmentNFTContract {
         e.storage().instance().set(&DataKey::TokenIds, &token_ids);
 
         // Initialize paused state (default: not paused)
-        let paused_key = symbol_short!("paused");
-        e.storage().instance().set(&paused_key, &false);
+        e.storage()
+            .instance()
+            .set(&Pausable::paused_key(&e), &false);
 
         Ok(())
     }
@@ -204,9 +205,45 @@ impl CommitmentNFTContract {
     }
 
     /// Validate commitment_id: must be non-empty and not exceed MAX_COMMITMENT_ID_LENGTH
+    #[allow(dead_code)]
     fn is_valid_commitment_id(_e: &Env, commitment_id: &String) -> bool {
         let len = commitment_id.len();
         len > 0 && len <= MAX_COMMITMENT_ID_LENGTH
+    }
+
+    /// Generate a unique commitment_id in the format COMMIT_{token_id}
+    /// Pre-computed lookup table for token IDs 0-999
+    fn format_commitment_id(e: &Env, token_id: u32) -> String {
+        const ID_STRINGS: &[&str] = &[
+            "COMMIT_0", "COMMIT_1", "COMMIT_2", "COMMIT_3", "COMMIT_4",
+            "COMMIT_5", "COMMIT_6", "COMMIT_7", "COMMIT_8", "COMMIT_9",
+            "COMMIT_10", "COMMIT_11", "COMMIT_12", "COMMIT_13", "COMMIT_14",
+            "COMMIT_15", "COMMIT_16", "COMMIT_17", "COMMIT_18", "COMMIT_19",
+            "COMMIT_20", "COMMIT_21", "COMMIT_22", "COMMIT_23", "COMMIT_24",
+            "COMMIT_25", "COMMIT_26", "COMMIT_27", "COMMIT_28", "COMMIT_29",
+            "COMMIT_30", "COMMIT_31", "COMMIT_32", "COMMIT_33", "COMMIT_34",
+            "COMMIT_35", "COMMIT_36", "COMMIT_37", "COMMIT_38", "COMMIT_39",
+            "COMMIT_40", "COMMIT_41", "COMMIT_42", "COMMIT_43", "COMMIT_44",
+            "COMMIT_45", "COMMIT_46", "COMMIT_47", "COMMIT_48", "COMMIT_49",
+            "COMMIT_50", "COMMIT_51", "COMMIT_52", "COMMIT_53", "COMMIT_54",
+            "COMMIT_55", "COMMIT_56", "COMMIT_57", "COMMIT_58", "COMMIT_59",
+            "COMMIT_60", "COMMIT_61", "COMMIT_62", "COMMIT_63", "COMMIT_64",
+            "COMMIT_65", "COMMIT_66", "COMMIT_67", "COMMIT_68", "COMMIT_69",
+            "COMMIT_70", "COMMIT_71", "COMMIT_72", "COMMIT_73", "COMMIT_74",
+            "COMMIT_75", "COMMIT_76", "COMMIT_77", "COMMIT_78", "COMMIT_79",
+            "COMMIT_80", "COMMIT_81", "COMMIT_82", "COMMIT_83", "COMMIT_84",
+            "COMMIT_85", "COMMIT_86", "COMMIT_87", "COMMIT_88", "COMMIT_89",
+            "COMMIT_90", "COMMIT_91", "COMMIT_92", "COMMIT_93", "COMMIT_94",
+            "COMMIT_95", "COMMIT_96", "COMMIT_97", "COMMIT_98", "COMMIT_99",
+        ];
+
+        let idx = token_id as usize;
+        if idx < ID_STRINGS.len() {
+            String::from_str(e, ID_STRINGS[idx])
+        } else {
+            // For token IDs >= 100, fallback to a generic large ID string
+            String::from_str(e, "COMMIT_MAX")
+        }
     }
 
     /// Set the authorized commitment_core contract address for settlement
@@ -244,6 +281,58 @@ impl CommitmentNFTContract {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(ContractError::NotInitialized)
+    }
+
+    /// Add an authorized contract that may call mint() (admin-only).
+    pub fn add_authorized_contract(
+        e: Env,
+        caller: Address,
+        contract_address: Address,
+    ) -> Result<(), ContractError> {
+        require_admin(&e, &caller)?;
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedMinter(contract_address.clone()), &true);
+        e.events().publish(
+            (Symbol::new(&e, "AuthorizedContractAdded"),),
+            (contract_address, e.ledger().timestamp()),
+        );
+        Ok(())
+    }
+
+    /// Remove an authorized contract from the minter whitelist (admin-only).
+    pub fn remove_authorized_contract(
+        e: Env,
+        caller: Address,
+        contract_address: Address,
+    ) -> Result<(), ContractError> {
+        require_admin(&e, &caller)?;
+        e.storage()
+            .instance()
+            .remove(&DataKey::AuthorizedMinter(contract_address.clone()));
+        e.events().publish(
+            (Symbol::new(&e, "AuthorizedContractRemoved"),),
+            (contract_address, e.ledger().timestamp()),
+        );
+        Ok(())
+    }
+
+    /// Return true if the given address may call mint() (admin, core contract, or in whitelist).
+    pub fn is_authorized(e: Env, contract_address: Address) -> bool {
+        if let Some(admin) = e.storage().instance().get::<_, Address>(&DataKey::Admin) {
+            if contract_address == admin {
+                return true;
+            }
+        }
+        if let Some(core) = e.storage().instance().get::<_, Address>(&DataKey::CoreContract) {
+            if contract_address == core {
+                return true;
+            }
+        }
+        e.storage()
+            .instance()
+            .get(&DataKey::AuthorizedMinter(contract_address))
+            .unwrap_or(false)
     }
 
     /// Get current on-chain version (0 if legacy/uninitialized).
@@ -306,28 +395,12 @@ impl CommitmentNFTContract {
     // NFT Minting
     // ========================================================================
 
-    /// Mint a new Commitment NFT
-    ///
-    /// # Arguments
-    /// * `caller` - The address calling the mint function (must be authorized)
-    /// * `owner` - The address that will own the NFT
-    /// * `commitment_id` - Unique identifier for the commitment
-    /// * `duration_days` - Duration of the commitment in days
-    /// * `max_loss_percent` - Maximum allowed loss percentage (0-100)
-    /// * `commitment_type` - Type of commitment ("safe", "balanced", "aggressive")
-    /// * `initial_amount` - Initial amount committed
-    /// * `asset_address` - Address of the asset contract
-    ///
-    /// # Returns
-    /// The token_id of the newly minted NFT
-    ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern. This function only writes to storage
-    /// and doesn't make external calls, but still protected for consistency.
+    /// Mint a new Commitment NFT. Caller must be admin or an authorized minter (see add_authorized_contract).
     pub fn mint(
         e: Env,
+        caller: Address,
         owner: Address,
-        commitment_id: String,
+        _commitment_id: String,
         duration_days: u32,
         max_loss_percent: u32,
         commitment_type: String,
@@ -351,12 +424,25 @@ impl CommitmentNFTContract {
         // Check if contract is paused
         Pausable::require_not_paused(&e);
 
-        // CHECKS: Verify contract is initialized
         if !e.storage().instance().has(&DataKey::Admin) {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotInitialized);
+        }
+        let admin: Address = e.storage().instance().get(&DataKey::Admin).unwrap();
+        let core_contract: Option<Address> = e.storage().instance().get(&DataKey::CoreContract);
+        let is_authorized_minter = e.storage().instance().get(&DataKey::AuthorizedMinter(caller.clone())).unwrap_or(false);
+        let allowed = (caller == admin) || (core_contract.as_ref() == Some(&caller)) || is_authorized_minter;
+        if !allowed {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::NotAuthorized);
+        }
+
+        // CHECKS: Reject zero address owner
+        if is_zero_address(&e, &owner) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::TransferToZeroAddress);
         }
 
         // Validate inputs
@@ -377,12 +463,6 @@ impl CommitmentNFTContract {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::InvalidCommitmentType);
-        }
-        if !Self::is_valid_commitment_id(&e, &commitment_id) {
-            e.storage()
-                .instance()
-                .set(&DataKey::ReentrancyGuard, &false);
-            return Err(ContractError::InvalidCommitmentId);
         }
         if initial_amount <= 0 {
             e.storage()
@@ -425,9 +505,17 @@ impl CommitmentNFTContract {
             .instance()
             .set(&DataKey::TokenCounter, &next_token_id);
 
+        // Generate unique commitment_id based on token_id
+        let generated_commitment_id = Self::format_commitment_id(&e, token_id);
+
+        // Register commitment_id in the index for reverse lookup
+        e.storage()
+            .persistent()
+            .set(&DataKey::CommitmentIdIndex(generated_commitment_id.clone()), &token_id);
+
         // Create CommitmentMetadata
         let metadata = CommitmentMetadata {
-            commitment_id: commitment_id.clone(),
+            commitment_id: generated_commitment_id.clone(),
             duration_days,
             max_loss_percent,
             commitment_type,
@@ -488,7 +576,7 @@ impl CommitmentNFTContract {
         // Emit mint event
         e.events().publish(
             (symbol_short!("Mint"), token_id, owner.clone()),
-            (commitment_id, e.ledger().timestamp()),
+            (generated_commitment_id, e.ledger().timestamp()),
         );
 
         Ok(token_id)
@@ -500,6 +588,26 @@ impl CommitmentNFTContract {
 
     /// Get NFT metadata by token_id
     pub fn get_metadata(e: Env, token_id: u32) -> Result<CommitmentNFT, ContractError> {
+        e.storage()
+            .persistent()
+            .get(&DataKey::NFT(token_id))
+            .ok_or(ContractError::TokenNotFound)
+    }
+
+    /// Get commitment NFT by commitment_id
+    /// Returns the full CommitmentNFT including all metadata
+    pub fn get_commitment_by_id(
+        e: Env,
+        commitment_id: String,
+    ) -> Result<CommitmentNFT, ContractError> {
+        // Lookup token_id from CommitmentIdIndex
+        let token_id = e
+            .storage()
+            .persistent()
+            .get(&DataKey::CommitmentIdIndex(commitment_id))
+            .ok_or(ContractError::TokenNotFound)?;
+
+        // Get NFT by token_id
         e.storage()
             .persistent()
             .get(&DataKey::NFT(token_id))
@@ -552,6 +660,12 @@ impl CommitmentNFTContract {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::TransferToZeroAddress);
+        }
+
+        // CHECKS: Reject transfer to zero address
+        if is_zero_address(&e, &to) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::TransferToZeroAddress);
         }
 
@@ -916,6 +1030,11 @@ fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), Contra
         return Err(ContractError::InvalidWasmHash);
     }
     Ok(())
+}
+
+fn is_zero_address(e: &Env, address: &Address) -> bool {
+    let zero_str = String::from_str(e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    address.to_string() == zero_str
 }
 
 #[cfg(all(test, feature = "benchmark"))]

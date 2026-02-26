@@ -35,7 +35,7 @@ impl MockCoreContract {
 struct BenchmarkMetrics {
     function_name: String,
     gas_before: u32,
-    gas_after: u32,
+    gas_after: u32, 
 }
 
 impl BenchmarkMetrics {
