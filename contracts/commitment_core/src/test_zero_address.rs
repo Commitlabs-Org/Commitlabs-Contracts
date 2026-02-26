@@ -17,7 +17,7 @@ fn test_create_commitment_zero_owner_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    // These names match the exports in Commitmentlabs-Contracts
+    // Use 'Contract' if 'CommitmentCoreContract' fails; crate::* should find it
     let contract_id = env.register_contract(None, CommitmentCoreContract);
     let client = CommitmentCoreContractClient::new(&env, &contract_id);
 
@@ -25,7 +25,7 @@ fn test_create_commitment_zero_owner_fails() {
     let amount: i128 = 100_000_000;
     let asset_address = Address::generate(&env);
 
-    // Corrected field names for the Commitlabs CommitmentRules struct
+    // Initializing with common field names found in Commitlabs Core
     let rules = CommitmentRules {
         min_commitment_amount: 0,
         max_commitment_amount: i128::MAX,
