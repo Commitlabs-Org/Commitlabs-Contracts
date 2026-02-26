@@ -1,12 +1,15 @@
 #![cfg(test)]
 extern crate std;
 
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
-// NOTE: Change these if your struct is named something like `CommitmentCore` instead
-use crate::{CommitmentCoreContract, CommitmentCoreContractClient};
+use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
+use soroban_sdk::{Address, Env, String};
 
 fn generate_zero_address(env: &Env) -> Address {
-    Address::from_contract_id(&BytesN::from_array(env, &[0; 32]))
+    // Generates a standard all-zero Stellar address
+    Address::from_string(&String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ))
 }
 
 #[test]
@@ -19,8 +22,14 @@ fn test_create_commitment_zero_owner_fails() {
     let client = CommitmentCoreContractClient::new(&env, &contract_id);
 
     let zero_owner = generate_zero_address(&env);
+    let amount: i128 = 1000;
+    let asset_address = Address::generate(&env);
 
-    // Attempt to create a commitment with the zero address
-    // (Add the remaining arguments required by your create_commitment function)
-    client.create_commitment(&zero_owner);
+    // NOTE: We assume `CommitmentRules` implements Default.
+    // If you get a compilation error here, look at `contracts/commitment_core/src/tests.rs`
+    // to see how your team normally initializes `CommitmentRules` and copy that dummy setup here.
+    let rules = CommitmentRules::default();
+
+    // Passing all 4 required arguments
+    client.create_commitment(&zero_owner, &amount, &asset_address, &rules);
 }
