@@ -742,11 +742,7 @@ impl AttestationEngineContract {
             commitment_id: commitment_id.clone(),
             timestamp,
             attestation_type: attestation_type.clone(),
-            data: data.clone(),
-            timestamp,
             data,
-            timestamp: e.ledger().timestamp(),
-            verified_by: caller.clone(),
             is_compliant,
             verified_by: caller.clone(),
         };
@@ -1067,12 +1063,38 @@ impl AttestationEngineContract {
 
         Self::attest(
             e.clone(),
-            caller,
+            caller.clone(),
             commitment_id.clone(),
             String::from_str(&e, "drawdown"),
             data,
             is_compliant,
         )?;
+
+        if !is_compliant {
+            let mut violation_data = Map::new(&e);
+            violation_data.set(
+                String::from_str(&e, "violation_type"),
+                String::from_str(&e, "max_loss_exceeded"),
+            );
+            violation_data.set(
+                String::from_str(&e, "severity"),
+                String::from_str(&e, "high"),
+            );
+
+            Self::attest(
+                e.clone(),
+                caller,
+                commitment_id.clone(),
+                String::from_str(&e, "violation"),
+                violation_data,
+                false,
+            )?;
+
+            e.events().publish(
+                (Symbol::new(&e, "ViolationRecorded"), commitment_id.clone()),
+                (drawdown_percent, max_loss, e.ledger().timestamp()),
+            );
+        }
 
         e.events().publish(
             (Symbol::new(&e, "DrawdownRecorded"), commitment_id),

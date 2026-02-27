@@ -4,7 +4,7 @@
 #![cfg(test)]
 
 use crate::harness::{ TestHarness, SECONDS_PER_DAY };
-use soroban_sdk::{ testutils::{ Address as _, Ledger }, Address, Env, Map, String };
+use soroban_sdk::{ testutils::{ Address as _, Events, Ledger }, Address, Env, IntoVal, Map, String, Symbol };
 
 use attestation_engine::AttestationEngineContract;
 use commitment_core::{ CommitmentCoreContract, CommitmentRules };
@@ -238,7 +238,7 @@ fn test_record_drawdown_compliance_check() {
     let result = harness.env.as_contract(&harness.contracts.attestation_engine, || {
         AttestationEngineContract::record_drawdown(
             harness.env.clone(),
-            harness.accounts.admin.clone(), // Use admin instead of verifier
+            verifier.clone(),
             commitment_id.clone(),
             5
         )
@@ -254,18 +254,46 @@ fn test_record_drawdown_compliance_check() {
         AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
     });
 
-    // Debug: print actual values
-    println!("Actual drawdown_percent: {}", metrics.drawdown_percent);
-    println!("Actual fees_generated: {}", metrics.fees_generated);
-    println!("Actual compliance_score: {}", metrics.compliance_score);
-
     assert_eq!(metrics.drawdown_percent, 5);
+    assert_eq!(metrics.compliance_score, 100);
+
+    // Only drawdown attestation should be recorded for compliant path
+    let attestations = harness.env.as_contract(&harness.contracts.attestation_engine, || {
+        AttestationEngineContract::get_attestations(harness.env.clone(), commitment_id.clone())
+    });
+    assert_eq!(attestations.len(), 1);
+    assert_eq!(
+        attestations.get(0).unwrap().attestation_type,
+        String::from_str(&harness.env, "drawdown")
+    );
+    assert!(attestations.get(0).unwrap().is_compliant);
+
+    // No violation should be counted
+    let (_, total_attestations, total_violations, _) = harness.env.as_contract(
+        &harness.contracts.attestation_engine,
+        || AttestationEngineContract::get_protocol_statistics(harness.env.clone())
+    );
+    assert_eq!(total_attestations, 1);
+    assert_eq!(total_violations, 0);
 
     // Verify compliance is still true
     let is_compliant = harness.env.as_contract(&harness.contracts.attestation_engine, || {
         AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
     });
     assert!(is_compliant);
+
+    // Drawdown event emitted, violation event not emitted
+    let events = harness.env.events().all();
+    let drawdown_symbol = Symbol::new(&harness.env, "DrawdownRecorded").into_val(&harness.env);
+    let violation_symbol = Symbol::new(&harness.env, "ViolationRecorded").into_val(&harness.env);
+    let has_drawdown_event = events.iter().any(|ev| {
+        ev.1.first().map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
+    });
+    let has_violation_event = events.iter().any(|ev| {
+        ev.1.first().map_or(false, |topic| topic.shallow_eq(&violation_symbol))
+    });
+    assert!(has_drawdown_event);
+    assert!(!has_violation_event);
 }
 
 #[test]
@@ -302,12 +330,58 @@ fn test_record_drawdown_non_compliant() {
         AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
     });
     assert_eq!(metrics.drawdown_percent, 15);
+    assert!(metrics.compliance_score < 100);
+
+    // Exceeding max_loss should record drawdown + violation attestations
+    let attestations = harness.env.as_contract(&harness.contracts.attestation_engine, || {
+        AttestationEngineContract::get_attestations(harness.env.clone(), commitment_id.clone())
+    });
+    assert_eq!(attestations.len(), 2);
+    assert_eq!(
+        attestations.get(0).unwrap().attestation_type,
+        String::from_str(&harness.env, "drawdown")
+    );
+    assert_eq!(
+        attestations.get(1).unwrap().attestation_type,
+        String::from_str(&harness.env, "violation")
+    );
+    assert!(!attestations.get(0).unwrap().is_compliant);
+    assert!(!attestations.get(1).unwrap().is_compliant);
+
+    let violation_type = attestations
+        .get(1)
+        .unwrap()
+        .data
+        .get(String::from_str(&harness.env, "violation_type"))
+        .unwrap();
+    assert_eq!(violation_type, String::from_str(&harness.env, "max_loss_exceeded"));
+
+    // Both attestations are tracked as violations by analytics
+    let (_, total_attestations, total_violations, _) = harness.env.as_contract(
+        &harness.contracts.attestation_engine,
+        || AttestationEngineContract::get_protocol_statistics(harness.env.clone())
+    );
+    assert_eq!(total_attestations, 2);
+    assert_eq!(total_violations, 2);
 
     // Verify compliance is false
     let is_compliant = harness.env.as_contract(&harness.contracts.attestation_engine, || {
         AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
     });
     assert!(!is_compliant);
+
+    // Both drawdown and violation events should be emitted
+    let events = harness.env.events().all();
+    let drawdown_symbol = Symbol::new(&harness.env, "DrawdownRecorded").into_val(&harness.env);
+    let violation_symbol = Symbol::new(&harness.env, "ViolationRecorded").into_val(&harness.env);
+    let has_drawdown_event = events.iter().any(|ev| {
+        ev.1.first().map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
+    });
+    let has_violation_event = events.iter().any(|ev| {
+        ev.1.first().map_or(false, |topic| topic.shallow_eq(&violation_symbol))
+    });
+    assert!(has_drawdown_event);
+    assert!(has_violation_event);
 }
 
 // ============================================
