@@ -21,6 +21,8 @@ use soroban_sdk::{
     IntoVal, String, Symbol, Vec,
 };
 
+pub mod fuzzing;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -52,6 +54,8 @@ pub enum CommitmentError {
     FeeRecipientNotSet = 22,
     /// Insufficient collected fees to withdraw
     InsufficientFees = 23,
+    /// Arithmetic operation overflowed or underflowed
+    ArithmeticOverflow = 24,
 }
 
 impl CommitmentError {
@@ -80,6 +84,7 @@ impl CommitmentError {
             CommitmentError::InvalidFeeBps => "Invalid fee basis points: must be 0-10000",
             CommitmentError::FeeRecipientNotSet => "Fee recipient not set; cannot withdraw",
             CommitmentError::InsufficientFees => "Insufficient collected fees to withdraw",
+            CommitmentError::ArithmeticOverflow => "Arithmetic overflow or underflow",
         }
     }
 }
@@ -383,6 +388,21 @@ impl CommitmentCoreContract {
         Self::validate_rules(&e, &rules);
         check_sufficient_balance(&e, &owner, &asset_address, amount);
 
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = fuzzing::checked_fee_from_bps(amount, creation_fee_bps)
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "create");
+            });
+        let net_amount = amount.checked_sub(creation_fee).unwrap_or_else(|| {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::ArithmeticOverflow, "create");
+        });
+
         let expires_at = TimeUtils::checked_calculate_expiration(&e, rules.duration_days)
             .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::ExpirationOverflow, "create") });
 
@@ -420,7 +440,11 @@ impl CommitmentCoreContract {
             .instance()
             .get::<_, i128>(&DataKey::TotalValueLocked)
             .unwrap_or(0);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl + net_amount));
+        let updated_tvl = tvl.checked_add(net_amount).unwrap_or_else(|| {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::ArithmeticOverflow, "create");
+        });
+        e.storage().instance().set(&DataKey::TotalValueLocked, &updated_tvl);
 
         let mut all_ids = e
             .storage()
@@ -435,29 +459,18 @@ impl CommitmentCoreContract {
         let contract_address = e.current_contract_address();
         transfer_assets(&e, &owner, &contract_address, &asset_address, amount);
 
-        // Collect creation fee if configured
-        let creation_fee_bps: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::CreationFeeBps)
-            .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-
         // Add creation fee to collected fees
         if creation_fee > 0 {
             let fee_key = DataKey::CollectedFees(asset_address.clone());
             let current_fees: i128 = e.storage().instance().get(&fee_key).unwrap_or(0);
+            let updated_fees = current_fees.checked_add(creation_fee).unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "create");
+            });
             e.storage()
                 .instance()
-                .set(&fee_key, &(current_fees + creation_fee));
+                .set(&fee_key, &updated_fees);
         }
-
-        // Net amount locked in commitment (after fee deduction)
-        let net_amount = amount - creation_fee;
 
         let nft_token_id = call_nft_mint(
             &e,
@@ -651,7 +664,11 @@ impl CommitmentCoreContract {
 
         set_commitment(&e, &commitment);
         let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl - old_value + new_value));
+        let updated_tvl = tvl
+            .checked_sub(old_value)
+            .and_then(|value| value.checked_add(new_value))
+            .unwrap_or_else(|| fail(&e, CommitmentError::ArithmeticOverflow, "upd"));
+        e.storage().instance().set(&DataKey::TotalValueLocked, &updated_tvl);
     }
 
     pub fn check_violations(e: Env, commitment_id: String) -> bool {
@@ -1126,6 +1143,9 @@ mod emergency_tests;
 
 #[cfg(test)]
 mod fee_tests;
+
+#[cfg(test)]
+mod fuzz_tests;
 
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;

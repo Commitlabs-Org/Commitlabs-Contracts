@@ -88,7 +88,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "check_violations"
+                  "string": "chk"
                 },
                 {
                   "string": "Unknown error"
