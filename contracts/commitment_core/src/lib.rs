@@ -11,6 +11,9 @@
 //! The end-to-end review for the `commitment_core <-> commitment_nft <-> attestation_engine`
 //! call graph lives in:
 //! [`docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph`](../../../docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph)
+//!
+//! Formal verification planning placeholder:
+//! [`docs/COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md`](../../../docs/COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md)
 
 use shared_utils::{
     emit_error_event, fees, EmergencyControl, Pausable, RateLimiter, SafeMath, TimeUtils,
@@ -383,6 +386,18 @@ impl CommitmentCoreContract {
         Self::validate_rules(&e, &rules);
         check_sufficient_balance(&e, &owner, &asset_address, amount);
 
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
+        let net_amount = amount - creation_fee;
+
         let expires_at = TimeUtils::checked_calculate_expiration(&e, rules.duration_days)
             .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::ExpirationOverflow, "create") });
 
@@ -435,18 +450,6 @@ impl CommitmentCoreContract {
         let contract_address = e.current_contract_address();
         transfer_assets(&e, &owner, &contract_address, &asset_address, amount);
 
-        // Collect creation fee if configured
-        let creation_fee_bps: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::CreationFeeBps)
-            .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-
         // Add creation fee to collected fees
         if creation_fee > 0 {
             let fee_key = DataKey::CollectedFees(asset_address.clone());
@@ -455,9 +458,6 @@ impl CommitmentCoreContract {
                 .instance()
                 .set(&fee_key, &(current_fees + creation_fee));
         }
-
-        // Net amount locked in commitment (after fee deduction)
-        let net_amount = amount - creation_fee;
 
         let nft_token_id = call_nft_mint(
             &e,
