@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, Map, String};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, Map, String, Symbol};
 
 #[test]
 fn test_initialize_and_getters() {
@@ -661,4 +661,240 @@ fn test_record_drawdown_exceeds_max_loss_records_violation() {
     let severity = violation_attestation.data.get(severity_key).unwrap();
     assert_eq!(violation_type, String::from_str(&e, "max_loss_exceeded"));
     assert_eq!(severity, String::from_str(&e, "high"));
+}
+
+// ============================================
+// Verifier Allowlist Abuse Cases
+// ============================================
+
+#[test]
+fn test_add_verifier_success() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+    });
+
+    let result = e.as_contract(&contract_id, || {
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier.clone())
+    });
+    assert_eq!(result, Ok(()));
+
+    let is_listed = e.as_contract(&contract_id, || {
+        AttestationEngineContract::is_verifier(e.clone(), verifier.clone())
+    });
+    assert!(is_listed, "Verifier should be listed after add");
+}
+
+#[test]
+fn test_add_verifier_duplicate_is_idempotent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+    });
+
+    // First add — normal path
+    let r1 = e.as_contract(&contract_id, || {
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier.clone())
+    });
+    assert_eq!(r1, Ok(()));
+
+    // Second add — abuse path: idempotent, emits VerifAddAbuse event
+    let r2 = e.as_contract(&contract_id, || {
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier.clone())
+    });
+    assert_eq!(r2, Ok(()));
+
+    // Verifier must still be listed
+    let still_listed = e.as_contract(&contract_id, || {
+        AttestationEngineContract::is_verifier(e.clone(), verifier.clone())
+    });
+    assert!(still_listed, "Verifier should remain listed after duplicate add");
+}
+
+#[test]
+fn test_add_verifier_unauthorized() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+    let non_admin = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+    });
+
+    let result = e.as_contract(&contract_id, || {
+        AttestationEngineContract::add_verifier(e.clone(), non_admin.clone(), verifier.clone())
+    });
+    assert_eq!(result, Err(AttestationError::Unauthorized));
+
+    // Verifier must not have been added
+    let is_listed = e.as_contract(&contract_id, || {
+        AttestationEngineContract::is_verifier(e.clone(), verifier.clone())
+    });
+    assert!(!is_listed, "Verifier must not be listed after unauthorized add attempt");
+}
+
+#[test]
+fn test_remove_verifier_success() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier.clone()).unwrap();
+    });
+
+    let result = e.as_contract(&contract_id, || {
+        AttestationEngineContract::remove_verifier(e.clone(), admin.clone(), verifier.clone())
+    });
+    assert_eq!(result, Ok(()));
+
+    let is_listed = e.as_contract(&contract_id, || {
+        AttestationEngineContract::is_verifier(e.clone(), verifier.clone())
+    });
+    assert!(!is_listed, "Verifier should not be listed after remove");
+}
+
+#[test]
+fn test_remove_verifier_not_listed_is_idempotent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+    });
+
+    // verifier was never added; remove is idempotent, emits VerifRmAbuse event
+    let result = e.as_contract(&contract_id, || {
+        AttestationEngineContract::remove_verifier(e.clone(), admin.clone(), verifier.clone())
+    });
+    assert_eq!(result, Ok(()));
+
+    let is_listed = e.as_contract(&contract_id, || {
+        AttestationEngineContract::is_verifier(e.clone(), verifier.clone())
+    });
+    assert!(!is_listed, "Verifier should remain unlisted after no-op remove");
+}
+
+#[test]
+fn test_remove_verifier_unauthorized() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+    let non_admin = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier.clone()).unwrap();
+    });
+
+    let result = e.as_contract(&contract_id, || {
+        AttestationEngineContract::remove_verifier(e.clone(), non_admin.clone(), verifier.clone())
+    });
+    assert_eq!(result, Err(AttestationError::Unauthorized));
+
+    // Verifier must still be listed
+    let still_listed = e.as_contract(&contract_id, || {
+        AttestationEngineContract::is_verifier(e.clone(), verifier.clone())
+    });
+    assert!(still_listed, "Verifier must remain listed after unauthorized remove attempt");
+}
+
+#[test]
+#[should_panic(expected = "Rate limit exceeded")]
+fn test_add_verifier_rate_limit_exceeded() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.ledger().with_mut(|l| l.timestamp = 1000);
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+        // 1 add_verifier allowed per 3600-second window
+        AttestationEngineContract::set_rate_limit(
+            e.clone(),
+            admin.clone(),
+            Symbol::new(&e, "add_verif"),
+            3600u64,
+            1u32,
+        )
+        .unwrap();
+    });
+
+    let verifier1 = Address::generate(&e);
+    let verifier2 = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        // First call — within limit
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier1.clone())
+            .unwrap();
+        // Second call — exceeds limit, must panic
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier2.clone())
+            .unwrap();
+    });
+}
+
+#[test]
+#[should_panic(expected = "Rate limit exceeded")]
+fn test_remove_verifier_rate_limit_exceeded() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.ledger().with_mut(|l| l.timestamp = 1000);
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+    let verifier1 = Address::generate(&e);
+    let verifier2 = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier1.clone()).unwrap();
+        AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier2.clone()).unwrap();
+        // 1 remove_verifier allowed per 3600-second window
+        AttestationEngineContract::set_rate_limit(
+            e.clone(),
+            admin.clone(),
+            Symbol::new(&e, "rm_verif"),
+            3600u64,
+            1u32,
+        )
+        .unwrap();
+    });
+
+    e.as_contract(&contract_id, || {
+        // First remove — within limit
+        AttestationEngineContract::remove_verifier(e.clone(), admin.clone(), verifier1.clone())
+            .unwrap();
+        // Second remove — exceeds limit, must panic
+        AttestationEngineContract::remove_verifier(e.clone(), admin.clone(), verifier2.clone())
+            .unwrap();
+    });
 }
