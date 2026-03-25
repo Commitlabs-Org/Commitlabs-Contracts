@@ -1,3 +1,19 @@
+
+//! # Commitment Marketplace Contract Tests
+//!
+//! Unit tests for the CommitmentMarketplace Soroban contract.
+//!
+//! ## Coverage
+//! - Initialization, listing, offers, auctions, and reentrancy guard.
+//! - Edge cases and error conditions.
+//!
+//! ## Security
+//! - Explicit tests for reentrancy guard on all entry points.
+//! - All state-changing entry points require authentication.
+//!
+//! ## Usage
+//! Run with `cargo test -p commitment-marketplace` from the workspace root.
+
 #![cfg(test)]
 
 extern crate std;
@@ -13,6 +29,9 @@ use soroban_sdk::{
 // Test Setup Helpers
 // ============================================================================
 
+/// @notice Helper to deploy and initialize the marketplace contract for tests.
+/// @param e Test environment.
+/// @return (admin, fee_recipient, client)
 fn setup_marketplace(e: &Env) -> (Address, Address, CommitmentMarketplaceClient<'_>) {
     let admin = Address::generate(e);
     let nft_contract = Address::generate(e);
@@ -27,6 +46,9 @@ fn setup_marketplace(e: &Env) -> (Address, Address, CommitmentMarketplaceClient<
     (admin, fee_recipient, client)
 }
 
+/// @notice Helper to generate a test token address.
+/// @param e Test environment.
+/// @return Address of a generated token.
 fn setup_test_token(e: &Env) -> Address {
     // In a real implementation, you'd deploy a token contract
     // For testing, we'll use a generated address
@@ -537,6 +559,131 @@ fn test_reentrancy_protection() {
 // ============================================================================
 // Benchmark Placeholder Tests
 // ============================================================================
+
+// ============================================================================
+// Reentrancy Guard Unit Tests (Explicit)
+// ============================================================================
+
+/// @notice Test: list_nft fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_list_nft_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.list_nft(&seller, &1, &1000, &payment_token);
+}
+
+/// @notice Test: cancel_listing fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_cancel_listing_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+    client.list_nft(&seller, &token_id, &1000, &payment_token);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.cancel_listing(&seller, &token_id);
+}
+
+/// @notice Test: buy_nft fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_buy_nft_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+    client.list_nft(&seller, &token_id, &1000, &payment_token);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.buy_nft(&buyer, &token_id);
+}
+
+/// @notice Test: make_offer fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_make_offer_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.make_offer(&offerer, &1, &500, &payment_token);
+}
+
+/// @notice Test: accept_offer fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_accept_offer_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+    client.list_nft(&seller, &token_id, &1000, &payment_token);
+    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.accept_offer(&seller, &token_id, &offerer);
+}
+
+/// @notice Test: start_auction fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_start_auction_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.start_auction(&seller, &1, &1000, &86400, &payment_token);
+}
+
+/// @notice Test: place_bid fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_place_bid_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+    client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.place_bid(&bidder, &token_id, &1200);
+}
+
+/// @notice Test: end_auction fails if reentrancy guard is set.
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_end_auction_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+    client.start_auction(&seller, &token_id, &1000, &1, &payment_token);
+    e.ledger().with_mut(|li| {
+        li.timestamp = 2;
+    });
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    client.end_auction(&token_id);
+}
 
 #[test]
 fn test_gas_listing_operations() {
