@@ -335,7 +335,7 @@ impl AttestationEngineContract {
         Pausable::is_paused(&e)
     }
 
-/// Check if an address is a verifier (public version).
+    /// Check if an address is a verifier (public version).
     /// Check if an address is a verifier (public version)
     pub fn is_verifier(e: Env, address: Address) -> bool {
         Self::is_authorized_verifier(&e, &address)
@@ -885,7 +885,19 @@ impl AttestationEngineContract {
         e.storage().persistent().get(&key).unwrap_or(0)
     }
 
-    /// Get current health metrics for a commitment
+    /// Get current health metrics for a commitment.
+    ///
+    /// Summary:
+    /// - Cross-reads the canonical commitment record from `commitment_core`.
+    /// - Aggregates fee and attestation timestamps from local attestation storage.
+    ///
+    /// Security:
+    /// - Read-only entrypoint; no state is mutated.
+    /// - Trust boundary is the configured `commitment_core` contract address stored at initialization.
+    ///
+    /// Panics:
+    /// - If the contract is not initialized.
+    /// - If `commitment_core` does not return a decodable `Commitment`.
     pub fn get_health_metrics(e: Env, commitment_id: String) -> HealthMetrics {
         let commitment_core: Address = e
             .storage()
