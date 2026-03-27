@@ -1,7 +1,38 @@
-//! Commitment Transformation contract (#57).
+//! # Commitment Transformation Contract
 //!
 //! Transforms commitments into risk tranches, collateralized assets,
 //! and secondary market instruments with protocol-specific guarantees.
+//!
+//! ## Trust Boundaries
+//! - **Admin**: sole authority over fee settings, fee-recipient, and transformer allowlist.
+//! - **Authorized transformers**: may call `create_tranches`, `collateralize`,
+//!   `create_secondary_instrument`, and `add_protocol_guarantee`.
+//! - **Anyone**: read-only getters only.
+//!
+//! ## Storage Mutation Summary
+//! | Key | Mutated by |
+//! |-----|-----------|
+//! | `Admin` | `initialize` |
+//! | `CoreContract` | `initialize` |
+//! | `TransformationFeeBps` | `initialize`, `set_transformation_fee` |
+//! | `FeeRecipient` | `set_fee_recipient` |
+//! | `AuthorizedTransformer(addr)` | `set_authorized_transformer` |
+//! | `TrancheSet(id)` | `create_tranches` |
+//! | `CollateralizedAsset(id)` | `collateralize` |
+//! | `SecondaryInstrument(id)` | `create_secondary_instrument` |
+//! | `ProtocolGuarantee(id)` | `add_protocol_guarantee` |
+//! | `CollectedFees(asset)` | `create_tranches` (accumulate), `withdraw_fees` (drain) |
+//! | `ReentrancyGuard` | all state-mutating calls |
+//!
+//! ## Arithmetic Safety
+//! All fee and tranche calculations use `i128` arithmetic.  The only
+//! potentially surprising truncation is integer division:
+//! `fee = (total_value * fee_bps) / 10_000` and
+//! `tranche_amount = (net_value * bps) / 10_000`.
+//! Both round toward zero (floor for positive values), meaning dust
+//! amounts may be retained in the contract.  Callers should be aware
+//! that the sum of tranche amounts can be up to `n – 1` stroops less
+//! than `net_value` where `n` is the number of tranches.
 
 #![no_std]
 
@@ -15,21 +46,46 @@ use soroban_sdk::{
 // Errors (aligned with shared_utils::error_codes)
 // ============================================================================
 
+/// All error conditions that the transformation contract can surface.
+///
+/// Each discriminant maps to the same integer as the
+/// `shared_utils::error_codes` table so that off-chain observers can
+/// decode them uniformly.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum TransformationError {
+    /// Amount argument is zero or negative.
     InvalidAmount = 1,
+    /// Tranche BPS array does not sum to 10 000, is empty, or has a
+    /// different length than the `risk_levels` array.
     InvalidTrancheRatios = 2,
+    /// `fee_bps` argument exceeds 10 000 (100 %).
     InvalidFeeBps = 3,
+    /// Caller is not the admin and is not in the authorized-transformer list.
     Unauthorized = 4,
+    /// A function requiring prior initialization was called before
+    /// `initialize`.
     NotInitialized = 5,
+    /// `initialize` was called on an already-initialized contract.
     AlreadyInitialized = 6,
+    /// Referenced commitment ID does not exist in the core contract.
+    /// Reserved for future cross-contract commitment validation.
     CommitmentNotFound = 7,
+    /// The requested transformation, collateral, instrument, or guarantee
+    /// record does not exist in storage.
     TransformationNotFound = 8,
+    /// The commitment or transformation is in a state that does not allow
+    /// the requested operation.
+    /// Reserved for future lifecycle-enforcement logic.
     InvalidState = 9,
+    /// A re-entrant call was detected via the in-storage reentrancy guard.
     ReentrancyDetected = 10,
+    /// `withdraw_fees` was called but `set_fee_recipient` has never been
+    /// called on this contract.
     FeeRecipientNotSet = 11,
+    /// `withdraw_fees` requested more than the currently collected balance
+    /// for the given asset.
     InsufficientFees = 12,
 }
 
@@ -204,6 +260,21 @@ pub struct CommitmentTransformationContract;
 #[contractimpl]
 impl CommitmentTransformationContract {
     /// Initialize the transformation contract.
+    ///
+    /// # Parameters
+    /// - `admin` – Address that will own admin privileges (fee configuration,
+    ///   transformer allowlist, fee withdrawal).
+    /// - `core_contract` – Address of the `commitment_core` contract.
+    ///   Stored for future cross-contract commitment validation.
+    ///
+    /// # Errors
+    /// - [`TransformationError::AlreadyInitialized`] if called more than once.
+    ///
+    /// # Security
+    /// No auth is required to call `initialize`, but the `admin` address
+    /// supplied here becomes the sole privileged actor thereafter.  Deploy
+    /// scripts must call this immediately after contract deployment to
+    /// prevent a front-running attack.
     pub fn initialize(e: Env, admin: Address, core_contract: Address) {
         if e.storage().instance().has(&DataKey::Admin) {
             fail(&e, TransformationError::AlreadyInitialized, "initialize");
@@ -220,7 +291,18 @@ impl CommitmentTransformationContract {
             .set(&DataKey::TrancheSetCounter, &0u64);
     }
 
-    /// Set transformation fee in basis points (0-10000). Admin only.
+    /// Set the protocol fee charged on each tranche creation.
+    ///
+    /// # Parameters
+    /// - `caller` – Must be the admin; `require_auth` is enforced.
+    /// - `fee_bps` – Fee in basis points (0 – 10 000).  10 000 = 100 %.
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] if `caller` is not the admin.
+    /// - [`TransformationError::InvalidFeeBps`] if `fee_bps > 10_000`.
+    ///
+    /// # Events
+    /// Emits `("FeeSet", caller) → (fee_bps, timestamp)`.
     pub fn set_transformation_fee(e: Env, caller: Address, fee_bps: u32) {
         require_admin(&e, &caller);
         if fee_bps > 10000 {
@@ -239,7 +321,18 @@ impl CommitmentTransformationContract {
         );
     }
 
-    /// Set or clear authorized transformer contract. Admin only.
+    /// Grant or revoke authorization for a transformer address.
+    ///
+    /// # Parameters
+    /// - `caller` – Must be the admin; `require_auth` is enforced.
+    /// - `transformer` – Address to authorize or revoke.
+    /// - `allowed` – `true` to grant, `false` to revoke.
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] if `caller` is not the admin.
+    ///
+    /// # Events
+    /// Emits `("AuthSet", transformer) → (allowed, timestamp)`.
     pub fn set_authorized_transformer(
         e: Env,
         caller: Address,
@@ -257,9 +350,42 @@ impl CommitmentTransformationContract {
         );
     }
 
-    /// Split a commitment into risk tranches. Caller must be commitment owner or authorized.
-    /// When transformation_fee_bps > 0, caller must send fee_amount of fee_asset to the contract.
-    /// tranche_share_bps: e.g. [6000, 3000, 1000] for 60% senior, 30% mezzanine, 10% equity.
+    /// Split a commitment into a set of risk tranches.
+    ///
+    /// # Parameters
+    /// - `caller` – Must be authorized (admin or in transformer allowlist);
+    ///   `require_auth` is enforced.
+    /// - `commitment_id` – Identifier of the underlying commitment.
+    /// - `total_value` – Gross value being tranched (in asset base units,
+    ///   must be > 0).
+    /// - `tranche_share_bps` – Per-tranche allocation in basis points.
+    ///   Must be non-empty, same length as `risk_levels`, and sum to
+    ///   exactly 10 000.
+    /// - `risk_levels` – Human-readable risk label per tranche, e.g.
+    ///   `"senior"`, `"mezzanine"`, `"equity"`.
+    /// - `fee_asset` – Token contract used to collect the transformation
+    ///   fee.  Only a real token transfer is performed when
+    ///   `transformation_fee_bps > 0`.
+    ///
+    /// # Returns
+    /// The generated `transformation_id` (opaque string key).
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] – caller not authorized.
+    /// - [`TransformationError::ReentrancyDetected`] – nested call guard
+    ///   (should be unreachable in normal operation).
+    /// - [`TransformationError::InvalidTrancheRatios`] – empty array, length
+    ///   mismatch, or BPS sum ≠ 10 000.
+    /// - Panics via [`shared_utils::Validation::require_positive`] if
+    ///   `total_value ≤ 0`.
+    ///
+    /// # Events
+    /// Emits `("TrCreated", transformation_id, caller) → (total_value, fee_amount, timestamp)`.
+    ///
+    /// # Security
+    /// Reentrancy-guarded.  Fee transfer is performed as an external
+    /// interaction *inside* the guard; state is finalized before the guard
+    /// is released.
     pub fn create_tranches(
         e: Env,
         caller: Address,
@@ -374,7 +500,25 @@ impl CommitmentTransformationContract {
         transformation_id
     }
 
-    /// Create a collateralized asset backed by a commitment.
+    /// Create a collateralized asset record backed by a commitment.
+    ///
+    /// # Parameters
+    /// - `caller` – Must be authorized; `require_auth` is enforced.
+    /// - `commitment_id` – Identifier of the backing commitment.
+    /// - `collateral_amount` – Amount of `asset_address` tokens pledged
+    ///   (must be > 0).
+    /// - `asset_address` – Token contract address of the collateral asset.
+    ///
+    /// # Returns
+    /// The generated `asset_id` (opaque string key).
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] – caller not authorized.
+    /// - [`TransformationError::ReentrancyDetected`] – reentrancy guard.
+    /// - Panics via `Validation::require_positive` if `collateral_amount ≤ 0`.
+    ///
+    /// # Events
+    /// Emits `("Collater", asset_id, caller) → (commitment_id, collateral_amount, asset_address, timestamp)`.
     pub fn collateralize(
         e: Env,
         caller: Address,
@@ -434,6 +578,24 @@ impl CommitmentTransformationContract {
     }
 
     /// Create a secondary market instrument (receivable, option, warrant).
+    ///
+    /// # Parameters
+    /// - `caller` – Must be authorized; `require_auth` is enforced.
+    /// - `commitment_id` – Identifier of the underlying commitment.
+    /// - `instrument_type` – Instrument class, e.g. `"receivable"`,
+    ///   `"option"`, `"warrant"`.
+    /// - `amount` – Face/notional amount (must be > 0).
+    ///
+    /// # Returns
+    /// The generated `instrument_id` (opaque string key).
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] – caller not authorized.
+    /// - [`TransformationError::ReentrancyDetected`] – reentrancy guard.
+    /// - Panics via `Validation::require_positive` if `amount ≤ 0`.
+    ///
+    /// # Events
+    /// Emits `("SecCreat", instrument_id, caller) → (commitment_id, instrument_type, amount, timestamp)`.
     pub fn create_secondary_instrument(
         e: Env,
         caller: Address,
@@ -494,7 +656,23 @@ impl CommitmentTransformationContract {
         instrument_id
     }
 
-    /// Add a protocol-specific guarantee to a commitment.
+    /// Attach a protocol-specific guarantee to a commitment.
+    ///
+    /// # Parameters
+    /// - `caller` – Must be authorized; `require_auth` is enforced.
+    /// - `commitment_id` – Target commitment.
+    /// - `guarantee_type` – Guarantee category, e.g. `"liquidity_backstop"`.
+    /// - `terms_hash` – Off-chain content hash of the guarantee terms.
+    ///
+    /// # Returns
+    /// The generated `guarantee_id` (opaque string key).
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] – caller not authorized.
+    /// - [`TransformationError::ReentrancyDetected`] – reentrancy guard.
+    ///
+    /// # Events
+    /// Emits `("GuarAdded", guarantee_id, caller) → (commitment_id, guarantee_type, terms_hash, timestamp)`.
     pub fn add_protocol_guarantee(
         e: Env,
         caller: Address,
@@ -551,7 +729,10 @@ impl CommitmentTransformationContract {
         guarantee_id
     }
 
-    /// Get tranche set by ID.
+    /// Fetch a [`TrancheSet`] by its `transformation_id`.
+    ///
+    /// # Errors
+    /// - [`TransformationError::TransformationNotFound`] if the ID is unknown.
     pub fn get_tranche_set(e: Env, transformation_id: String) -> TrancheSet {
         e.storage()
             .instance()
@@ -565,7 +746,10 @@ impl CommitmentTransformationContract {
             })
     }
 
-    /// Get collateralized asset by ID.
+    /// Fetch a [`CollateralizedAsset`] by its `asset_id`.
+    ///
+    /// # Errors
+    /// - [`TransformationError::TransformationNotFound`] if the ID is unknown.
     pub fn get_collateralized_asset(e: Env, asset_id: String) -> CollateralizedAsset {
         e.storage()
             .instance()
@@ -579,7 +763,10 @@ impl CommitmentTransformationContract {
             })
     }
 
-    /// Get secondary instrument by ID.
+    /// Fetch a [`SecondaryInstrument`] by its `instrument_id`.
+    ///
+    /// # Errors
+    /// - [`TransformationError::TransformationNotFound`] if the ID is unknown.
     pub fn get_secondary_instrument(e: Env, instrument_id: String) -> SecondaryInstrument {
         e.storage()
             .instance()
@@ -593,7 +780,10 @@ impl CommitmentTransformationContract {
             })
     }
 
-    /// Get protocol guarantee by ID.
+    /// Fetch a [`ProtocolGuarantee`] by its `guarantee_id`.
+    ///
+    /// # Errors
+    /// - [`TransformationError::TransformationNotFound`] if the ID is unknown.
     pub fn get_protocol_guarantee(e: Env, guarantee_id: String) -> ProtocolGuarantee {
         e.storage()
             .instance()
@@ -653,7 +843,17 @@ impl CommitmentTransformationContract {
             .unwrap_or(0)
     }
 
-    /// Set fee recipient (protocol treasury). Admin only.
+    /// Set the fee recipient (protocol treasury) for fee withdrawals.
+    ///
+    /// # Parameters
+    /// - `caller` – Must be the admin; `require_auth` is enforced.
+    /// - `recipient` – Address that will receive withdrawn fees.
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] if `caller` is not the admin.
+    ///
+    /// # Events
+    /// Emits `("FeeRecip", caller) → (recipient, timestamp)`.
     pub fn set_fee_recipient(e: Env, caller: Address, recipient: Address) {
         require_admin(&e, &caller);
         e.storage()
@@ -665,7 +865,24 @@ impl CommitmentTransformationContract {
         );
     }
 
-    /// Withdraw collected transformation fees to the configured fee recipient. Admin only.
+    /// Withdraw collected transformation fees to the configured fee recipient.
+    ///
+    /// # Parameters
+    /// - `caller` – Must be the admin; `require_auth` is enforced.
+    /// - `asset_address` – Token contract whose collected balance to draw
+    ///   from.
+    /// - `amount` – Amount to transfer (must be > 0, ≤ collected balance).
+    ///
+    /// # Errors
+    /// - [`TransformationError::Unauthorized`] – caller not the admin.
+    /// - [`TransformationError::InvalidAmount`] – `amount ≤ 0`.
+    /// - [`TransformationError::FeeRecipientNotSet`] – `set_fee_recipient`
+    ///   has never been called.
+    /// - [`TransformationError::InsufficientFees`] – `amount` exceeds the
+    ///   collected balance for `asset_address`.
+    ///
+    /// # Events
+    /// Emits `("FeesWith", caller, recipient) → (asset_address, amount, timestamp)`.
     pub fn withdraw_fees(e: Env, caller: Address, asset_address: Address, amount: i128) {
         require_admin(&e, &caller);
         if amount <= 0 {

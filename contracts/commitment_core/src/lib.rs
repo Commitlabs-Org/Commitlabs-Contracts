@@ -390,6 +390,21 @@ impl CommitmentCoreContract {
         let nft_contract = e.storage().instance().get::<_, Address>(&DataKey::NftContract)
             .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::NotInitialized, "create") });
 
+        // Calculate the creation fee and net amount before building the commitment
+        // struct so that the correct (post-fee) value is stored from the start.
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
+        // Net amount locked in commitment (after fee deduction)
+        let net_amount = amount - creation_fee;
+
         let commitment_id = Self::generate_commitment_id(&e, current_total);
         let commitment = Commitment {
             commitment_id: commitment_id.clone(),
@@ -435,19 +450,7 @@ impl CommitmentCoreContract {
         let contract_address = e.current_contract_address();
         transfer_assets(&e, &owner, &contract_address, &asset_address, amount);
 
-        // Collect creation fee if configured
-        let creation_fee_bps: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::CreationFeeBps)
-            .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-
-        // Add creation fee to collected fees
+        // Credit creation fee to collected-fees ledger
         if creation_fee > 0 {
             let fee_key = DataKey::CollectedFees(asset_address.clone());
             let current_fees: i128 = e.storage().instance().get(&fee_key).unwrap_or(0);
@@ -455,9 +458,6 @@ impl CommitmentCoreContract {
                 .instance()
                 .set(&fee_key, &(current_fees + creation_fee));
         }
-
-        // Net amount locked in commitment (after fee deduction)
-        let net_amount = amount - creation_fee;
 
         let nft_token_id = call_nft_mint(
             &e,

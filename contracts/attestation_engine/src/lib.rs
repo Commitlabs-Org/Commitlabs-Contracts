@@ -691,27 +691,48 @@ impl AttestationEngineContract {
         let fn_symbol = Symbol::new(&e, "attest");
         RateLimiter::check(&e, &caller, &fn_symbol);
 
+        let result = Self::write_attestation(
+            &e,
+            &caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+        );
+
+        // Clear reentrancy guard regardless of outcome
+        e.storage().instance().remove(&DataKey::ReentrancyGuard);
+
+        result
+    }
+
+    /// Internal helper: persist an attestation record, update counters, and emit event.
+    /// Callers are responsible for auth and reentrancy guard management.
+    fn write_attestation(
+        e: &Env,
+        caller: &Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
         // 4. Validate commitment_id is not empty
         if commitment_id.len() == 0 {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
             return Err(AttestationError::InvalidCommitmentId);
         }
 
         // 5. Validate commitment exists in core contract
-        if !Self::commitment_exists(&e, &commitment_id) {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+        if !Self::commitment_exists(e, &commitment_id) {
             return Err(AttestationError::CommitmentNotFound);
         }
 
         // 6. Validate attestation type
-        if !Self::is_valid_attestation_type(&e, &attestation_type) {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+        if !Self::is_valid_attestation_type(e, &attestation_type) {
             return Err(AttestationError::InvalidAttestationType);
         }
 
         // 7. Validate data format for the attestation type
-        if !Self::validate_attestation_data(&e, &attestation_type, &data) {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+        if !Self::validate_attestation_data(e, &attestation_type, &data) {
             return Err(AttestationError::InvalidAttestationData);
         }
 
@@ -728,8 +749,8 @@ impl AttestationEngineContract {
                 .get::<DataKey, Address>(&DataKey::AttestationFeeAsset)
             {
                 let contract_address = e.current_contract_address();
-                let token_client = token::Client::new(&e, &fee_asset);
-                token_client.transfer(&caller, &contract_address, &fee_amount);
+                let token_client = token::Client::new(e, &fee_asset);
+                token_client.transfer(caller, &contract_address, &fee_amount);
                 let key = DataKey::CollectedFees(fee_asset.clone());
                 let current: i128 = e.storage().instance().get(&key).unwrap_or(0);
                 e.storage().instance().set(&key, &(current + fee_amount));
@@ -753,69 +774,57 @@ impl AttestationEngineContract {
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| Vec::new(&e));
+            .unwrap_or_else(|| Vec::new(e));
 
-        // Add new attestation
         attestations.push_back(attestation.clone());
-
-        // Store updated list
         e.storage().persistent().set(&key, &attestations);
 
         // 10. Update health metrics
-        Self::update_health_metrics(&e, &commitment_id, &attestation);
+        Self::update_health_metrics(e, &commitment_id, &attestation);
 
         // 11. Increment attestation counter
         let counter_key = DataKey::AttestationCounter(commitment_id.clone());
         let counter: u64 = e.storage().persistent().get(&counter_key).unwrap_or(0);
         e.storage().persistent().set(&counter_key, &(counter + 1));
 
-        // 11b. OPTIMIZATION: Batch update all analytics counters
-        let (total_attestations, total_violations, verifier_count) = {
-            let total_att = e
-                .storage()
-                .instance()
-                .get(&DataKey::TotalAttestations)
-                .unwrap_or(0u64);
-            let total_viol = e
-                .storage()
-                .instance()
-                .get(&DataKey::TotalViolations)
-                .unwrap_or(0u64);
-            let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
-            let ver_count = e.storage().instance().get(&verifier_key).unwrap_or(0u64);
-            (total_att, total_viol, ver_count)
-        };
+        // 11b. Batch update analytics counters
+        let total_att: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalAttestations)
+            .unwrap_or(0u64);
+        let total_viol: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalViolations)
+            .unwrap_or(0u64);
+        let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
+        let ver_count: u64 = e.storage().instance().get(&verifier_key).unwrap_or(0u64);
 
         e.storage()
             .instance()
-            .set(&DataKey::TotalAttestations, &(total_attestations + 1));
+            .set(&DataKey::TotalAttestations, &(total_att + 1));
 
-        // Track violations (explicit or non-compliant)
-        let violation_type = String::from_str(&e, "violation");
+        let violation_type = String::from_str(e, "violation");
         if attestation.attestation_type == violation_type || !attestation.is_compliant {
             e.storage()
                 .instance()
-                .set(&DataKey::TotalViolations, &(total_violations + 1));
+                .set(&DataKey::TotalViolations, &(total_viol + 1));
         }
 
-        // Track per-verifier attestation count
-        let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
         e.storage()
             .instance()
-            .set(&verifier_key, &(verifier_count + 1));
+            .set(&verifier_key, &(ver_count + 1));
 
-        // 12. Emit enhanced AttestationRecorded event
+        // 12. Emit event
         e.events().publish(
             (
-                Symbol::new(&e, "AttestationRecorded"),
+                Symbol::new(e, "AttestationRecorded"),
                 commitment_id,
-                caller,
+                caller.clone(),
             ),
             (attestation_type, is_compliant, timestamp),
         );
-
-        // 13. Clear reentrancy guard
-        e.storage().instance().remove(&DataKey::ReentrancyGuard);
 
         Ok(())
     }
@@ -1039,11 +1048,29 @@ impl AttestationEngineContract {
         commitment_id: String,
         drawdown_percent: i128,
     ) -> Result<(), AttestationError> {
+        // Reentrancy protection
+        if e.storage().instance().has(&DataKey::ReentrancyGuard) {
+            panic!("Reentrancy detected");
+        }
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+
+        Pausable::require_not_paused(&e);
+
+        // Auth: caller must sign and be an authorized verifier
+        caller.require_auth();
+        if !Self::is_authorized_verifier(&e, &caller) {
+            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+            return Err(AttestationError::Unauthorized);
+        }
+
         let commitment_core: Address = e
             .storage()
             .instance()
             .get(&DataKey::CoreContract)
-            .ok_or(AttestationError::NotInitialized)?;
+            .ok_or_else(|| {
+                e.storage().instance().remove(&DataKey::ReentrancyGuard);
+                AttestationError::NotInitialized
+            })?;
 
         let mut args = Vec::new(&e);
         args.push_back(commitment_id.clone().into_val(&e));
@@ -1061,9 +1088,10 @@ impl AttestationEngineContract {
             Self::i128_to_string(&e, drawdown_percent),
         );
 
-        Self::attest(
-            e.clone(),
-            caller.clone(),
+        // Use write_attestation (no auth) for both calls to avoid double require_auth
+        Self::write_attestation(
+            &e,
+            &caller,
             commitment_id.clone(),
             String::from_str(&e, "drawdown"),
             data,
@@ -1081,9 +1109,9 @@ impl AttestationEngineContract {
                 String::from_str(&e, "high"),
             );
 
-            Self::attest(
-                e.clone(),
-                caller,
+            Self::write_attestation(
+                &e,
+                &caller,
                 commitment_id.clone(),
                 String::from_str(&e, "violation"),
                 violation_data,
@@ -1100,6 +1128,8 @@ impl AttestationEngineContract {
             (Symbol::new(&e, "DrawdownRecorded"), commitment_id),
             (drawdown_percent, is_compliant, e.ledger().timestamp()),
         );
+
+        e.storage().instance().remove(&DataKey::ReentrancyGuard);
         Ok(())
     }
 
