@@ -1,61 +1,58 @@
-//! Storage helper utilities for common storage patterns
+//! # Storage Utilities
+//!
+//! Provides standardized patterns for contract initialization, admin management,
+//! and generic instance storage access.
+//!
+//! ### Patterns
+//! * **Initialization**: Prevents multi-initialization of contracts.
+//! * **Admin**: Centralizes the storage and retrieval of the contract owner/admin.
+//! * **Generic Access**: Type-safe wrappers around Soroban's instance storage.
+
 
 use soroban_sdk::{Address, Env, Symbol};
 
-/// Storage key constants
+/// Constant keys used for well-known storage items.
 pub mod keys {
     use soroban_sdk::{symbol_short, Symbol};
 
+    /// Key for the contract's admin `Address`.
     pub const ADMIN: Symbol = symbol_short!("ADMIN");
+    /// Key for the boolean initialization flag.
     pub const INITIALIZED: Symbol = symbol_short!("INIT");
 }
 
-/// Storage helper functions
+/// Helper for managing a contract's instance storage state.
 pub struct Storage;
 
 impl Storage {
-    /// Check if a contract has been initialized
-    ///
-    /// # Arguments
-    /// * `e` - The environment
-    ///
-    /// # Returns
-    /// `true` if initialized, `false` otherwise
+    /// Checks if the contract has been marked as initialized.
     pub fn is_initialized(e: &Env) -> bool {
         e.storage().instance().has(&keys::INITIALIZED)
     }
 
-    /// Require that the contract is initialized, panic otherwise
+    /// Asserts that the contract has been initialized.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    ///
-    /// # Panics
-    /// Panics with "Contract not initialized" if not initialized
+    /// ### Errors
+    /// * Panics with "Contract not initialized" if `is_initialized` is false.
     pub fn require_initialized(e: &Env) {
         if !Self::is_initialized(e) {
             panic!("Contract not initialized");
         }
     }
 
-    /// Mark contract as initialized
-    ///
-    /// # Arguments
-    /// * `e` - The environment
+    /// Sets the initialization flag to true.
     pub fn set_initialized(e: &Env) {
         e.storage().instance().set(&keys::INITIALIZED, &true);
     }
 
-    /// Get admin address from storage
+    /// Retrieves the stored administrator address.
     ///
-    /// # Arguments
-    /// * `e` - The environment
+    /// ### Returns
+    /// * The `Address` currently stored under `ADMIN`.
     ///
-    /// # Returns
-    /// Admin address
-    ///
-    /// # Panics
-    /// Panics if contract not initialized or admin not set
+    /// ### Errors
+    /// * Panics if the contract is not initialized.
+    /// * Panics if the admin has not been set.
     pub fn get_admin(e: &Env) -> Address {
         Self::require_initialized(e);
         e.storage()
@@ -64,37 +61,26 @@ impl Storage {
             .unwrap_or_else(|| panic!("Admin not set"))
     }
 
-    /// Set admin address in storage
-    ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `admin` - The admin address
+    /// Updates the administrator address in storage.
     pub fn set_admin(e: &Env, admin: &Address) {
         e.storage().instance().set(&keys::ADMIN, admin);
     }
 
-    /// Check if contract is already initialized and panic if so
+    /// Asserts that the contract has NOT yet been initialized.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    ///
-    /// # Panics
-    /// Panics with "Contract already initialized" if already initialized
+    /// ### Errors
+    /// * Panics with "Contract already initialized" if `is_initialized` is true.
     pub fn require_not_initialized(e: &Env) {
         if Self::is_initialized(e) {
             panic!("Contract already initialized");
         }
     }
 
-    /// Generic storage getter with default value
+    /// Retrieves a value from instance storage, falling back to a default if missing.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `key` - The storage key
-    /// * `default` - Default value if key doesn't exist
-    ///
-    /// # Returns
-    /// The stored value or default
+    /// ### Parameters
+    /// * `key` - The storage key symbol.
+    /// * `default` - The value to return if the key does not exist.
     pub fn get_or_default<T>(e: &Env, key: &Symbol, default: T) -> T
     where
         T: Clone + soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
@@ -102,12 +88,7 @@ impl Storage {
         e.storage().instance().get::<_, T>(key).unwrap_or(default)
     }
 
-    /// Generic storage setter
-    ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `key` - The storage key
-    /// * `value` - The value to store
+    /// Stores a value in the contract's instance storage.
     pub fn set<T>(e: &Env, key: &Symbol, value: &T)
     where
         T: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
@@ -115,14 +96,7 @@ impl Storage {
         e.storage().instance().set(key, value);
     }
 
-    /// Generic storage getter
-    ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `key` - The storage key
-    ///
-    /// # Returns
-    /// The stored value or None
+    /// Retrieves an optional value from instance storage.
     pub fn get<T>(e: &Env, key: &Symbol) -> Option<T>
     where
         T: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
@@ -130,14 +104,7 @@ impl Storage {
         e.storage().instance().get::<_, T>(key)
     }
 
-    /// Check if a key exists in storage
-    ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `key` - The storage key
-    ///
-    /// # Returns
-    /// `true` if key exists, `false` otherwise
+    /// Checks if a key exists in the contract's instance storage.
     pub fn has(e: &Env, key: &Symbol) -> bool {
         e.storage().instance().has(key)
     }

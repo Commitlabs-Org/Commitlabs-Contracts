@@ -1,101 +1,90 @@
-//! Validation utilities for common input validation patterns
+//! # Input Validation Utilities
+//!
+//! Provides reusable assertion helpers for sanitizing contract inputs.
+//! Standardizes panic messages for UI/off-chain consistency.
+//!
+//! ### Best Practices
+//! * Use these at the entry point of public contract functions.
+//! * Always provide a descriptive `field_name` for contextual errors.
+
 
 use soroban_sdk::{Address, Env, String};
 
-/// Validation utility functions
+/// Helper for enforcing business logic constraints on primitive types.
 pub struct Validation;
 
 impl Validation {
-    /// Validate that an amount is greater than zero
+    /// Asserts that a value is strictly positive (> 0).
     ///
-    /// # Arguments
-    /// * `amount` - The amount to validate
-    ///
-    /// # Panics
-    /// Panics with "Invalid amount" if amount <= 0
+    /// ### Errors
+    /// * Panics with "Invalid amount" if `<= 0`.
     pub fn require_positive(amount: i128) {
         if amount <= 0 {
             panic!("Invalid amount: must be greater than zero");
         }
     }
 
-    /// Validate that an amount is greater than or equal to zero
+    /// Asserts that a value is zero or greater (>= 0).
     ///
-    /// # Arguments
-    /// * `amount` - The amount to validate
-    ///
-    /// # Panics
-    /// Panics with "Invalid amount" if amount < 0
+    /// ### Errors
+    /// * Panics with "Invalid amount" if `< 0`.
     pub fn require_non_negative(amount: i128) {
         if amount < 0 {
             panic!("Invalid amount: must be non-negative");
         }
     }
 
-    /// Validate that a duration is greater than zero
+    /// Asserts that a day duration is non-zero.
     ///
-    /// # Arguments
-    /// * `duration_days` - The duration in days
-    ///
-    /// # Panics
-    /// Panics with "Invalid duration" if duration_days == 0
+    /// ### Errors
+    /// * Panics with "Invalid duration" if `days == 0`.
     pub fn require_valid_duration(duration_days: u32) {
         if duration_days == 0 {
             panic!("Invalid duration: must be greater than zero");
         }
     }
 
-    /// Validate that a percentage is between 0 and 100
+    /// Asserts that a percentage value is within [0, 100].
     ///
-    /// # Arguments
-    /// * `percent` - The percentage value
-    ///
-    /// # Panics
-    /// Panics with "Invalid percent" if percent > 100
+    /// ### Errors
+    /// * Panics with "Invalid percent" if `> 100`.
     pub fn require_valid_percent(percent: u32) {
         if percent > 100 {
             panic!("Invalid percent: must be between 0 and 100");
         }
     }
 
-    /// Validate that a string is not empty
+    /// Asserts that a `SorobanString` contains characters.
     ///
-    /// # Arguments
-    /// * `value` - The string to validate
-    /// * `field_name` - The name of the field (for error message)
+    /// ### Parameters
+    /// * `value` - The string to check.
+    /// * `field_name` - Contextual label for the error message.
     ///
-    /// # Panics
-    /// Panics if the string is empty
+    /// ### Errors
+    /// * Panics if empty.
     pub fn require_non_empty_string(value: &String, field_name: &str) {
         if value.is_empty() {
             panic!("Invalid {}: must not be empty", field_name);
         }
     }
 
-    /// Validate that an address is not the zero address
+    /// Placeholder for future address-specific validation needs.
     ///
-    /// # Arguments
-    /// * `address` - The address to validate
-    ///
-    /// # Panics
-    /// Panics if address is zero
-    ///
-    /// Note: In Soroban, addresses are always valid, so this is a placeholder
-    /// for future validation needs
+    /// ### Note
+    /// In current Soroban versions, any `Address` received via call is valid.
     pub fn require_non_zero_address(_address: &Address) {
         // In Soroban, addresses are always valid
-        // This function is a placeholder for future validation needs
     }
 
-    /// Validate commitment type is one of the allowed values
+    /// Verifies that a string value is part of an allowlist.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `commitment_type` - The commitment type string
-    /// * `allowed_types` - Slice of allowed type strings
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `commitment_type` - The string to validate.
+    /// * `allowed_types` - Array of valid string literals.
     ///
-    /// # Panics
-    /// Panics if commitment_type is not in allowed_types
+    /// ### Errors
+    /// * Panics if no match is found.
     pub fn require_valid_commitment_type(
         e: &Env,
         commitment_type: &String,
@@ -113,16 +102,10 @@ impl Validation {
         }
     }
 
-    /// Validate that a value is within a range (inclusive)
+    /// Asserts that a value lies within an inclusive range `[min, max]`.
     ///
-    /// # Arguments
-    /// * `value` - The value to validate
-    /// * `min` - Minimum allowed value (inclusive)
-    /// * `max` - Maximum allowed value (inclusive)
-    /// * `field_name` - The name of the field (for error message)
-    ///
-    /// # Panics
-    /// Panics if value is outside the range
+    /// ### Errors
+    /// * Panics if the value is out of bounds.
     pub fn require_in_range(value: i128, min: i128, max: i128, field_name: &str) {
         if value < min || value > max {
             panic!(
@@ -132,30 +115,14 @@ impl Validation {
         }
     }
 
-    /// Validate that a value is greater than or equal to a minimum
-    ///
-    /// # Arguments
-    /// * `value` - The value to validate
-    /// * `min` - Minimum allowed value (inclusive)
-    /// * `field_name` - The name of the field (for error message)
-    ///
-    /// # Panics
-    /// Panics if value < min
+    /// Asserts a lower bound for a value (inclusive).
     pub fn require_min(value: i128, min: i128, field_name: &str) {
         if value < min {
             panic!("Invalid {}: must be at least {}", field_name, min);
         }
     }
 
-    /// Validate that a value is less than or equal to a maximum
-    ///
-    /// # Arguments
-    /// * `value` - The value to validate
-    /// * `max` - Maximum allowed value (inclusive)
-    /// * `field_name` - The name of the field (for error message)
-    ///
-    /// # Panics
-    /// Panics if value > max
+    /// Asserts an upper bound for a value (inclusive).
     pub fn require_max(value: i128, max: i128, field_name: &str) {
         if value > max {
             panic!("Invalid {}: must be at most {}", field_name, max);

@@ -1,54 +1,66 @@
-#![allow(unused)]
-use soroban_sdk::{contracttype, Address, Env, IntoVal, Map, String, TryFromVal, Val, Vec};
+//! # Batch Processing Utilities
+//!
+//! Provides structures and helpers for executing multiple operations in a single
+//! transaction. Supports two modes:
+//! * **Atomic**: All operations must succeed; any failure rolls back the entire batch.
+//! * **BestEffort**: All operations are attempted; individual failures are reported.
+//!
+//! Includes state snapshotting for manual rollback logic in non-atomic contexts.
 
-/// Batch processing mode for handling multiple operations
+use soroban_sdk::{contracttype, Env, String, Vec};
+
+/// Defines how a batch of operations should be handled.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BatchMode {
-    /// All operations must succeed or entire batch fails (rollback)
+    /// Strict mode: any failure causes the whole transaction to roll back.
     Atomic,
-    /// Process all operations, continue on failures, return detailed report
+    /// Resilient mode: continues processing remaining items if one fails.
     BestEffort,
 }
 
-/// Error details for a specific operation in a batch
+/// Basic error information for a failed operation within a batch.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchError {
-    /// Index of the failed operation in the batch
+    /// 0-based index of the operation in the original batch vector.
     pub index: u32,
-    /// Error code from the operation
+    /// System or contract-specific error code.
     pub error_code: u32,
-    /// Contextual information about the error
+    /// Short text describing the failure or providing context (e.g., ID).
     pub context: String,
 }
 
-/// Result of a batch operation returning Strings (e.g., commitment IDs)
+/// Container for batch results where each operation returns a identifier (String).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchResultString {
-    /// Overall success status (true if all succeeded, false if any failed)
+    /// `true` only if every operation in the batch succeeded.
     pub success: bool,
-    /// Results from each operation (commitment IDs, etc.)
+    /// Collection of return values (e.g., commitment IDs).
     pub results: Vec<String>,
-    /// List of errors encountered (empty if all succeeded)
+    /// List of errors encountered during processing.
     pub errors: Vec<BatchError>,
 }
 
-/// Result of a batch operation with no return values (just success/failure)
+/// Container for batch results for operations that do not return a value.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchResultVoid {
-    /// Overall success status (true if all succeeded, false if any failed)
+    /// `true` only if every operation in the batch succeeded.
     pub success: bool,
-    /// Number of successful operations
+    /// Total count of operations that were successfully processed.
     pub success_count: u32,
-    /// List of errors encountered (empty if all succeeded)
+    /// List of errors encountered during processing.
     pub errors: Vec<BatchError>,
 }
 
 impl BatchResultString {
-    /// Create a new successful batch result
+    /// Generates a successful batch result.
+    ///
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `results` - The list of successful return values.
     pub fn success(e: &Env, results: Vec<String>) -> Self {
         BatchResultString {
             success: true,
@@ -57,7 +69,11 @@ impl BatchResultString {
         }
     }
 
-    /// Create a new failed batch result
+    /// Generates a failed batch result with the provided errors.
+    ///
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `errors` - The collection of failures to report.
     pub fn failure(e: &Env, errors: Vec<BatchError>) -> Self {
         BatchResultString {
             success: false,
@@ -66,7 +82,13 @@ impl BatchResultString {
         }
     }
 
-    /// Create a partial result (BestEffort mode)
+    /// Generates a partial result, typically for BestEffort mode.
+    ///
+    /// The `success` flag is automatically calculated based on the presence of errors.
+    ///
+    /// ### Parameters
+    /// * `results` - Successful results.
+    /// * `errors` - Encountered errors.
     pub fn partial(results: Vec<String>, errors: Vec<BatchError>) -> Self {
         let success = errors.is_empty();
         BatchResultString {
@@ -88,7 +110,7 @@ impl BatchResultVoid {
     }
 
     /// Create a new failed batch result
-    pub fn failure(e: &Env, errors: Vec<BatchError>) -> Self {
+    pub fn failure(_e: &Env, errors: Vec<BatchError>) -> Self {
         BatchResultVoid {
             success: false,
             success_count: 0,
@@ -107,43 +129,43 @@ impl BatchResultVoid {
     }
 }
 
-/// Detailed operation report for BestEffort mode
+/// Comprehensive report for BestEffort batch processing.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchOperationReport {
-    /// Total number of operations attempted
+    /// Total operations submitted.
     pub total: u32,
-    /// Number of successful operations
+    /// Number of successful operations.
     pub succeeded: u32,
-    /// Number of failed operations
+    /// Number of failed operations.
     pub failed: u32,
-    /// List of successful operation indices or IDs
+    /// Indices of operations that finished successfully.
     pub successful_indices: Vec<u32>,
-    /// Detailed error information for failed operations
+    /// Detailed diagnostic information for failures.
     pub failed_operations: Vec<DetailedBatchError>,
 }
 
-/// Detailed error information for BestEffort mode
+/// Detailed diagnostic information for a failed operation in BestEffort mode.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DetailedBatchError {
-    /// Index of the failed operation
+    /// 0-based index of the failed operation.
     pub index: u32,
-    /// Error code
+    /// System or contract-specific error code (e.g., balance check failure).
     pub error_code: u32,
-    /// Error message
+    /// Human-readable error message.
     pub message: String,
-    /// Additional context (e.g., commitment_id, amount)
+    /// Additional investigative context (e.g., the specific ID or amount that failed).
     pub context: String,
 }
 
-/// Configuration for batch size limits
+/// System-wide configuration for batch processing constraints.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchConfig {
-    /// Maximum number of operations allowed in a single batch
+    /// Maximum allowed operations in a single batch (prevents resource exhaustion).
     pub max_batch_size: u32,
-    /// Whether batch operations are enabled
+    /// Kill-switch for batch operations.
     pub enabled: bool,
 }
 
@@ -156,31 +178,33 @@ impl Default for BatchConfig {
     }
 }
 
-/// Storage key for batch configuration
+/// Storage keys used for batch configuration and overrides.
 #[contracttype]
 pub enum BatchDataKey {
-    /// Batch configuration (global)
+    /// Global system configuration (`BatchConfig`).
     Config,
-    /// Per-contract batch size limit override
+    /// Contract-specific batch size overrides (keyed by contract name).
     ContractBatchLimit(String),
 }
 
-/// State snapshot for atomic batch operations
-/// Tracks changes that can be rolled back if batch fails
+/// Captures a point-in-time state of commitment data for rollback purposes.
+///
+/// ### Security
+/// * Snapshots are stored in memory/storage during execution.
+/// * Ensure that all sensitive state changes are captured if Atomic mode is required.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StateSnapshot {
-    /// Commitment state changes: (commitment_id, old_state_as_string)
-    /// Using String to serialize commitment state for flexibility
+    /// Recorded changes to commitments: `(id, previous_state_serialized)`.
     pub commitment_changes: Vec<(String, String)>,
-    /// Counter changes: (counter_name, old_value)
+    /// Recorded changes to global/local counters: `(name, previous_value)`.
     pub counter_changes: Vec<(String, i128)>,
-    /// Owner commitment list changes: (owner, old_commitment_ids)
+    /// Recorded changes to ownership lists: `(owner, previous_list)`.
     pub owner_list_changes: Vec<(String, Vec<String>)>,
 }
 
 impl StateSnapshot {
-    /// Create a new empty snapshot
+    /// Initializes a new, empty state snapshot.
     pub fn new(e: &Env) -> Self {
         StateSnapshot {
             commitment_changes: Vec::new(e),
@@ -189,7 +213,7 @@ impl StateSnapshot {
         }
     }
 
-    /// Record a commitment state change
+    /// Logs a commitment state prior to modification.
     pub fn record_commitment_change(&mut self, commitment_id: String, old_state: String) {
         self.commitment_changes
             .push_back((commitment_id, old_state));
@@ -205,7 +229,7 @@ impl StateSnapshot {
         self.owner_list_changes.push_back((owner_key, old_list));
     }
 
-    /// Check if snapshot is empty (no changes recorded)
+    /// Returns `true` if no state changes have been recorded in this snapshot.
     pub fn is_empty(&self) -> bool {
         self.commitment_changes.is_empty()
             && self.counter_changes.is_empty()
@@ -213,18 +237,22 @@ impl StateSnapshot {
     }
 }
 
-/// Rollback helper for atomic batch operations
+/// Provides logic for identifying when a rollback is necessary.
 pub struct RollbackHelper;
 
 impl RollbackHelper {
-    /// Restore state from snapshot
-    /// This is a marker - actual restoration must be done by the contract
-    /// using the snapshot data with contract-specific storage keys
+    /// Checks whether the snapshot contains data requiring a state restoration.
     pub fn needs_rollback(snapshot: &StateSnapshot) -> bool {
         !snapshot.is_empty()
     }
 
-    /// Create an error indicating rollback is needed
+    /// Creates a formalized `BatchError` used to trigger or report a rollback.
+    ///
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `index` - The index of the operation causing the rollback.
+    /// * `error_code` - The underlying error code.
+    /// * `context` - Diagnostic context string.
     pub fn create_rollback_error(
         e: &Env,
         index: u32,
@@ -239,12 +267,20 @@ impl RollbackHelper {
     }
 }
 
-/// Batch processing helpers
+/// Central logic for managing and enforcing batch processing limits and configuration.
 pub struct BatchProcessor;
 
 impl BatchProcessor {
-    /// Validate batch size against limits
-    pub fn validate_batch_size(e: &Env, batch_size: u32, max_size: u32) -> Result<(), u32> {
+    /// Validates that the batch size is within acceptable bounds.
+    ///
+    /// ### Parameters
+    /// * `batch_size` - Number of operations in the current request.
+    /// * `max_size` - Maximum allowed operations.
+    ///
+    /// ### Errors
+    /// * Returns `Err(1)` if the batch is empty.
+    /// * Returns `Err(2)` if the batch exceeds `max_size`.
+    pub fn validate_batch_size(_e: &Env, batch_size: u32, max_size: u32) -> Result<(), u32> {
         if batch_size == 0 {
             return Err(1); // Error code: Empty batch
         }
@@ -254,7 +290,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Get batch configuration
+    /// Retrieves the current system-wide batch configuration.
     pub fn get_config(e: &Env) -> BatchConfig {
         e.storage()
             .instance()
@@ -262,29 +298,33 @@ impl BatchProcessor {
             .unwrap_or_default()
     }
 
-    /// Set batch configuration (admin only)
+    /// Persists a new batch configuration.
+    ///
+    /// ### Security
+    /// * This function itself does not check auth; the calling contract MUST ensure
+    ///   only authorized admins can call this.
     pub fn set_config(e: &Env, config: BatchConfig) {
         e.storage().instance().set(&BatchDataKey::Config, &config);
     }
 
-    /// Check if batch operations are enabled
+    /// Checks if batch operations are globally enabled.
     pub fn is_enabled(e: &Env) -> bool {
         Self::get_config(e).enabled
     }
 
-    /// Get maximum batch size
+    /// Returns the global maximum batch size.
     pub fn max_batch_size(e: &Env) -> u32 {
         Self::get_config(e).max_batch_size
     }
 
-    /// Set contract-specific batch limit
+    /// Sets a size limit override for a specific contract.
     pub fn set_contract_limit(e: &Env, contract_name: String, limit: u32) {
         e.storage()
             .instance()
             .set(&BatchDataKey::ContractBatchLimit(contract_name), &limit);
     }
 
-    /// Get contract-specific batch limit (falls back to global limit)
+    /// Retrieves the batch limit for a specific contract, falling back to the global limit if unset.
     pub fn get_contract_limit(e: &Env, contract_name: String) -> u32 {
         e.storage()
             .instance()
@@ -292,8 +332,16 @@ impl BatchProcessor {
             .unwrap_or_else(|| Self::max_batch_size(e))
     }
 
-    /// Validate and enforce batch size limits
-    /// Returns Ok(()) if valid, Err(error_code) if invalid
+    /// Validates and enforces batch size limits, considering optional contract overrides.
+    ///
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `batch_size` - The number of operations to process.
+    /// * `contract_name` - Optional specific contract for limit override check.
+    ///
+    /// ### Errors
+    /// * Returns `Err(3)` if batch operations are disabled.
+    /// * Returns codes from `validate_batch_size` (1 or 2) if size limits are violated.
     pub fn enforce_batch_limits(
         e: &Env,
         batch_size: u32,
@@ -315,7 +363,7 @@ impl BatchProcessor {
         Self::validate_batch_size(e, batch_size, max_size)
     }
 
-    /// Initialize batch configuration with default values
+    /// Initializes batch configuration with default values if not already set.
     pub fn initialize_batch_config(e: &Env) {
         if !e.storage().instance().has(&BatchDataKey::Config) {
             let default_config = BatchConfig::default();
@@ -323,21 +371,24 @@ impl BatchProcessor {
         }
     }
 
-    /// Disable all batch operations (emergency circuit breaker)
+    /// Sets the `enabled` flag to `false`, halting all batch processing.
+    ///
+    /// ### Security
+    /// * Emergency circuit breaker to prevent exploitation of batch logic.
     pub fn disable_batch_operations(e: &Env) {
         let mut config = Self::get_config(e);
         config.enabled = false;
         Self::set_config(e, config);
     }
 
-    /// Enable batch operations
+    /// Sets the `enabled` flag to `true`.
     pub fn enable_batch_operations(e: &Env) {
         let mut config = Self::get_config(e);
         config.enabled = true;
         Self::set_config(e, config);
     }
 
-    /// Update maximum batch size
+    /// Direct update of the maximum allowed operations per batch.
     pub fn update_max_batch_size(e: &Env, new_max: u32) {
         let mut config = Self::get_config(e);
         config.max_batch_size = new_max;

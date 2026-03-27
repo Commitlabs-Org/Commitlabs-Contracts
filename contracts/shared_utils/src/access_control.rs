@@ -1,20 +1,35 @@
-//! Access control patterns and utilities
+//! # Access Control Utilities
+//!
+//! Provides standardized access control patterns for CommitLabs smart contracts.
+//! Supports admin-only, owner-only, and authorized-list patterns with integrated
+//! Soroban authentication checks.
+//!
+//! ### Security
+//! * All `require_*` functions MUST call `require_auth()` on the relevant address.
+//! * Admin storage is assumed to be initialized via `Storage::set_admin`.
+//! * Authorized lists use composite keys `(authorized_key, address)` in instance storage.
+
 
 use super::storage::Storage;
 use soroban_sdk::{Address, Env, Symbol};
 
-/// Access control helper functions
+/// Access control helper functions for enforcing permission boundaries.
 pub struct AccessControl;
 
 impl AccessControl {
-    /// Require that the caller is the admin
+    /// Asserts that the caller is the registered administrator.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `caller` - The caller address
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `caller` - The address to verify as admin.
     ///
-    /// # Panics
-    /// Panics with "Unauthorized: only admin" if caller is not admin
+    /// ### Errors
+    /// * Panics if the caller has not provided valid authentication.
+    /// * Panics with "Unauthorized: only admin" if the caller is not the registered admin.
+    ///
+    /// ### Security
+    /// * Implementation calls `caller.require_auth()`, ensuring the transaction is
+    ///   signed by the provided address.
     pub fn require_admin(e: &Env, caller: &Address) {
         caller.require_auth();
         let admin = Storage::get_admin(e);
@@ -23,15 +38,22 @@ impl AccessControl {
         }
     }
 
-    /// Require that the caller is authorized (either admin or in authorized list)
+    /// Asserts that the caller is either the admin or present in an authorized list.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `caller` - The caller address
-    /// * `authorized_key` - The storage key prefix for the authorized list
+    /// Useful for "manager" or "worker" roles where multiple addresses share permissions.
     ///
-    /// # Panics
-    /// Panics with "Unauthorized" if caller is not admin or authorized
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `caller` - The address to verify.
+    /// * `authorized_key` - The storage key prefix identifying the specific authorized list.
+    ///
+    /// ### Errors
+    /// * Panics if the caller has not provided valid authentication.
+    /// * Panics with "Unauthorized" if the caller is neither the admin nor in the list.
+    ///
+    /// ### Security
+    /// * Checks admin status first as a logical short-circuit.
+    /// * Uses instance storage for the authorized list to ensure persistent permission state.
     pub fn require_admin_or_authorized(e: &Env, caller: &Address, authorized_key: &Symbol) {
         caller.require_auth();
 
@@ -49,28 +71,36 @@ impl AccessControl {
         }
     }
 
-    /// Check if an address is the admin
+    /// Checks if a given address is the registered administrator.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `address` - The address to check
+    /// Does not require authentication, purely a state check.
     ///
-    /// # Returns
-    /// `true` if address is admin, `false` otherwise
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `address` - The address to check against the admin record.
+    ///
+    /// ### Returns
+    /// * `true` if the address matches the registered admin, `false` otherwise.
     pub fn is_admin(e: &Env, address: &Address) -> bool {
         let admin = Storage::get_admin(e);
         *address == admin
     }
 
-    /// Require that the caller is the owner
+    /// Asserts that the caller matches a specific owner address.
     ///
-    /// # Arguments
-    /// * `_e` - The environment
-    /// * `caller` - The caller address
-    /// * `owner` - The owner address
+    /// Typically used for user-owned resources (e.g., individual commitments).
     ///
-    /// # Panics
-    /// Panics with "Unauthorized: caller is not the owner" if caller != owner
+    /// ### Parameters
+    /// * `_e` - The Soroban environment (unused but kept for pattern consistency).
+    /// * `caller` - The address attempting the action.
+    /// * `owner` - The address that owns the resource.
+    ///
+    /// ### Errors
+    /// * Panics if the caller has not provided valid authentication.
+    /// * Panics with "Unauthorized: caller is not the owner" if addresses don't match.
+    ///
+    /// ### Security
+    /// * Requires explicit authentication of the `caller` address.
     pub fn require_owner(_e: &Env, caller: &Address, owner: &Address) {
         caller.require_auth();
         if *caller != *owner {
@@ -78,15 +108,22 @@ impl AccessControl {
         }
     }
 
-    /// Require that the caller is either the owner or admin
+    /// Asserts that the caller is either the resource owner or the system admin.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `caller` - The caller address
-    /// * `owner` - The owner address
+    /// Allows administrative overrides for user-owned resources.
     ///
-    /// # Panics
-    /// Panics with "Unauthorized" if caller is neither owner nor admin
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `caller` - The address to verify.
+    /// * `owner` - The specific resource owner.
+    ///
+    /// ### Errors
+    /// * Panics if the caller has not provided valid authentication.
+    /// * Panics with "Unauthorized" if the caller is neither the owner nor the admin.
+    ///
+    /// ### Security
+    /// * `caller` auth is checked first.
+    /// * Admin check allows system-level maintenance even if owner is unavailable.
     pub fn require_owner_or_admin(e: &Env, caller: &Address, owner: &Address) {
         caller.require_auth();
 

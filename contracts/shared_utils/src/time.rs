@@ -1,134 +1,103 @@
-//! Time utilities for timestamp and duration calculations
+//! # Time and Duration Utilities
+//!
+//! Standardizes time-based logic across CommitLabs contracts, providing
+//! safe conversion between days, hours, and minutes to ledger seconds.
+//!
+//! ### Arithmetic Safety
+//! * Uses `checked_*` arithmetic for expiration and duration calculations.
+//! * Includes saturating operations for "time remaining" to avoid underflow panics.
+
 
 use soroban_sdk::Env;
 
-/// Time utility functions for working with timestamps and durations
+/// Helper for working with Soroban ledger timestamps and unit conversions.
 pub struct TimeUtils;
 
 impl TimeUtils {
-    /// Get the current ledger timestamp
+    /// Retrieves the current Unix timestamp from the Soroban ledger.
     pub fn now(e: &Env) -> u64 {
         e.ledger().timestamp()
     }
 
-    /// Convert days to seconds
+    /// Converts a number of days into equivalent seconds.
     ///
-    /// # Arguments
-    /// * `days` - Number of days
+    /// ### Parameters
+    /// * `days` - The count of days to convert.
     ///
-    /// # Returns
-    /// Number of seconds
+    /// ### Returns
+    /// * `days * 86,400`.
     pub fn days_to_seconds(days: u32) -> u64 {
         days as u64 * 24 * 60 * 60
     }
 
-    /// Convert days to seconds with overflow check.
-    /// Returns `None` if `days * 86400` would overflow u64.
+    /// Safely converts days to seconds, checking for `u64` overflow.
     pub fn checked_days_to_seconds(days: u32) -> Option<u64> {
         (days as u64).checked_mul(24 * 60 * 60)
     }
 
-    /// Calculate expiration timestamp using checked arithmetic.
-    /// Returns `None` if `current_time + duration_days * 86400` would overflow u64.
+    /// Calculates a future timestamp based on the current time and a day duration.
+    ///
+    /// ### Returns
+    /// * `Some(now + duration)` or `None` if the addition overflows.
     pub fn checked_calculate_expiration(e: &Env, duration_days: u32) -> Option<u64> {
         let current_time = Self::now(e);
         let duration_seconds = Self::checked_days_to_seconds(duration_days)?;
         current_time.checked_add(duration_seconds)
     }
 
-    /// Convert hours to seconds
-    ///
-    /// # Arguments
-    /// * `hours` - Number of hours
-    ///
-    /// # Returns
-    /// Number of seconds
+    /// Converts a number of hours into equivalent seconds.
     pub fn hours_to_seconds(hours: u32) -> u64 {
         hours as u64 * 60 * 60
     }
 
-    /// Convert minutes to seconds
-    ///
-    /// # Arguments
-    /// * `minutes` - Number of minutes
-    ///
-    /// # Returns
-    /// Number of seconds
+    /// Converts a number of minutes into equivalent seconds.
     pub fn minutes_to_seconds(minutes: u32) -> u64 {
         minutes as u64 * 60
     }
 
-    /// Calculate expiration timestamp from current time and duration in days
-    ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `duration_days` - Duration in days
-    ///
-    /// # Returns
-    /// Expiration timestamp
+    /// Calculates a future timestamp. WARNING: Potential for overflow.
+    /// Prefer `checked_calculate_expiration` in production.
     pub fn calculate_expiration(e: &Env, duration_days: u32) -> u64 {
         let current_time = Self::now(e);
         let duration_seconds = Self::days_to_seconds(duration_days);
         current_time + duration_seconds
     }
 
-    /// Check if a timestamp has expired (current time >= expiration)
+    /// Checks if a timestamp has been reached or passed by the current ledger time.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `expiration` - The expiration timestamp
-    ///
-    /// # Returns
-    /// `true` if expired, `false` otherwise
+    /// ### Returns
+    /// * `true` if `now >= expiration`.
     pub fn is_expired(e: &Env, expiration: u64) -> bool {
         Self::now(e) >= expiration
     }
 
-    /// Check if a timestamp is still valid (current time < expiration)
+    /// Checks if a timestamp is still in the future.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `expiration` - The expiration timestamp
-    ///
-    /// # Returns
-    /// `true` if still valid, `false` if expired
+    /// ### Returns
+    /// * `true` if `now < expiration`.
     pub fn is_valid(e: &Env, expiration: u64) -> bool {
         !Self::is_expired(e, expiration)
     }
 
-    /// Calculate time remaining until expiration
+    /// Returns the number of seconds until a future timestamp is reached.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `expiration` - The expiration timestamp
-    ///
-    /// # Returns
-    /// Time remaining in seconds (0 if expired)
+    /// ### Returns
+    /// * `expiration - now` or `0` if already expired.
     pub fn time_remaining(e: &Env, expiration: u64) -> u64 {
         let current_time = Self::now(e);
         expiration.saturating_sub(current_time)
     }
 
-    /// Calculate elapsed time since a timestamp
+    /// Calculates the seconds passed since a given start timestamp.
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `start_time` - The start timestamp
-    ///
-    /// # Returns
-    /// Elapsed time in seconds
+    /// ### Returns
+    /// * `now - start_time` or `0` if `start_time` is in the future.
     pub fn elapsed(e: &Env, start_time: u64) -> u64 {
         let current_time = Self::now(e);
         current_time.saturating_sub(start_time)
     }
 
-    /// Convert seconds to days (rounded down)
-    ///
-    /// # Arguments
-    /// * `seconds` - Number of seconds
-    ///
-    /// # Returns
-    /// Number of days
+    /// Converts a second count back into days (divides by 86,400).
     pub fn seconds_to_days(seconds: u64) -> u32 {
         (seconds / (24 * 60 * 60)) as u32
     }
