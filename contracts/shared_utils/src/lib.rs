@@ -40,7 +40,7 @@ pub use emergency::EmergencyControl;
 pub use error_codes::{category, code, emit_error_event, message_for_code};
 pub use errors::ErrorHelper;
 pub use events::Events;
-pub use fees;
+// fees module is already public via `pub mod fees` above
 pub use math::SafeMath;
 pub use pausable::Pausable;
 pub use rate_limiting::RateLimiter;
