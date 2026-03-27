@@ -495,6 +495,299 @@ fn test_get_all_auctions() {
 }
 
 // ============================================================================
+// Issue #267: Unit tests for offers - duplicate offer, cancel, not maker
+// ============================================================================
+
+// Duplicate Offer Tests
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")] // OfferExists
+fn test_make_duplicate_offer_same_token_different_amount_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Make first offer
+    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    
+    // Try to make another offer with different amount - should fail
+    client.make_offer(&offerer, &token_id, &1000, &payment_token);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")] // OfferExists
+fn test_make_duplicate_offer_different_tokens_same_user_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer = Address::generate(&e);
+    let payment_token1 = setup_test_token(&e);
+    let payment_token2 = setup_test_token(&e);
+
+    // Make offer on token 1
+    client.make_offer(&offerer, &1, &500, &payment_token1);
+    
+    // Make offer on token 2 - should work (different token)
+    client.make_offer(&offerer, &2, &600, &payment_token2);
+    
+    // Try to make another offer on token 1 - should fail
+    client.make_offer(&offerer, &1, &700, &payment_token1);
+}
+
+#[test]
+fn test_different_users_can_offer_same_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer1 = Address::generate(&e);
+    let offerer2 = Address::generate(&e);
+    let offerer3 = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Multiple users can offer on the same token
+    client.make_offer(&offerer1, &token_id, &500, &payment_token);
+    client.make_offer(&offerer2, &token_id, &600, &payment_token);
+    client.make_offer(&offerer3, &token_id, &700, &payment_token);
+
+    let offers = client.get_offers(&token_id);
+    assert_eq!(offers.len(), 3);
+}
+
+// Offer Cancellation Tests
+#[test]
+fn test_cancel_offer_removes_correct_offer_only() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer1 = Address::generate(&e);
+    let offerer2 = Address::generate(&e);
+    let offerer3 = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Make multiple offers
+    client.make_offer(&offerer1, &token_id, &500, &payment_token);
+    client.make_offer(&offerer2, &token_id, &600, &payment_token);
+    client.make_offer(&offerer3, &token_id, &700, &payment_token);
+
+    // Cancel middle offer
+    client.cancel_offer(&offerer2, &token_id);
+
+    let offers = client.get_offers(&token_id);
+    assert_eq!(offers.len(), 2);
+    
+    // Verify correct offers remain
+    let offer_amounts: Vec<i128> = offers.iter().map(|o| o.amount).collect();
+    assert!(offer_amounts.contains(&500));
+    assert!(offer_amounts.contains(&700));
+    assert!(!offer_amounts.contains(&600));
+}
+
+#[test]
+fn test_cancel_last_offer_removes_storage() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Make offer
+    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    
+    // Verify offer exists
+    let offers = client.get_offers(&token_id);
+    assert_eq!(offers.len(), 1);
+
+    // Cancel offer
+    client.cancel_offer(&offerer, &token_id);
+
+    // Verify offers are empty
+    let offers = client.get_offers(&token_id);
+    assert_eq!(offers.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // OfferNotFound
+fn test_cancel_offer_after_accept_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Make offer
+    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    
+    // Accept offer (this removes all offers for the token)
+    client.accept_offer(&seller, &token_id, &offerer);
+    
+    // Try to cancel offer - should fail as offers are removed
+    client.cancel_offer(&offerer, &token_id);
+}
+
+#[test]
+fn test_cancel_multiple_offers_same_user_different_tokens() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    // Make offers on different tokens
+    client.make_offer(&offerer, &1, &500, &payment_token);
+    client.make_offer(&offerer, &2, &600, &payment_token);
+    client.make_offer(&offerer, &3, &700, &payment_token);
+
+    // Cancel one offer
+    client.cancel_offer(&offerer, &2);
+
+    // Verify other offers still exist
+    assert_eq!(client.get_offers(&1).len(), 1);
+    assert_eq!(client.get_offers(&2).len(), 0);
+    assert_eq!(client.get_offers(&3).len(), 1);
+}
+
+// Not Maker Tests (Authorization Tests)
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // OfferNotFound
+fn test_non_maker_cannot_cancel_offer() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer = Address::generate(&e);
+    let non_maker = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Make offer
+    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    
+    // Try to cancel with different address - should fail
+    client.cancel_offer(&non_maker, &token_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // OfferNotFound
+fn test_different_offerer_cannot_cancel_other_offer() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer1 = Address::generate(&e);
+    let offerer2 = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Make offers from different users
+    client.make_offer(&offerer1, &token_id, &500, &payment_token);
+    client.make_offer(&offerer2, &token_id, &600, &payment_token);
+    
+    // Try to have offerer1 cancel offerer2's offer - should fail
+    client.cancel_offer(&offerer1, &token_id);
+    
+    // But offerer1 should be able to cancel their own offer
+    // This would work if we could specify which offer to cancel
+    // Current implementation cancels all offers by the user for that token
+}
+
+#[test]
+fn test_maker_can_cancel_own_offer_multiple_exist() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer1 = Address::generate(&e);
+    let offerer2 = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    // Make offers from different users
+    client.make_offer(&offerer1, &token_id, &500, &payment_token);
+    client.make_offer(&offerer2, &token_id, &600, &payment_token);
+    
+    // offerer1 should be able to cancel their own offer
+    client.cancel_offer(&offerer1, &token_id);
+    
+    let offers = client.get_offers(&token_id);
+    assert_eq!(offers.len(), 1);
+    assert_eq!(offers.get(0).unwrap().offerer, offerer2);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // OfferNotFound
+fn test_cancel_nonexistent_offer_as_non_maker_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let non_maker = Address::generate(&e);
+    let token_id = 999u32;
+
+    // Try to cancel offer that doesn't exist - should fail
+    client.cancel_offer(&non_maker, &token_id);
+}
+
+#[test]
+fn test_authorization_scenarios_comprehensive() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let offerer1 = Address::generate(&e);
+    let offerer2 = Address::generate(&e);
+    let offerer3 = Address::generate(&e);
+    let random_user = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    // Create offers on multiple tokens
+    client.make_offer(&offerer1, &1, &100, &payment_token);
+    client.make_offer(&offerer2, &1, &200, &payment_token);
+    client.make_offer(&offerer1, &2, &300, &payment_token);
+    client.make_offer(&offerer3, &3, &400, &payment_token);
+
+    // Each offerer can cancel their own offers
+    client.cancel_offer(&offerer1, &1); // Cancels offerer1's offer on token 1
+    client.cancel_offer(&offerer1, &2); // Cancels offerer1's offer on token 2
+    
+    // Verify remaining offers
+    assert_eq!(client.get_offers(&1).len(), 1); // Only offerer2's offer remains
+    assert_eq!(client.get_offers(&2).len(), 0);  // offerer1's offer cancelled
+    assert_eq!(client.get_offers(&3).len(), 1);  // offerer3's offer still exists
+
+    // Random user cannot cancel any offers
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.cancel_offer(&random_user, &1);
+    }));
+    assert!(result.is_err());
+}
+
+// ============================================================================
 // Edge Cases and Integration Tests
 // ============================================================================
 
