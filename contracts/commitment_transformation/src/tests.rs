@@ -3,6 +3,8 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env, String, Vec};
+use soroban_sdk::{Env, String};
+use crate::mock_commitment_core::{MockCommitmentCore, MockCommitmentCoreClient};
 
 fn setup(e: &Env) -> (Address, Address, Address) {
     let admin = Address::generate(e);
@@ -303,4 +305,46 @@ fn test_fee_withdraw_requires_recipient() {
     client.initialize(&admin, &core);
     let asset = Address::generate(&e);
     client.withdraw_fees(&admin, &asset, &100i128);
+}
+fn setup_env() -> (Env, MockCommitmentCoreClient) {
+
+    let env = Env::default();
+
+    let core_id = env.register_contract(None, MockCommitmentCore);
+    let core_client = MockCommitmentCoreClient::new(&env, &core_id);
+
+    (env, core_client)
+}
+#[test]
+fn test_valid_commitment_id() {
+
+    let (env, core_client) = setup_env();
+
+    let commitment_id = String::from_str(&env, "c_valid");
+
+    let commitment = core_client.get_commitment(&commitment_id);
+
+    assert_eq!(commitment.commitment_id, commitment_id);
+    assert_eq!(commitment.amount, 1000);
+}
+#[test]
+#[should_panic]
+fn test_invalid_commitment_id() {
+
+    let (env, core_client) = setup_env();
+
+    let commitment_id = String::from_str(&env, "unknown");
+
+    core_client.get_commitment(&commitment_id);
+}
+#[test]
+fn test_expired_commitment() {
+
+    let (env, core_client) = setup_env();
+
+    let commitment_id = String::from_str(&env, "c_expired");
+
+    let commitment = core_client.get_commitment(&commitment_id);
+
+    assert_eq!(commitment.status, String::from_str(&env, "expired"));
 }
