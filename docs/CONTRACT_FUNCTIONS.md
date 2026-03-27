@@ -264,6 +264,95 @@ cargo test --package commitment_nft test_transfer
 - Use the smallest action type that accurately reflects blast radius, but not the smallest delay by default.
 - Runbook reference: `docs/TIMELOCK_RUNBOOK.md#timelock-parameter-runbook`
 
+## commitment_transformation
+
+Transforms commitments into risk tranches, collateralized assets, and secondary market instruments.
+All mutating functions require the caller to be the admin or an explicitly authorized transformer address.
+A reentrancy guard is active for every state-changing call.
+
+| Function | Summary | Access control | Notes |
+| --- | --- | --- | --- |
+| initialize(admin, core_contract) | Set admin, core contract reference, and counters. | None (single-use). | Panics with `AlreadyInitialized` on repeat. |
+| set_transformation_fee(caller, fee_bps) | Set protocol fee in basis points (0–10 000). | Admin `require_auth`. | Panics with `InvalidFeeBps` if fee_bps > 10 000. |
+| set_authorized_transformer(caller, transformer, allowed) | Grant or revoke transformer authorization. | Admin `require_auth`. | Emits `AuthSet` event. |
+| create_tranches(caller, commitment_id, total_value, tranche_share_bps, risk_levels, fee_asset) -> String | Split a commitment into risk tranches. | Authorized transformer `require_auth`. | `tranche_share_bps` must sum to exactly 10 000; lengths must match; `total_value` must be positive. Returns `transformation_id`. |
+| collateralize(caller, commitment_id, collateral_amount, asset_address) -> String | Create a collateralized asset record. | Authorized transformer `require_auth`. | `collateral_amount` must be positive. Returns `asset_id`. |
+| create_secondary_instrument(caller, commitment_id, instrument_type, amount) -> String | Create a secondary market instrument (receivable, option, warrant). | Authorized transformer `require_auth`. | `amount` must be positive. Returns `instrument_id`. |
+| add_protocol_guarantee(caller, commitment_id, guarantee_type, terms_hash) -> String | Attach a protocol guarantee to a commitment. | Authorized transformer `require_auth`. | Returns `guarantee_id`. |
+| get_tranche_set(transformation_id) -> TrancheSet | Fetch a tranche set by ID. | View. | Panics with `TransformationNotFound` if missing. |
+| get_collateralized_asset(asset_id) -> CollateralizedAsset | Fetch a collateralized asset by ID. | View. | Panics with `TransformationNotFound` if missing. |
+| get_secondary_instrument(instrument_id) -> SecondaryInstrument | Fetch a secondary instrument by ID. | View. | Panics with `TransformationNotFound` if missing. |
+| get_protocol_guarantee(guarantee_id) -> ProtocolGuarantee | Fetch a protocol guarantee by ID. | View. | Panics with `TransformationNotFound` if missing. |
+| get_commitment_tranche_sets(commitment_id) -> Vec\<String\> | List tranche set IDs for a commitment. | View. | Returns empty Vec if none. |
+| get_commitment_collateral(commitment_id) -> Vec\<String\> | List collateralized asset IDs for a commitment. | View. | Returns empty Vec if none. |
+| get_commitment_instruments(commitment_id) -> Vec\<String\> | List secondary instrument IDs for a commitment. | View. | Returns empty Vec if none. |
+| get_commitment_guarantees(commitment_id) -> Vec\<String\> | List protocol guarantee IDs for a commitment. | View. | Returns empty Vec if none. |
+| get_admin() -> Address | Fetch admin address. | View. | Panics with `NotInitialized` if unset. |
+| get_transformation_fee_bps() -> u32 | Fetch current fee in basis points. | View. | Returns 0 if unset. |
+| set_fee_recipient(caller, recipient) | Set protocol treasury address for fee withdrawals. | Admin `require_auth`. | Emits `FeeRecip` event. |
+| withdraw_fees(caller, asset_address, amount) | Withdraw collected fees to the fee recipient. | Admin `require_auth`. | Panics with `FeeRecipientNotSet` or `InsufficientFees` on invalid state. |
+| get_fee_recipient() -> Option\<Address\> | Fetch fee recipient address. | View. | Returns `None` if not set. |
+| get_collected_fees(asset_address) -> i128 | Fetch accumulated fees for an asset. | View. | Returns 0 if no fees collected. |
+
+### commitment_transformation — tranche ratio invariant
+
+`create_tranches` enforces a strict invariant: **`sum(tranche_share_bps) == 10 000`** (representing 100%).
+Any deviation — including off-by-one, empty vectors, all-zero entries, or mismatched lengths — panics with
+`InvalidTrancheRatios` ("Tranche ratios must sum to 100") and rolls back the reentrancy guard before returning.
+
+Fee formula: `fee_amount = (total_value × fee_bps) / 10 000`. When `fee_bps == 0` no token transfer occurs.
+Each tranche amount is computed as `(net_value × share_bps) / 10 000` where `net_value = total_value − fee_amount`.
+
+### commitment_transformation — error codes
+
+| Code | Name | Trigger |
+| --- | --- | --- |
+| 1 | `InvalidAmount` | `total_value ≤ 0` or `withdraw_fees` amount ≤ 0 |
+| 2 | `InvalidTrancheRatios` | `sum(bps) ≠ 10 000`, empty vector, or length mismatch |
+| 3 | `InvalidFeeBps` | `fee_bps > 10 000` |
+| 4 | `Unauthorized` | Caller is neither admin nor authorized transformer |
+| 5 | `NotInitialized` | Contract not yet initialized |
+| 6 | `AlreadyInitialized` | `initialize` called more than once |
+| 8 | `TransformationNotFound` | Requested ID does not exist in storage |
+| 10 | `ReentrancyDetected` | Reentrant call detected via guard flag |
+| 11 | `FeeRecipientNotSet` | `withdraw_fees` called before `set_fee_recipient` |
+| 12 | `InsufficientFees` | Requested withdrawal exceeds collected balance |
+
+### commitment_transformation — test coverage (issue #257)
+
+Tests live in `contracts/commitment_transformation/src/tests.rs`.
+
+**Success paths (`sum == 10 000`):**
+
+| Test | Scenario |
+| --- | --- |
+| `test_create_tranches_single_100pct` | One tranche at 10 000 bps |
+| `test_create_tranches_two_equal_halves` | Two tranches at 5 000 + 5 000 bps |
+| `test_create_tranches_classic_three_way` | 6 000 + 3 000 + 1 000 bps; verifies per-tranche amounts |
+| `test_create_tranches_four_tranches` | 4 000 + 3 000 + 2 000 + 1 000 bps |
+| `test_create_tranches_amounts_sum_to_net_value` | Non-round total_value; verifies bps sum and non-negative amounts |
+| `test_create_tranches_multiple_sets_same_commitment` | Two sets on same commitment_id accumulate correctly |
+| `test_transformation_with_zero_fee` | fee_bps = 0; fee_paid = 0, total_value preserved |
+
+**Error paths (`sum ≠ 10 000`):**
+
+| Test | Scenario |
+| --- | --- |
+| `test_create_tranches_sum_below_10000` | 5 000 + 3 000 = 8 000 |
+| `test_create_tranches_sum_above_10000` | 6 000 + 5 000 = 11 000 |
+| `test_create_tranches_all_zeros` | Three entries all 0 |
+| `test_create_tranches_empty_bps_vector` | Empty Vec |
+| `test_create_tranches_off_by_one_below` | 5 000 + 4 999 = 9 999 |
+| `test_create_tranches_off_by_one_above` | 5 001 + 5 000 = 10 001 |
+| `test_create_tranches_mismatched_lengths` | bps.len = 2, risk_levels.len = 1 |
+| `test_create_tranches_unauthorized` | Caller not in authorized set |
+
+Run:
+
+```bash
+cargo test -p commitment_transformation
+```
+
 ## shared_utils
 
 | Module         | Functions                                                              | Notes                                     |
