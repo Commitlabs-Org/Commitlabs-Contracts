@@ -416,6 +416,27 @@ fn test_place_bid_too_low_fails() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #18)")] // BidTooLow
+fn test_place_bid_not_high_enough_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+    let starting_price = 1000i128;
+
+    client.start_auction(&seller, &token_id, &starting_price, &86400, &payment_token);
+
+    // current_bid starts at starting_price; bidding the exact same amount is <= current_bid,
+    // so it must be rejected with BidTooLow before any token transfer happens.
+    client.place_bid(&bidder, &token_id, &starting_price);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #16)")] // AuctionEnded
 fn test_place_bid_after_auction_ends_fails() {
     let e = Env::default();
@@ -437,6 +458,56 @@ fn test_place_bid_after_auction_ends_fails() {
     });
 
     client.place_bid(&bidder, &token_id, &1500);
+}
+
+#[test]
+fn test_auction_duration_boundary() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+    let duration = 86400u64;
+    let starting_price = 1000i128;
+
+    // Auction starts at timestamp 0, ends_at = 0 + duration = 86400
+    client.start_auction(&seller, &token_id, &starting_price, &duration, &payment_token);
+
+    // At timestamp 0 (start), bidding equal-to-current is rejected with BidTooLow, not AuctionEnded.
+    // This proves the time check passes (auction is active) but bid check fails.
+    let result_active = client.try_place_bid(&bidder, &token_id, &starting_price);
+    assert!(
+        result_active.is_err(),
+        "equal bid at auction start should fail"
+    );
+
+    // At ends_at - 1 (last active second): equal bid still fails with BidTooLow, not AuctionEnded.
+    e.ledger().with_mut(|li| {
+        li.timestamp = duration - 1;
+    });
+    let result_last_second = client.try_place_bid(&bidder, &token_id, &starting_price);
+    assert!(
+        result_last_second.is_err(),
+        "equal bid one second before end should fail"
+    );
+
+    // At ends_at (expired): any bid is rejected with AuctionEnded.
+    e.ledger().with_mut(|li| {
+        li.timestamp = duration;
+    });
+    let result_at_end = client.try_place_bid(&bidder, &token_id, &(starting_price + 1));
+    let err = result_at_end.expect_err("bid at ends_at should fail");
+    // Must fail with AuctionEnded (#16), not BidTooLow (#18)
+    assert_eq!(err.unwrap(), MarketplaceError::AuctionEnded);
+
+    // At ends_at: end_auction should succeed
+    client.end_auction(&token_id);
+    let auction = client.get_auction(&token_id);
+    assert!(auction.ended);
 }
 
 #[test]
@@ -473,6 +544,39 @@ fn test_end_auction_twice_fails() {
 
     client.end_auction(&1);
     client.end_auction(&1); // Should fail
+}
+
+#[test]
+fn test_auction_active_vs_ended() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+    let token_id = 1u32;
+
+    client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
+
+    // Should be in active auctions
+    let auctions = client.get_all_auctions();
+    assert_eq!(auctions.len(), 1);
+    assert_eq!(auctions.get(0).unwrap().token_id, token_id);
+
+    // End auction
+    e.ledger().with_mut(|li| {
+        li.timestamp = 86400 + 1;
+    });
+    client.end_auction(&token_id);
+
+    // Should NOT be in active auctions
+    let auctions_after = client.get_all_auctions();
+    assert_eq!(auctions_after.len(), 0);
+    
+    // But still retrievable via get_auction
+    let auction = client.get_auction(&token_id);
+    assert!(auction.ended);
 }
 
 #[test]
