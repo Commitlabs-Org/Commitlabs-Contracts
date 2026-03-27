@@ -5,6 +5,7 @@ mod integration_tests {
     use crate::access_control::AccessControl;
     use crate::events::Events;
     use crate::math::SafeMath;
+    use crate::pausable::Pausable;
     use crate::storage::Storage;
     use crate::time::TimeUtils;
     use crate::validation::Validation;
@@ -190,5 +191,110 @@ mod integration_tests {
         );
         let data: (i128, u64) = last_event.2.into_val(&env);
         assert_eq!(data, (750i128, 77_777u64));
+    }
+
+    #[test]
+    fn test_pausable_key_alignment_and_state_reads() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            // Ensure constant and helper key resolve to the same symbol.
+            assert_eq!(Pausable::PAUSED_KEY, Pausable::paused_key(&env));
+
+            // Simulate contracts that set the key directly on init.
+            env.storage()
+                .instance()
+                .set(&Pausable::PAUSED_KEY, &true);
+            assert!(Pausable::is_paused(&env));
+
+            // Updating via helper key should reflect the same storage slot.
+            env.storage()
+                .instance()
+                .set(&Pausable::paused_key(&env), &false);
+            assert!(!Pausable::is_paused(&env));
+        });
+    }
+
+    #[test]
+    fn test_pause_unpause_toggles_state_and_emits_events() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            assert!(!Pausable::is_paused(&env));
+            Pausable::require_not_paused(&env);
+
+            Pausable::pause(&env);
+            assert!(Pausable::is_paused(&env));
+            Pausable::require_paused(&env);
+
+            Pausable::unpause(&env);
+            assert!(!Pausable::is_paused(&env));
+            Pausable::require_not_paused(&env);
+        });
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 2);
+
+        let pause_event = events.first().unwrap();
+        assert_eq!(pause_event.0, contract_id);
+        assert_eq!(
+            pause_event.1,
+            vec![&env, symbol_short!("Pause").into_val(&env)]
+        );
+
+        let unpause_event = events.last().unwrap();
+        assert_eq!(unpause_event.0, contract_id);
+        assert_eq!(
+            unpause_event.1,
+            vec![&env, symbol_short!("Unpause").into_val(&env)]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is already paused")]
+    fn test_pause_when_already_paused_panics() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            Pausable::pause(&env);
+            Pausable::pause(&env);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is already unpaused")]
+    fn test_unpause_when_unpaused_panics() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            Pausable::unpause(&env);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused - operation not allowed")]
+    fn test_require_not_paused_panics_when_paused() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            Pausable::pause(&env);
+            Pausable::require_not_paused(&env);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is not paused")]
+    fn test_require_paused_panics_when_unpaused() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            Pausable::require_paused(&env);
+        });
     }
 }
