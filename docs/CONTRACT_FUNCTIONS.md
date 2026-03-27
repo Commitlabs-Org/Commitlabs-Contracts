@@ -116,6 +116,8 @@ CI drift tests compare its source-defined types and expected signatures against
 | set_rate_limit(admin, function, window, max_calls) -> Result                   | Configure rate limits.                  | Admin require_auth.  | Uses shared RateLimiter.                  |
 | set_rate_limit_exempt(admin, address, exempt) -> Result                        | Configure rate limit exemption.         | Admin require_auth.  | Uses shared RateLimiter.                  |
 
+Operational guide: `docs/ALLOCATION_LOGIC_POOL_REGISTRY_AND_RISK_LEVELS.md`
+
 ## price_oracle
 
 | Function                                               | Summary                                          | Access control            | Notes                                                                          |

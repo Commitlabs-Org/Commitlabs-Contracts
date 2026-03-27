@@ -260,6 +260,110 @@ fn test_total_allocation_accuracy() {
     assert_eq!(summary.total_allocated, amount);
 }
 
+// ============================================================================
+// EDGE CASE TESTS - Pool registry and risk-level rounding/capacity
+// ============================================================================
+
+#[test]
+fn test_safe_strategy_remainder_is_deterministic_and_total_matches() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Two low-risk pools so division has a remainder.
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &500, &1_000_000_000);
+
+    let user = Address::generate(&env);
+    let commitment_id = 42u64;
+    let amount = 101i128;
+
+    let summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+    assert_eq!(summary.total_allocated, amount);
+
+    // Determinism: remainder should go to the first pool in registry order.
+    let pool0 = client.get_pool(&0);
+    let pool1 = client.get_pool(&1);
+    assert_eq!(pool0.total_liquidity, 51);
+    assert_eq!(pool1.total_liquidity, 50);
+}
+
+#[test]
+fn test_balanced_strategy_percent_rounding_total_matches() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let amount = 101i128; // not divisible by 100
+
+    let summary = client.allocate(&user, &43, &amount, &Strategy::Balanced);
+    assert_eq!(summary.total_allocated, amount);
+}
+
+#[test]
+fn test_aggressive_strategy_percent_rounding_total_matches() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let amount = 101i128; // not divisible by 100
+
+    let summary = client.allocate(&user, &44, &amount, &Strategy::Aggressive);
+    assert_eq!(summary.total_allocated, amount);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #7)")]
+fn test_capacity_insufficient_across_eligible_pools_fails_with_capacity_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Two low-risk pools with tiny capacity => total remaining capacity is 3.
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &2);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &500, &1);
+
+    let user = Address::generate(&env);
+
+    // Request more than total remaining capacity => must fail with PoolCapacityExceeded (#7).
+    client.allocate(&user, &45, &4, &Strategy::Safe);
+}
+
+#[test]
+fn test_get_all_pools_includes_inactive_pools() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Medium, &1000, &800_000_000);
+    client.register_pool(&admin, &2, &RiskLevel::High, &2000, &500_000_000);
+
+    // Deactivate pool 1, but it should still appear in get_all_pools() because it is registry-based.
+    client.update_pool_status(&admin, &1, &false);
+
+    let pools = client.get_all_pools();
+    assert_eq!(pools.len(), 3);
+
+    let mut inactive_found = false;
+    for pool in pools.iter() {
+        if pool.pool_id == 1 {
+            inactive_found = true;
+            assert!(!pool.active);
+        }
+    }
+    assert!(inactive_found);
+}
+
 #[test]
 fn test_multiple_users_allocations() {
     let env = Env::default();
