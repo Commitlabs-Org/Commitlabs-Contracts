@@ -1,25 +1,46 @@
-//! Math utilities for safe arithmetic operations and percentage calculations
+//! # Safe Math Utilities
+//!
+//! Provides a collection of arithmetic helpers designed to prevent
+//! silent overflow and underflow in financial and state-critical logic.
+//!
+//! ### Security
+//! * All operations use `checked_*` variants and panic on failure.
+//! * Percentage calculations are guarded against out-of-bounds inputs.
 
-/// Safe math operations to prevent overflow/underflow
+
+/// Helper for enforcing safe arithmetic and percentage logic.
 pub struct SafeMath;
 
 impl SafeMath {
-    /// Safely add two i128 values, panicking on overflow
+    /// Safely calculates `a + b`.
+    ///
+    /// ### Errors
+    /// * Panics on addition overflow.
     pub fn add(a: i128, b: i128) -> i128 {
         a.checked_add(b).expect("Math: addition overflow")
     }
 
-    /// Safely subtract two i128 values, panicking on underflow
+    /// Safely calculates `a - b`.
+    ///
+    /// ### Errors
+    /// * Panics on subtraction underflow.
     pub fn sub(a: i128, b: i128) -> i128 {
         a.checked_sub(b).expect("Math: subtraction underflow")
     }
 
-    /// Safely multiply two i128 values, panicking on overflow
+    /// Safely calculates `a * b`.
+    ///
+    /// ### Errors
+    /// * Panics on multiplication overflow.
     pub fn mul(a: i128, b: i128) -> i128 {
         a.checked_mul(b).expect("Math: multiplication overflow")
     }
 
-    /// Safely divide two i128 values, panicking on division by zero
+    /// Safely calculates `a / b`.
+    ///
+    /// ### Errors
+    /// * Panics if `b` is zero.
+    /// * Panics on division overflow (e.g., `i128::MIN / -1`).
     pub fn div(a: i128, b: i128) -> i128 {
         if b == 0 {
             panic!("Math: division by zero");
@@ -27,14 +48,18 @@ impl SafeMath {
         a.checked_div(b).expect("Math: division overflow")
     }
 
-    /// Calculate percentage: (value * percent) / 100
+    /// Calculates a percentage of a value: `(value * percent) / 100`.
     ///
-    /// # Arguments
-    /// * `value` - The base value
-    /// * `percent` - The percentage (0-100)
+    /// ### Parameters
+    /// * `value` - The principal amount.
+    /// * `percent` - The rate (0-100).
     ///
-    /// # Returns
-    /// The calculated percentage value
+    /// ### Returns
+    /// * The calculated percentage (integer).
+    ///
+    /// ### Errors
+    /// * Panics if `percent > 100`.
+    /// * Panics on multiplication overflow.
     pub fn percent(value: i128, percent: u32) -> i128 {
         if percent > 100 {
             panic!("Math: percent must be <= 100");
@@ -42,20 +67,22 @@ impl SafeMath {
         Self::div(Self::mul(value, percent as i128), 100)
     }
 
-    /// Calculate percentage of a value: (value * percent) / 100
-    /// Returns the percentage amount
+    /// Alias for `percent`.
     pub fn percent_of(value: i128, percent: u32) -> i128 {
         Self::percent(value, percent)
     }
 
-    /// Calculate what percentage `part` is of `whole`: (part * 100) / whole
+    /// Calculates what percentage `part` is of `whole`: `(part * 100) / whole`.
     ///
-    /// # Arguments
-    /// * `part` - The part value
-    /// * `whole` - The whole value
+    /// ### Parameters
+    /// * `part` - The portion value.
+    /// * `whole` - The total value.
     ///
-    /// # Returns
-    /// The percentage (0-100) as i128
+    /// ### Returns
+    /// * The percentage as an integer (0-100, though can exceed 100 if part > whole).
+    ///
+    /// ### Errors
+    /// * Panics if `whole` is zero.
     pub fn percent_from(part: i128, whole: i128) -> i128 {
         if whole == 0 {
             panic!("Math: cannot calculate percent from zero");
@@ -63,14 +90,10 @@ impl SafeMath {
         Self::div(Self::mul(part, 100), whole)
     }
 
-    /// Calculate loss percentage: ((initial - current) * 100) / initial
+    /// Calculates the percentage loss from `initial` to `current`.
     ///
-    /// # Arguments
-    /// * `initial` - The initial value
-    /// * `current` - The current value
-    ///
-    /// # Returns
-    /// The loss percentage as i128 (can be negative if current > initial)
+    /// ### Errors
+    /// * Panics if `initial` is zero.
     pub fn loss_percent(initial: i128, current: i128) -> i128 {
         if initial == 0 {
             panic!("Math: cannot calculate loss percent from zero initial value");
@@ -79,14 +102,10 @@ impl SafeMath {
         Self::percent_from(loss, initial)
     }
 
-    /// Calculate gain percentage: ((current - initial) * 100) / initial
+    /// Calculates the percentage gain from `initial` to `current`.
     ///
-    /// # Arguments
-    /// * `initial` - The initial value
-    /// * `current` - The current value
-    ///
-    /// # Returns
-    /// The gain percentage as i128 (can be negative if current < initial)
+    /// ### Errors
+    /// * Panics if `initial` is zero.
     pub fn gain_percent(initial: i128, current: i128) -> i128 {
         if initial == 0 {
             panic!("Math: cannot calculate gain percent from zero initial value");
@@ -95,27 +114,20 @@ impl SafeMath {
         Self::percent_from(gain, initial)
     }
 
-    /// Apply a percentage penalty: value - (value * penalty_percent / 100)
+    /// Deducts a percentage penalty from a value.
     ///
-    /// # Arguments
-    /// * `value` - The base value
-    /// * `penalty_percent` - The penalty percentage (0-100)
+    /// ### Parameters
+    /// * `value` - Principal amount.
+    /// * `penalty_percent` - Rate to deduct (0-100).
     ///
-    /// # Returns
-    /// The value after applying the penalty
+    /// ### Returns
+    /// * `value - (value * penalty_percent / 100)`.
     pub fn apply_penalty(value: i128, penalty_percent: u32) -> i128 {
         let penalty_amount = Self::percent(value, penalty_percent);
         Self::sub(value, penalty_amount)
     }
 
-    /// Calculate the penalty amount: (value * penalty_percent / 100)
-    ///
-    /// # Arguments
-    /// * `value` - The base value
-    /// * `penalty_percent` - The penalty percentage (0-100)
-    ///
-    /// # Returns
-    /// The penalty amount
+    /// Calculates the penalty amount for a given value and rate.
     pub fn penalty_amount(value: i128, penalty_percent: u32) -> i128 {
         Self::percent(value, penalty_percent)
     }

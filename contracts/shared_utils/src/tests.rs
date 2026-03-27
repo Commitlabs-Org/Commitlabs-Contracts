@@ -191,4 +191,45 @@ mod integration_tests {
         let data: (i128, u64) = last_event.2.into_val(&env);
         assert_eq!(data, (750i128, 77_777u64));
     }
+
+    #[test]
+    fn test_math_edge_cases() {
+        // Zero and 100 percent
+        assert_eq!(SafeMath::percent(1000, 0), 0);
+        assert_eq!(SafeMath::percent(1000, 100), 1000);
+
+        // Multiple operations
+        let val = SafeMath::add(500, 500);
+        let val = SafeMath::mul(val, 2);
+        let val = SafeMath::div(val, 4);
+        assert_eq!(val, 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "Math: division by zero")]
+    fn test_math_div_by_zero_panics() {
+        SafeMath::div(100, 0);
+    }
+
+    #[test]
+    fn test_fee_bps_edge_cases() {
+        use crate::fees::{fee_from_bps, net_after_fee_bps, BPS_MAX};
+
+        // 0 BPS
+        assert_eq!(fee_from_bps(1000, 0), 0);
+        assert_eq!(net_after_fee_bps(1000, 0), 1000);
+
+        // Max BPS (100%)
+        assert_eq!(fee_from_bps(1000, BPS_MAX), 1000);
+        assert_eq!(net_after_fee_bps(1000, BPS_MAX), 0);
+
+        // Small BPS (0.01%)
+        assert_eq!(fee_from_bps(10_000, 1), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Fees: bps must be 0-10000")]
+    fn test_fee_bps_out_of_range_panics() {
+        crate::fees::fee_from_bps(1000, 10001);
+    }
 }

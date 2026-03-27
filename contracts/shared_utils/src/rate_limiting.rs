@@ -1,44 +1,51 @@
-//! Rate limiting utilities for Soroban contracts.
+//! # Rate Limiting Utilities
 //!
-//! This module provides a lightweight, gas-conscious rate limiting helper
-//! that can be reused across contracts. It supports:
-//! - Per-address limits
-//! - Per-function limits
-//! - Time window based limits (fixed windows)
-//! - Optional exemption list
+//! Provides a gas-efficient, fixed-window rate limiter to protect contract
+//! entry points from spam or resource exhaustion.
 //!
-//! Storage layout (instance storage, per contract):
-//! - (RL_CFG, function_symbol) -> (window_seconds: u64, max_calls: u32)
-//! - (RL_STATE, address, function_symbol) -> (window_start: u64, count: u32)
-//! - (RL_EX, address) -> bool
+//! ### Features
+//! * **Granularity**: Supports per-address and per-function limits.
+//! * **Flexibility**: Configurable windows and call maximums.
+//! * **Exemptions**: Optional allowlist for trusted addresses or contracts.
+//!
+//! ### Storage Layout
+//! * `(RL_CFG, function)`: `(window_seconds, max_calls)` in instance storage.
+//! * `(RL_ST, address, function)`: `(window_start, count)` in instance storage.
+//! * `(RL_EX, address)`: `bool` exemption flag.
 
 use soroban_sdk::{Address, Env, Symbol};
 
 use crate::time::TimeUtils;
 
-/// Internal storage key prefixes for rate limiting
+/// Internal storage key prefixes for rate limiting state and config.
 mod keys {
     use soroban_sdk::{symbol_short, Symbol};
 
-    // Configuration for a function: (window_seconds, max_calls)
+    /// Prefix for the `(window_seconds, max_calls)` configuration.
     pub const RATE_LIMIT_CONFIG: Symbol = symbol_short!("RL_CFG");
-    // Per-address per-function state: (window_start, count)
+    /// Prefix for the per-user `(window_start, count)` state.
     pub const RATE_LIMIT_STATE: Symbol = symbol_short!("RL_ST");
-    // Exemption flag for an address
+    /// Prefix for the boolean exemption flag for an address.
     pub const RATE_LIMIT_EXEMPT: Symbol = symbol_short!("RL_EX");
 }
 
-/// Rate limiting helper
+/// Helper for enforcing rate limits on contract calls.
 pub struct RateLimiter;
 
 impl RateLimiter {
-    /// Configure a rate limit for a given function.
+    /// Defines a rate limit for a specific function symbol.
     ///
-    /// This stores a fixed-window configuration:
-    /// - `window_seconds`: length of the window in seconds
-    /// - `max_calls`: maximum calls allowed within that window
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `function` - The symbol identifying the limited function.
+    /// * `window_seconds` - Duration of the rolling fixed window.
+    /// * `max_calls` - Maximum allowed calls per window.
     ///
-    /// Passing zero for either argument is rejected to avoid silent misconfig.
+    /// ### Errors
+    /// * Panics if `window_seconds` or `max_calls` is zero.
+    ///
+    /// ### Security
+    /// * This function does not perform auth; the caller MUST be an admin.
     pub fn set_limit(e: &Env, function: &Symbol, window_seconds: u64, max_calls: u32) {
         if window_seconds == 0 || max_calls == 0 {
             panic!("Invalid rate limit configuration");
@@ -50,15 +57,15 @@ impl RateLimiter {
             .set(&key, &(window_seconds, max_calls));
     }
 
-    /// Clear the rate limit configuration for a function.
+    /// Removes the rate limit configuration for a function.
     pub fn clear_limit(e: &Env, function: &Symbol) {
         let key = (keys::RATE_LIMIT_CONFIG, function.clone());
         e.storage().instance().remove(&key);
     }
 
-    /// Set or clear exemption for an address.
+    /// Marks an address as exempt from all rate limiting checks.
     ///
-    /// When `exempt == true`, the address is not subject to rate limits.
+    /// Useful for trusted oracle contracts, relayers, or the admin.
     pub fn set_exempt(e: &Env, address: &Address, exempt: bool) {
         let key = (keys::RATE_LIMIT_EXEMPT, address.clone());
         if exempt {
@@ -68,19 +75,28 @@ impl RateLimiter {
         }
     }
 
-    /// Check if an address is exempt from rate limits.
+    /// Checks if a given address is in the exemption list.
     pub fn is_exempt(e: &Env, address: &Address) -> bool {
         let key = (keys::RATE_LIMIT_EXEMPT, address.clone());
         e.storage().instance().get::<_, bool>(&key).unwrap_or(false)
     }
 
-    /// Enforce a rate limit for a given address & function.
+    /// Verifies that the caller has not exceeded the permitted call frequency.
     ///
-    /// Behavior:
-    /// - If no config exists for `function`, this is a no-op.
-    /// - If `address` is exempt, this is a no-op.
-    /// - Otherwise, maintains a fixed time window based on ledger timestamp.
-    /// - Panics with `"Rate limit exceeded"` when limit is hit.
+    /// Increments the local call counter or resets it if the window has expired.
+    ///
+    /// ### Parameters
+    /// * `e` - The Soroban environment.
+    /// * `address` - The address identifying the caller.
+    /// * `function` - The identifier of the protected logic.
+    ///
+    /// ### Errors
+    /// * Panics with "Rate limit exceeded" if the caller exceeds `max_calls` in the window.
+    ///
+    /// ### Security
+    /// * Uses a **fixed window** algorithm. Users can theoretically burst at the
+    ///   end of one window and the start of the next.
+    /// * Updates instance storage balance on every successful check.
     pub fn check(e: &Env, address: &Address, function: &Symbol) {
         // Exempt addresses bypass rate limits
         if Self::is_exempt(e, address) {

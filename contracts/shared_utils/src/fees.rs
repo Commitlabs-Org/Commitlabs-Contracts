@@ -1,29 +1,30 @@
-//! Fee utilities for protocol revenue: basis points calculation and fee types.
+//! # Fee and Revenue Utilities
 //!
-//! Fee types supported:
-//! - Commitment creation fee
-//! - Attestation verification fee
-//! - Commitment transformation fee
-//! - Marketplace fees (if applicable)
-//! - Early exit fee (goes to protocol)
+//! Provides standardized basis-points (BPS) calculation for protocol fees.
+//! Supports multiple fee types including creation, transformation, and early exit fees.
+//!
+//! ### Arithmetic Safety
+//! * Uses `checked_mul` and `checked_div` to prevent overflows during calculation.
+//! * Logic enforces a maximum fee of 100% (10,000 BPS).
 
-/// Basis points scale: 10000 bps = 100%
+/// The scale used for fee calculations. 10,000 units represents 100.00%.
 pub const BPS_SCALE: u32 = 10000;
 
-/// Maximum allowed basis points (100%)
+/// The functional maximum for basis points.
 pub const BPS_MAX: u32 = 10000;
 
-/// Fee calculation using basis points.
+/// Calculates a fee amount based on a base value and rate in basis points.
 ///
-/// # Arguments
-/// * `amount` - The base amount (e.g. commitment amount, transformation value)
-/// * `bps` - Fee rate in basis points (0-10000). 100 bps = 1%.
+/// ### Parameters
+/// * `amount` - The principal value (e.g., transaction volume).
+/// * `bps` - The fee rate (0 to 10,000). 1 BPS = 0.01%.
 ///
-/// # Returns
-/// Fee amount: `(amount * bps) / 10000`. Rounds down.
+/// ### Returns
+/// * The calculated fee: `(amount * bps) / 10,000`.
 ///
-/// # Panics
-/// If `bps > 10000`.
+/// ### Errors
+/// * Panics if `bps` exceeds `BPS_MAX` (10,000).
+/// * Panics on arithmetic overflow if `amount * bps` exceeds `i128` limits.
 pub fn fee_from_bps(amount: i128, bps: u32) -> i128 {
     if bps > BPS_MAX {
         panic!("Fees: bps must be 0-10000");
@@ -38,10 +39,14 @@ pub fn fee_from_bps(amount: i128, bps: u32) -> i128 {
         .expect("Fees: div by zero")
 }
 
-/// Net amount after deducting a fee in basis points.
+/// Calculates the remaining value after a fee is deducted.
 ///
-/// # Returns
-/// `amount - fee_from_bps(amount, bps)`.
+/// ### Parameters
+/// * `amount` - The principal value.
+/// * `bps` - The fee rate to deduct.
+///
+/// ### Returns
+/// * `amount - fee_amount`.
 pub fn net_after_fee_bps(amount: i128, bps: u32) -> i128 {
     let fee = fee_from_bps(amount, bps);
     amount.checked_sub(fee).expect("Fees: underflow")
