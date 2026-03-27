@@ -9,25 +9,50 @@ This document summarizes public entry points for each contract and their access 
 | initialize(admin, nft_contract)                                       | Set admin, NFT contract, and counters.           | None (single-use).                        | Panics if already initialized.                     |
 | create_commitment(owner, amount, asset_address, rules) -> String      | Creates commitment, transfers assets, mints NFT. | No require_auth; caller supplies owner.   | Uses reentrancy guard and rate limiting per owner. |
 | get_commitment(commitment_id) -> Commitment                           | Fetch commitment details.                        | View.                                     | Panics if not found.                               |
+| list_commitments_by_owner(owner) -> Vec<String>                       | List commitment IDs for owner (convenience).     | View.                                     | Wrapper around get_owner_commitments.              |
 | get_owner_commitments(owner) -> Vec<String>                           | List commitment IDs for owner.                   | View.                                     | Returns empty Vec if none.                         |
 | get_total_commitments() -> u64                                        | Total commitments count.                         | View.                                     | Reads instance storage counter.                    |
 | get_total_value_locked() -> i128                                      | Total value locked across commitments.           | View.                                     | Aggregate stored in instance storage.              |
+| get_commitments_created_between(from_ts, to_ts) -> Vec<String>        | Get commitments created in time range.           | View.                                     | O(n) cost; use pagination for large datasets.     |
 | get_admin() -> Address                                                | Fetch admin address.                             | View.                                     | Panics if not initialized.                         |
 | get_nft_contract() -> Address                                         | Fetch NFT contract address.                      | View.                                     | Panics if not initialized.                         |
-| update_value(commitment_id, new_value)                                | Emit value update event.                         | No require_auth.                          | Does not update stored commitment value.           |
+| pause(caller)                                                         | Pause contract operations.                       | Admin require_auth.                        | Uses Pausable utility.                             |
+| unpause(caller)                                                       | Unpause contract operations.                     | Admin require_auth.                        | Uses Pausable utility.                             |
+| is_paused() -> bool                                                   | Check if contract is paused.                     | View.                                     | Returns pause state.                               |
+| add_authorized_contract(caller, contract_address)                    | Add authorized allocator contract.               | Admin require_auth.                        | Stores authorization flag.                          |
+| remove_authorized_contract(caller, contract_address)                 | Remove authorized allocator contract.            | Admin require_auth.                        | Removes authorization flag.                        |
+| is_authorized(contract_address) -> bool                              | Check if contract is authorized.                 | View.                                     | Admin is implicitly authorized.                    |
+| update_value(commitment_id, new_value)                                | Emit value update event.                         | No require_auth.                          | Updates stored commitment value and TVL.           |
 | check_violations(commitment_id) -> bool                               | Evaluate loss or duration violations.            | View.                                     | Emits violation event when violated.               |
 | get_violation_details(commitment_id) -> (bool, bool, bool, i128, u64) | Detailed violation info.                         | View.                                     | Calculates loss percent and time remaining.        |
 | settle(commitment_id)                                                 | Settle expired commitment and NFT.               | No require_auth.                          | Transfers assets and calls NFT settle.             |
 | early_exit(commitment_id, caller)                                     | Exit early with penalty.                         | Checks caller == owner (no require_auth). | Uses SafeMath to compute penalty.                  |
-| allocate(commitment_id, target_pool, amount)                          | Allocate assets to pool.                         | No require_auth.                          | Transfers assets to target pool.                   |
-| set_rate_limit(caller, function, window, max_calls)                   | Configure rate limits.                           | Admin only.                               | Uses shared RateLimiter.                           |
-| set_rate_limit_exempt(caller, address, exempt)                        | Configure rate limit exemption.                  | Admin only.                               | Uses shared RateLimiter.                           |
+| add_updater(caller, updater)                                          | Add authorized value updater.                    | Admin require_auth.                        | Manages authorized updaters list.                  |
+| allocate(caller, commitment_id, target_pool, amount)                  | Allocate assets to pool.                         | Caller require_auth + authorized check.   | Transfers assets to target pool.                   |
+| remove_updater(caller, updater)                                       | Remove authorized value updater.                 | Admin require_auth.                        | Manages authorized updaters list.                  |
+| set_allocation_contract(caller, addr)                                 | Set allocation contract address.                 | Admin require_auth.                        | Stores allocation contract reference.              |
+| get_authorized_updaters() -> Vec<Address>                            | Get list of authorized updaters.                 | View.                                     | Returns empty Vec if none.                         |
+| set_rate_limit(caller, function, window, max_calls)                   | Configure rate limits.                           | Admin require_auth.                        | Uses shared RateLimiter.                           |
+| set_rate_limit_exempt(caller, address, exempt)                        | Configure rate limit exemption.                  | Admin require_auth.                        | Uses shared RateLimiter.                           |
+| is_emergency_mode() -> bool                                           | Check emergency mode status.                     | View.                                     | Returns emergency control state.                   |
+| set_emergency_mode(caller, enabled)                                   | Set emergency mode.                               | Admin require_auth.                        | Uses EmergencyControl utility.                     |
+| emergency_withdraw(caller, asset, to, amount)                         | Emergency asset withdrawal.                      | Admin require_auth + emergency mode.      | Transfers assets to specified address.            |
+| set_creation_fee_bps(caller, bps)                                    | Set creation fee rate in basis points.           | Admin require_auth.                        | Validates bps range (0-10000).                     |
+| set_fee_recipient(caller, recipient)                                  | Set fee recipient address.                       | Admin require_auth.                        | Validates non-zero address.                        |
+| withdraw_fees(caller, asset_address, amount)                         | Withdraw collected fees.                         | Admin require_auth.                        | Validates recipient set and sufficient fees.       |
+| get_creation_fee_bps() -> u32                                         | Get creation fee rate.                           | View.                                     | Returns 0 if not set.                              |
+| get_fee_recipient() -> Option<Address>                                | Get fee recipient address.                       | View.                                     | Returns None if not set.                           |
+| get_collected_fees(asset_address) -> i128                             | Get collected fees for asset.                    | View.                                     | Returns 0 if none collected.                       |
 
 ### commitment_core cross-contract notes
 
 - `create_commitment` is the main outbound write edge into `commitment_nft`; it also moves user assets into core custody.
 - `settle` and `early_exit` both depend on downstream NFT lifecycle calls to keep mirrored state aligned.
 - `get_commitment` is the canonical read edge consumed by `attestation_engine`.
+- `allocate` transfers assets to authorized pool contracts and requires caller authorization.
+- `update_value` modifies stored commitment state and TVL, emitting events for downstream consumers.
+- Fee management functions (`set_creation_fee_bps`, `withdraw_fees`, etc.) handle protocol revenue collection.
+- Emergency control functions (`emergency_withdraw`, `set_emergency_mode`) provide admin safety controls.
 - Cross-contract review reference: `docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md`
 
 ## commitment_interface
