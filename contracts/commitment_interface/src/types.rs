@@ -56,3 +56,34 @@ pub struct Commitment {
     /// Lifecycle status such as `active`, `settled`, `violated`, or `early_exit`.
     pub status: String,
 }
+
+/// Metadata associated with a commitment NFT.
+///
+/// # Security
+/// This mirrors the `CommitmentMetadata` stored in the `commitment_nft` contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CommitmentMetadata {
+    pub commitment_id: String,
+    pub duration_days: u32,
+    pub max_loss_percent: u32,
+    pub commitment_type: String, // "safe", "balanced", "aggressive"
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub initial_amount: i128,
+    pub asset_address: Address,
+}
+
+/// The Commitment NFT structure.
+///
+/// # Security
+/// This mirrors the `CommitmentNFT` stored in the `commitment_nft` contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CommitmentNFT {
+    pub owner: Address,
+    pub token_id: u32,
+    pub metadata: CommitmentMetadata,
+    pub is_active: bool,
+    pub early_exit_penalty: u32,
+}
