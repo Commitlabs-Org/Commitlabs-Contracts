@@ -669,6 +669,30 @@ impl AttestationEngineContract {
         data: Map<String, String>,
         is_compliant: bool,
     ) -> Result<(), AttestationError> {
+        // 1. Authorization check
+        caller.require_auth();
+
+        // 2. Internal logic
+        Self::_attest_internal(
+            e,
+            caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+        )
+    }
+
+    /// Internal implementation of attest without require_auth check.
+    /// Used by public attest(), record_fees(), and record_drawdown().
+    fn _attest_internal(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
         // 1. Reentrancy protection
         if e.storage().instance().has(&DataKey::ReentrancyGuard) {
             panic!("Reentrancy detected");
@@ -677,9 +701,6 @@ impl AttestationEngineContract {
 
         // Check if contract is paused
         Pausable::require_not_paused(&e);
-
-        // 2. Verify caller signed the transaction
-        caller.require_auth();
 
         // 3. Check caller is authorized verifier
         if !Self::is_authorized_verifier(&e, &caller) {
@@ -819,6 +840,7 @@ impl AttestationEngineContract {
 
         Ok(())
     }
+
 
     /// Get all attestations for a commitment
     pub fn get_attestations(e: Env, commitment_id: String) -> Vec<Attestation> {
@@ -1005,6 +1027,9 @@ impl AttestationEngineContract {
         commitment_id: String,
         fee_amount: i128,
     ) -> Result<(), AttestationError> {
+        // Authorization check
+        caller.require_auth();
+
         // Validate fee amount must be non-negative
         if fee_amount < 0 {
             return Err(AttestationError::InvalidFeeAmount);
@@ -1016,7 +1041,7 @@ impl AttestationEngineContract {
             Self::i128_to_string(&e, fee_amount),
         );
 
-        Self::attest(
+        Self::_attest_internal(
             e.clone(),
             caller,
             commitment_id.clone(),
@@ -1039,6 +1064,9 @@ impl AttestationEngineContract {
         commitment_id: String,
         drawdown_percent: i128,
     ) -> Result<(), AttestationError> {
+        // Authorization check
+        caller.require_auth();
+
         let commitment_core: Address = e
             .storage()
             .instance()
@@ -1061,7 +1089,7 @@ impl AttestationEngineContract {
             Self::i128_to_string(&e, drawdown_percent),
         );
 
-        Self::attest(
+        Self::_attest_internal(
             e.clone(),
             caller.clone(),
             commitment_id.clone(),
@@ -1081,7 +1109,7 @@ impl AttestationEngineContract {
                 String::from_str(&e, "high"),
             );
 
-            Self::attest(
+            Self::_attest_internal(
                 e.clone(),
                 caller,
                 commitment_id.clone(),
@@ -1102,6 +1130,7 @@ impl AttestationEngineContract {
         );
         Ok(())
     }
+
 
     /// Convert i128 to String (helper function)
     fn i128_to_string(e: &Env, value: i128) -> String {

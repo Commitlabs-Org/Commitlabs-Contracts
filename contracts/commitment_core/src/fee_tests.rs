@@ -11,13 +11,36 @@
 
 use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
-    token, Address, Env, IntoVal, String, Symbol,
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger as _},
+    token, Address, Env, IntoVal, String, Symbol, contract, contractimpl,
 };
 
-fn create_token_contract<'a>(e: &Env, admin: &Address) -> (Address, token::Client<'a>) {
+#[contract]
+struct MockNftContract;
+
+#[contractimpl]
+impl MockNftContract {
+    pub fn mint(
+        _e: Env,
+        _caller: Address,
+        _owner: Address,
+        _commitment_id: String,
+        _duration_days: u32,
+        _max_loss_percent: u32,
+        _commitment_type: String,
+        _initial_amount: i128,
+        _asset_address: Address,
+        _early_exit_penalty: u32,
+    ) -> u32 {
+        1
+    }
+    pub fn settle(_e: Env, _caller: Address, _token_id: u32) {}
+    pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
+}
+
+fn create_token_contract<'a>(e: &Env, admin: &Address) -> (Address, token::StellarAssetClient<'a>, token::Client<'a>) {
     let addr = e.register_stellar_asset_contract(admin.clone());
-    (addr.clone(), token::Client::new(e, &addr))
+    (addr.clone(), token::StellarAssetClient::new(e, &addr), token::Client::new(e, &addr))
 }
 
 fn setup_test() -> (
@@ -34,11 +57,12 @@ fn setup_test() -> (
 
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
+    let _nft_contract_id = e.register_contract(Some(&nft_contract), MockNftContract);
     let user = Address::generate(&e);
-    let (token_address, token_client) = create_token_contract(&e, &admin);
+    let (token_address, stellar_asset_client, token_client) = create_token_contract(&e, &admin);
 
     // Mint tokens to user
-    token_client.mint(&user, &10_000_000);
+    stellar_asset_client.mint(&user, &10_000_000);
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -225,8 +249,8 @@ fn test_early_exit_penalty_retained_as_fee() {
     // Verify penalty was added to collected fees
     assert_eq!(client.get_collected_fees(&token_address), expected_penalty);
 
-    // Verify user received net amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // Verify user received net amount (Initial 10M - 1M + 900k)
+    assert_eq!(token_client.balance(&user), 9_900_000i128);
 }
 
 #[test]
@@ -255,8 +279,8 @@ fn test_early_exit_with_creation_fee_and_penalty() {
     // Verify both fees were collected
     assert_eq!(client.get_collected_fees(&token_address), total_fees);
 
-    // Verify user received correct amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // Verify user received correct amount (Initial 10M - 1M + 891k)
+    assert_eq!(token_client.balance(&user), 9_891_000i128);
 }
 
 // ============================================================================
@@ -442,11 +466,11 @@ fn test_get_collected_fees_multiple_assets() {
     let (e, admin, _, user, _, _, client) = setup_test();
 
     // Create two different tokens
-    let (token1, token1_client) = create_token_contract(&e, &admin);
-    let (token2, token2_client) = create_token_contract(&e, &admin);
+    let (token1, t1_asset_client, token1_client) = create_token_contract(&e, &admin);
+    let (token2, t2_asset_client, token2_client) = create_token_contract(&e, &admin);
 
-    token1_client.mint(&user, &10_000_000);
-    token2_client.mint(&user, &10_000_000);
+    t1_asset_client.mint(&user, &10_000_000);
+    t2_asset_client.mint(&user, &10_000_000);
 
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -478,12 +502,12 @@ fn test_fee_collection_with_settle() {
     let net_amount = amount - creation_fee;
 
     let mut rules = default_rules(&e);
-    rules.duration_days = 0; // Expires immediately
+    rules.duration_days = 1;
 
     let commitment_id = client.create_commitment(&user, &amount, &token_address, &rules);
 
-    // Settle commitment
-    e.ledger().with_mut(|li| li.timestamp = li.timestamp + 1);
+    // Settle commitment - advance time significantly past 1 day (86400s)
+    e.ledger().with_mut(|li| li.timestamp = li.timestamp + 100_000);
     client.settle(&commitment_id);
 
     // Verify creation fee still collected
