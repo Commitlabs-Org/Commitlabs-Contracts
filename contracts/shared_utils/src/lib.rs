@@ -27,7 +27,7 @@ pub mod storage;
 pub mod time;
 pub mod validation;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests;
 
 // Re-export commonly used items (explicit only to avoid E0252 glob clashes)
@@ -40,7 +40,6 @@ pub use emergency::EmergencyControl;
 pub use error_codes::{category, code, emit_error_event, message_for_code};
 pub use errors::ErrorHelper;
 pub use events::Events;
-pub use fees;
 pub use math::SafeMath;
 pub use pausable::Pausable;
 pub use rate_limiting::RateLimiter;

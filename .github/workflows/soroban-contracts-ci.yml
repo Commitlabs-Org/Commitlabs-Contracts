@@ -100,6 +100,11 @@ jobs:
           cargo test --workspace
           echo "✓ Unit tests passed"
 
+      - name: Run shared_utils host tests and wasm build
+        run: |
+          scripts/test-shared-utils.sh
+          echo "✓ shared_utils host+wasm checks passed"
+
       - name: Drift check commitment interface
         run: |
           cargo test -p commitment_interface

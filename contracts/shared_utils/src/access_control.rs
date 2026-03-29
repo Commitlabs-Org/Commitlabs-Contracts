@@ -102,7 +102,7 @@ impl AccessControl {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::super::storage::Storage;
     use super::*;

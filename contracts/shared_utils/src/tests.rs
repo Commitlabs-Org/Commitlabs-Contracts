@@ -1,6 +1,6 @@
 //! Integration tests for shared utilities
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod integration_tests {
     use crate::access_control::AccessControl;
     use crate::events::Events;
