@@ -245,8 +245,8 @@ cargo test --package commitment_nft test_transfer
 | Function | Summary | Access control | Notes |
 | --- | --- | --- | --- |
 | initialize(admin) | Set the initial timelock admin. | None (single-use). | Establishes the authority allowed to queue and cancel actions. |
-| queue_action(action_type, target, data, delay) -> Result<u64> | Queue a delayed governance action. | Stored admin `require_auth`. | Delay must be at least the action-type minimum and no more than 30 days. |
-| execute_action(action_id) -> Result | Execute a matured action. | Permissionless after delay. | Anyone may execute once `executable_at` is reached. |
+| queue_action(action_type, target, data, delay) -> Result<u64> | Queue a delayed governance action. | Stored admin `require_auth`. | Enforces action-specific floors and 30-day cap. Rejects zero/short delays. |
+| execute_action(action_id) -> Result | Execute a matured action. | Permissionless after delay. | Subject to ledger time granularity; executable once `ledger_time >= executable_at`. |
 | cancel_action(action_id) -> Result | Cancel a queued action. | Stored admin `require_auth`. | Fails if the action already executed or was already cancelled. |
 | get_action(action_id) -> Result<QueuedAction> | Read queued action metadata. | View. | Includes `queued_at`, `executable_at`, and execution state. |
 | get_all_actions() -> Vec<u64> | Read all queued action ids. | View. | Includes executed and cancelled actions. |
