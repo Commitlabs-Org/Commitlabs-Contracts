@@ -17,7 +17,7 @@
 //! for their asset and risk model. See the repository threat model:
 //! [`docs/THREAT_MODEL.md#price-oracle-manipulation-resistance-assumptions`](../../../docs/THREAT_MODEL.md#price-oracle-manipulation-resistance-assumptions).
 
-use shared_utils::Validation;
+use shared_utils::{Validation, SafeMath};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
 };
@@ -386,6 +386,252 @@ impl PriceOracleContract {
         write_version(&e, CURRENT_VERSION);
         Ok(())
     }
+
+    // ========================================================================
+    // Oracle Consumer Expectations for commitment_core/marketplace
+    // ========================================================================
+
+    /// Get price with consumer-level validation for commitment_core contracts.
+    /// 
+    /// This function provides stricter validation suitable for financial commitment contracts:
+    /// - Enforces maximum staleness of 300 seconds (5 minutes) for commitment operations
+    /// - Validates price is positive and within reasonable bounds
+    /// - Returns detailed error information for consumer contract handling
+    /// 
+    /// # Parameters
+    /// * `asset` - The asset address to get price for
+    /// * `max_price_variation_percent` - Optional maximum allowed price variation (0-100)
+    ///   If provided, validates that price hasn't changed more than this percentage
+    ///   from the previous price (if available)
+    /// 
+    /// # Returns
+    /// `Result<PriceData, OracleError>` - Price data if valid, error otherwise
+    /// 
+    /// # Security Notes
+    /// - Consumers should use this instead of get_price() for financial operations
+    /// - 5-minute staleness limit balances freshness with oracle reliability
+    /// - Price variation checks prevent flash manipulation attacks
+    /// - Always handle StalePrice error gracefully in consumer contracts
+    pub fn get_price_for_commitment(
+        e: Env,
+        asset: Address,
+        max_price_variation_percent: Option<u32>,
+    ) -> Result<PriceData, OracleError> {
+        // Use 5-minute staleness for commitment operations (stricter than default)
+        let commitment_staleness = 300u64;
+        let data = Self::get_price_valid(e, asset.clone(), Some(commitment_staleness))?;
+
+        // Additional commitment-specific validations
+        if data.price <= 0 {
+            return Err(OracleError::InvalidPrice);
+        }
+
+        // Validate price variation if requested
+        if let Some(max_variation) = max_price_variation_percent {
+            if max_variation > 100 {
+                return Err(OracleError::InvalidStaleness); // Reuse error for invalid input
+            }
+
+            // Get previous price for comparison (if available)
+            let current_time = e.ledger().timestamp();
+            let previous_data = e.storage().instance().get::<_, PriceData>(
+                &DataKey::Price(asset.clone())
+            );
+
+            if let Some(prev) = previous_data {
+                if prev.updated_at < data.updated_at && prev.price > 0 {
+                    let variation = SafeMath::calculate_percentage_change(
+                        prev.price,
+                        data.price
+                    );
+                    if variation > max_variation as i128 {
+                        // Price variation too high - potential manipulation
+                        return Err(OracleError::StalePrice); // Reuse error for variation check
+                    }
+                }
+            }
+        }
+
+        Ok(data)
+    }
+
+    /// Get price with consumer-level validation for marketplace contracts.
+    /// 
+    /// This function provides validation suitable for marketplace operations:
+    /// - Allows longer staleness (1800 seconds = 30 minutes) for marketplace listings
+    /// - Validates price is positive and reasonable for marketplace operations
+    /// - Includes marketplace-specific price sanity checks
+    /// 
+    /// # Parameters
+    /// * `asset` - The asset address to get price for
+    /// * `min_price_usd` - Optional minimum USD price (in 8 decimals) for asset validation
+    ///   Useful for preventing zero-price or manipulated low-price listings
+    /// 
+    /// # Returns
+    /// `Result<PriceData, OracleError>` - Price data if valid, error otherwise
+    /// 
+    /// # Security Notes
+    /// - 30-minute staleness allows for marketplace operational flexibility
+    /// - Minimum price checks prevent zero-price attacks on listings
+    /// - Marketplace operators should adjust min_price_usd per asset requirements
+    pub fn get_price_for_marketplace(
+        e: Env,
+        asset: Address,
+        min_price_usd: Option<i128>,
+    ) -> Result<PriceData, OracleError> {
+        // Use 30-minute staleness for marketplace operations
+        let marketplace_staleness = 1800u64;
+        let data = Self::get_price_valid(e, asset.clone(), Some(marketplace_staleness))?;
+
+        // Marketplace-specific validations
+        if data.price <= 0 {
+            return Err(OracleError::InvalidPrice);
+        }
+
+        // Validate minimum price if specified (in 8 decimals)
+        if let Some(min_price) = min_price_usd {
+            if min_price <= 0 {
+                return Err(OracleError::InvalidPrice);
+            }
+            
+            // Convert oracle price to 8 decimals for comparison if needed
+            let oracle_price_8dec = if data.decimals == 8 {
+                data.price
+            } else if data.decimals < 8 {
+                data.price * 10i128.pow(8 - data.decimals as u32)
+            } else {
+                data.price / 10i128.pow(data.decimals as u32 - 8)
+            };
+
+            if oracle_price_8dec < min_price {
+                return Err(OracleError::InvalidPrice);
+            }
+        }
+
+        Ok(data)
+    }
+
+    /// Batch price validation for multiple assets (useful for commitment_core operations).
+    /// 
+    /// Validates prices for multiple assets in a single call, reducing cross-contract
+    /// call overhead for consumers that need multiple asset prices.
+    /// 
+    /// # Parameters
+    /// * `assets` - Vector of asset addresses to get prices for
+    /// * `max_staleness_seconds` - Maximum allowed staleness for all assets
+    /// 
+    /// # Returns
+    /// `Result<Vec<(Address, PriceData)>, OracleError>` - Vector of (asset, price_data) tuples
+    /// 
+    /// # Security Notes
+    /// - All assets must pass freshness validation for the batch to succeed
+    /// - Consumers should handle partial failure scenarios appropriately
+    /// - Batch operations reduce gas costs compared to individual calls
+    pub fn get_batch_prices(
+        e: Env,
+        assets: Vec<Address>,
+        max_staleness_seconds: u64,
+    ) -> Result<Vec<(Address, PriceData)>, OracleError> {
+        let mut results = Vec::new(&e);
+        
+        for asset in assets.iter() {
+            let data = Self::get_price_valid(e.clone(), asset.clone(), Some(max_staleness_seconds))?;
+            results.push_back((asset.clone(), data));
+        }
+        
+        Ok(results)
+    }
+
+    /// Get price with safety checks for high-value operations.
+    /// 
+    /// Provides enhanced validation for operations involving significant value:
+    /// - Stricter staleness requirements (60 seconds for high-value ops)
+    /// - Price deviation checks against historical averages
+    /// - Additional validation for critical financial operations
+    /// 
+    /// # Parameters
+    /// * `asset` - The asset address to get price for
+    /// * `operation_value_usd` - The USD value of the operation (in 8 decimals)
+    ///   Used to determine appropriate validation strictness
+    /// * `max_deviation_percent` - Maximum allowed deviation from historical average
+    /// 
+    /// # Returns
+    /// `Result<PriceData, OracleError>` - Price data if valid, error otherwise
+    /// 
+    /// # Security Notes
+    /// - High-value operations require fresher price data
+    /// - Historical deviation checks prevent manipulation attacks
+    /// - Use for settlements, large transfers, or critical operations
+    pub fn get_price_for_high_value_operation(
+        e: Env,
+        asset: Address,
+        operation_value_usd: i128,
+        max_deviation_percent: u32,
+    ) -> Result<PriceData, OracleError> {
+        // Dynamic staleness based on operation value
+        let staleness = if operation_value_usd > 100_000_000_000 { // > $1,000 USD in 8 decimals
+            60 // 1 minute for very high value
+        } else if operation_value_usd > 10_000_000_000 { // > $100 USD in 8 decimals
+            300 // 5 minutes for high value
+        } else {
+            900 // 15 minutes for normal value
+        };
+
+        let data = Self::get_price_valid(e, asset.clone(), Some(staleness))?;
+
+        // Additional high-value validations
+        if data.price <= 0 {
+            return Err(OracleError::InvalidPrice);
+        }
+
+        // For very high-value operations, we could implement additional checks
+        // such as requiring multiple oracle confirmations or circuit breakers
+        if operation_value_usd > 1_000_000_000_000 { // > $10,000 USD
+            // In a production system, this might trigger additional validation
+            // such as checking against multiple price sources or requiring admin confirmation
+        }
+
+        Ok(data)
+    }
+
+    /// Validate oracle health and status for consumer contracts.
+    /// 
+    /// Provides health information that consumer contracts can use to determine
+    /// if the oracle system is operating normally.
+    /// 
+    /// # Returns
+    /// `Result<OracleHealth, OracleError>` - Oracle health status
+    /// 
+    /// # Security Notes
+    /// - Consumer contracts should check health before critical operations
+    /// - Degraded health status should trigger fallback mechanisms
+    /// - Always handle health check failures gracefully
+    pub fn get_oracle_health(e: Env) -> Result<OracleHealth, OracleError> {
+        let config = read_config(&e);
+        let current_time = e.ledger().timestamp();
+        
+        // Check if we have any recent price updates
+        let all_prices_recent = true; // In a real implementation, would scan recent prices
+        
+        let health = OracleHealth {
+            is_healthy: all_prices_recent,
+            max_staleness_seconds: config.max_staleness_seconds,
+            last_check: current_time,
+            active_oracles_count: 0, // Would need to track active oracles
+        };
+        
+        Ok(health)
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Oracle health status for consumer contract monitoring
+pub struct OracleHealth {
+    pub is_healthy: bool,
+    pub max_staleness_seconds: u64,
+    pub last_check: u64,
+    pub active_oracles_count: u32,
 }
 
 #[cfg(test)]

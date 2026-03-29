@@ -2904,3 +2904,390 @@ fn test_get_commitment_by_invalid_id_fails() {
     let invalid_id = String::from_str(&e, "COMMIT_999");
     let _ = client.get_commitment_by_id(&invalid_id);
 }
+
+// ============================================================================
+// Issue #213: Unit tests for balance_of, get_nfts_by_owner, get_all_metadata consistency
+// ============================================================================
+
+/// Test consistency between balance_of and get_nfts_by_owner after minting
+#[test]
+fn test_balance_of_consistency_with_get_nfts_by_owner_after_mint() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let owner1 = Address::generate(&e);
+    let owner2 = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Mint 3 NFTs for owner1
+    let mut owner1_token_ids = Vec::new(&e);
+    for i in 0..3 {
+        let token_id = client.mint(
+            &admin,
+            &owner1,
+            &String::from_str(&e, &format!("commitment_{}", i)),
+            &30,
+            &10,
+            &String::from_str(&e, "safe"),
+            &(1000 + i as i128 * 100),
+            &asset_address,
+            &5,
+        );
+        owner1_token_ids.push_back(token_id);
+    }
+
+    // Mint 2 NFTs for owner2
+    let mut owner2_token_ids = Vec::new(&e);
+    for i in 0..2 {
+        let token_id = client.mint(
+            &admin,
+            &owner2,
+            &String::from_str(&e, &format!("commitment_{}", i + 3)),
+            &30,
+            &10,
+            &String::from_str(&e, "balanced"),
+            &(2000 + i as i128 * 100),
+            &asset_address,
+            &5,
+        );
+        owner2_token_ids.push_back(token_id);
+    }
+
+    // Check consistency: balance_of should equal length of get_nfts_by_owner
+    assert_eq!(client.balance_of(&owner1), 3);
+    let owner1_nfts = client.get_nfts_by_owner(&owner1);
+    assert_eq!(owner1_nfts.len(), 3);
+
+    assert_eq!(client.balance_of(&owner2), 2);
+    let owner2_nfts = client.get_nfts_by_owner(&owner2);
+    assert_eq!(owner2_nfts.len(), 2);
+
+    // Verify that all NFTs returned by get_nfts_by_owner are actually owned by the correct owner
+    for nft in owner1_nfts.iter() {
+        assert_eq!(nft.owner, owner1);
+        assert!(owner1_token_ids.contains(&nft.token_id));
+    }
+
+    for nft in owner2_nfts.iter() {
+        assert_eq!(nft.owner, owner2);
+        assert!(owner2_token_ids.contains(&nft.token_id));
+    }
+}
+
+/// Test consistency between get_all_metadata and individual owner queries
+#[test]
+fn test_get_all_metadata_consistency_with_owner_queries() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let owner1 = Address::generate(&e);
+    let owner2 = Address::generate(&e);
+    let owner3 = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Mint different numbers of NFTs for each owner
+    let owners = [&owner1, &owner2, &owner3];
+    let mint_counts = [2, 4, 1];
+    let mut total_minted = 0;
+
+    for (owner_idx, &owner) in owners.iter().enumerate() {
+        for i in 0..mint_counts[owner_idx] {
+            client.mint(
+                &admin,
+                &owner,
+                &String::from_str(&e, &format!("commitment_{}_{}", owner_idx, i)),
+                &30,
+                &10,
+                &String::from_str(&e, "safe"),
+                &(1000 + total_minted as i128),
+                &asset_address,
+                &5,
+            );
+            total_minted += 1;
+        }
+    }
+
+    // Get all metadata
+    let all_nfts = client.get_all_metadata();
+    assert_eq!(all_nfts.len(), total_minted);
+
+    // Sum up all individual owner NFTs
+    let mut individual_owner_nfts = Vec::new(&e);
+    for &owner in owners.iter() {
+        let owner_nfts = client.get_nfts_by_owner(&owner);
+        assert_eq!(owner_nfts.len(), client.balance_of(&owner));
+        for nft in owner_nfts.iter() {
+            individual_owner_nfts.push_back(nft);
+        }
+    }
+
+    // All individual owner NFTs should equal total metadata
+    assert_eq!(individual_owner_nfts.len(), all_nfts.len());
+
+    // Verify each NFT in all_metadata appears in exactly one owner's collection
+    for nft in all_nfts.iter() {
+        let mut found_in_owner = false;
+        for &owner in owners.iter() {
+            let owner_nfts = client.get_nfts_by_owner(&owner);
+            if owner_nfts.iter().any(|owner_nft| owner_nft.token_id == nft.token_id) {
+                assert!(!found_in_owner, "NFT should only appear in one owner's collection");
+                assert_eq!(nft.owner, owner, "NFT owner should match collection owner");
+                found_in_owner = true;
+            }
+        }
+        assert!(found_in_owner, "Each NFT should be found in exactly one owner's collection");
+    }
+}
+
+/// Test consistency after transfers
+#[test]
+fn test_consistency_after_transfers() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let owner1 = Address::generate(&e);
+    let owner2 = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    // Mint 3 NFTs for owner1
+    let mut token_ids = Vec::new(&e);
+    for i in 0..3 {
+        let token_id = client.mint(
+            &owner1,
+            &String::from_str(&e, &format!("commitment_{}", i)),
+            &1, // 1 day duration for easy settlement
+            &10,
+            &String::from_str(&e, "safe"),
+            &(1000 + i as i128 * 100),
+            &asset_address,
+            &5,
+        );
+        token_ids.push_back(token_id);
+    }
+
+    // Initial consistency check
+    assert_eq!(client.balance_of(&owner1), 3);
+    assert_eq!(client.balance_of(&owner2), 0);
+    assert_eq!(client.get_nfts_by_owner(&owner1).len(), 3);
+    assert_eq!(client.get_nfts_by_owner(&owner2).len(), 0);
+
+    // Settle all NFTs so they can be transferred
+    e.ledger().with_mut(|li| {
+        li.timestamp = 172800; // 2 days later
+    });
+
+    for token_id in token_ids.iter() {
+        e.as_contract(&core_id, || {
+            client.settle(&token_id);
+        });
+    }
+
+    // Transfer first NFT from owner1 to owner2
+    client.transfer(&owner1, &owner2, &token_ids.get(0).unwrap());
+
+    // Check consistency after first transfer
+    assert_eq!(client.balance_of(&owner1), 2);
+    assert_eq!(client.balance_of(&owner2), 1);
+    assert_eq!(client.get_nfts_by_owner(&owner1).len(), 2);
+    assert_eq!(client.get_nfts_by_owner(&owner2).len(), 1);
+
+    // Verify the transferred NFT is now owned by owner2
+    let owner2_nfts = client.get_nfts_by_owner(&owner2);
+    assert_eq!(owner2_nfts.get(0).unwrap().token_id, token_ids.get(0).unwrap());
+    assert_eq!(owner2_nfts.get(0).unwrap().owner, owner2);
+
+    // Transfer second NFT from owner1 to owner2
+    client.transfer(&owner1, &owner2, &token_ids.get(1).unwrap());
+
+    // Check consistency after second transfer
+    assert_eq!(client.balance_of(&owner1), 1);
+    assert_eq!(client.balance_of(&owner2), 2);
+    assert_eq!(client.get_nfts_by_owner(&owner1).len(), 1);
+    assert_eq!(client.get_nfts_by_owner(&owner2).len(), 2);
+
+    // Verify total supply and all_metadata consistency
+    assert_eq!(client.total_supply(), 3);
+    let all_nfts = client.get_all_metadata();
+    assert_eq!(all_nfts.len(), 3);
+
+    // Sum of all individual balances should equal total supply
+    let total_individual_balances = client.balance_of(&owner1) + client.balance_of(&owner2);
+    assert_eq!(total_individual_balances, client.total_supply());
+}
+
+/// Test consistency with empty collections
+#[test]
+fn test_consistency_with_empty_collections() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let owner1 = Address::generate(&e);
+    let owner2 = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Check consistency for empty collections
+    assert_eq!(client.balance_of(&owner1), 0);
+    assert_eq!(client.balance_of(&owner2), 0);
+    assert_eq!(client.get_nfts_by_owner(&owner1).len(), 0);
+    assert_eq!(client.get_nfts_by_owner(&owner2).len(), 0);
+    assert_eq!(client.get_all_metadata().len(), 0);
+    assert_eq!(client.total_supply(), 0);
+
+    // Mint one NFT for owner1
+    let asset_address = Address::generate(&e);
+    let token_id = client.mint(
+        &admin,
+        &owner1,
+        &String::from_str(&e, "single_commitment"),
+        &30,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    // Check consistency after single mint
+    assert_eq!(client.balance_of(&owner1), 1);
+    assert_eq!(client.balance_of(&owner2), 0);
+    assert_eq!(client.get_nfts_by_owner(&owner1).len(), 1);
+    assert_eq!(client.get_nfts_by_owner(&owner2).len(), 0);
+    assert_eq!(client.get_all_metadata().len(), 1);
+    assert_eq!(client.total_supply(), 1);
+
+    // Verify the NFT details
+    let owner1_nfts = client.get_nfts_by_owner(&owner1);
+    let all_nfts = client.get_all_metadata();
+    
+    assert_eq!(owner1_nfts.get(0).unwrap().token_id, token_id);
+    assert_eq!(all_nfts.get(0).unwrap().token_id, token_id);
+    assert_eq!(owner1_nfts.get(0).unwrap().owner, owner1);
+    assert_eq!(all_nfts.get(0).unwrap().owner, owner1);
+}
+
+/// Test consistency after settlement (which doesn't change ownership)
+#[test]
+fn test_consistency_after_settlement() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    // Mint 2 NFTs
+    let mut token_ids = Vec::new(&e);
+    for i in 0..2 {
+        let token_id = client.mint(
+            &owner,
+            &String::from_str(&e, &format!("commitment_{}", i)),
+            &1, // 1 day duration
+            &10,
+            &String::from_str(&e, "safe"),
+            &(1000 + i as i128 * 100),
+            &asset_address,
+            &5,
+        );
+        token_ids.push_back(token_id);
+    }
+
+    // Check initial consistency
+    assert_eq!(client.balance_of(&owner), 2);
+    assert_eq!(client.get_nfts_by_owner(&owner).len(), 2);
+    assert_eq!(client.get_all_metadata().len(), 2);
+
+    // Settle first NFT
+    e.ledger().with_mut(|li| {
+        li.timestamp = 172800; // 2 days later
+    });
+
+    e.as_contract(&core_id, || {
+        client.settle(&token_ids.get(0).unwrap());
+    });
+
+    // Check consistency after settlement of first NFT
+    assert_eq!(client.balance_of(&owner), 2); // Ownership unchanged
+    assert_eq!(client.get_nfts_by_owner(&owner).len(), 2);
+    assert_eq!(client.get_all_metadata().len(), 2);
+
+    // Verify the settled NFT is no longer active but still owned
+    let owner_nfts = client.get_nfts_by_owner(&owner);
+    let settled_nft = owner_nfts.iter()
+        .find(|nft| nft.token_id == token_ids.get(0).unwrap())
+        .unwrap();
+    assert!(!settled_nft.is_active);
+
+    // Settle second NFT
+    e.as_contract(&core_id, || {
+        client.settle(&token_ids.get(1).unwrap());
+    });
+
+    // Check consistency after settlement of second NFT
+    assert_eq!(client.balance_of(&owner), 2);
+    assert_eq!(client.get_nfts_by_owner(&owner).len(), 2);
+    assert_eq!(client.get_all_metadata().len(), 2);
+
+    // Verify both NFTs are now inactive but still owned
+    let owner_nfts = client.get_nfts_by_owner(&owner);
+    for nft in owner_nfts.iter() {
+        assert!(!nft.is_active);
+        assert_eq!(nft.owner, owner);
+    }
+}
+
+/// Test edge case: consistency with maximum token IDs
+#[test]
+fn test_consistency_with_max_token_ids() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Mint enough NFTs to test edge cases around token ID boundaries
+    let num_nfts = 10;
+    let mut expected_token_ids = Vec::new(&e);
+    
+    for i in 0..num_nfts {
+        let token_id = client.mint(
+            &admin,
+            &owner,
+            &String::from_str(&e, &format!("commitment_{}", i)),
+            &30,
+            &10,
+            &String::from_str(&e, "safe"),
+            &(1000 + i as i128),
+            &asset_address,
+            &5,
+        );
+        expected_token_ids.push_back(token_id);
+    }
+
+    // Verify consistency
+    assert_eq!(client.balance_of(&owner), num_nfts as u32);
+    assert_eq!(client.get_nfts_by_owner(&owner).len(), num_nfts as u32);
+    assert_eq!(client.get_all_metadata().len(), num_nfts as u32);
+    assert_eq!(client.total_supply(), num_nfts as u32);
+
+    // Verify all expected token IDs are present
+    let owner_nfts = client.get_nfts_by_owner(&owner);
+    for expected_id in expected_token_ids.iter() {
+        assert!(owner_nfts.iter().any(|nft| nft.token_id == *expected_id));
+    }
+
+    // Verify token IDs are sequential starting from 0
+    let all_nfts = client.get_all_metadata();
+    let mut token_ids_sorted = Vec::new(&e);
+    for nft in all_nfts.iter() {
+        token_ids_sorted.push_back(nft.token_id);
+    }
+    token_ids_sorted.sort();
+    
+    for i in 0..num_nfts {
+        assert_eq!(token_ids_sorted.get(i as u32).unwrap(), i as u32);
+    }
+}

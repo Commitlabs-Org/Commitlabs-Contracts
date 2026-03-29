@@ -277,25 +277,47 @@ impl AllocationStrategiesContract {
 
     /// Allocate funds according to strategy
     ///
+    /// # Security Model & Authentication Guarantees
+    /// This function implements a robust authentication model to prevent caller spoofing:
+    /// 
+    /// **SDK Guarantees (Soroban):**
+    /// - `caller.require_auth()` cryptographically verifies the caller's identity
+    /// - The SDK ensures the `caller` address matches the transaction signer
+    /// - Authentication failures are handled at the protocol level
+    /// - Replay attacks are prevented through transaction sequencing
+    ///
+    /// **Contract-Level Protections:**
+    /// - Caller authorization is verified before any state changes
+    /// - Allocation ownership is tracked and enforced
+    /// - Commitment balance validation prevents unauthorized allocations
+    /// - Reentrancy protection prevents recursive attacks
+    ///
     /// # Formal Verification
     /// **Preconditions:**
     /// - Contract is initialized
     /// - `amount > 0`
     /// - `reentrancy_guard == false`
     /// - No existing allocation for `commitment_id`
+    /// - `caller` is cryptographically authenticated via SDK
     ///
     /// **Postconditions:**
     /// - `get_allocation(commitment_id).total_allocated == amount`
     /// - For all pools P: `P.total_liquidity <= P.max_capacity`
     /// - `reentrancy_guard == false`
+    /// - `AllocationOwner(commitment_id) == caller`
     ///
     /// **Invariants Maintained:**
-    /// - INV-4: Reentrancy guard invariant
-    /// - Pool capacity never exceeded
+    /// - INV-1: Only authenticated callers can allocate
+    /// - INV-2: Allocation ownership matches authenticated caller
+    /// - INV-3: Reentrancy guard invariant
+    /// - INV-4: Pool capacity never exceeded
     ///
     /// **Security Properties:**
-    /// - SP-1: Reentrancy protection
-    /// - SP-3: Arithmetic safety (overflow checks)
+    /// - SP-1: Caller authentication via SDK guarantees
+    /// - SP-2: Allocation ownership enforcement
+    /// - SP-3: Reentrancy protection
+    /// - SP-4: Arithmetic safety (overflow checks)
+    /// - SP-5: Commitment balance validation
     pub fn allocate(
         env: Env,
         caller: Address,
@@ -303,7 +325,15 @@ impl AllocationStrategiesContract {
         amount: i128,
         strategy: Strategy,
     ) -> Result<AllocationSummary, Error> {
+        // CRITICAL: Authenticate caller first - this prevents spoofing attacks
+        // SDK Guarantee: require_auth() cryptographically verifies the caller's identity
+        // at the protocol level, ensuring the address matches the transaction signer
         caller.require_auth();
+        
+        // Additional validation: ensure caller is a valid address (non-zero)
+        if caller.is_zero() {
+            return Err(Error::Unauthorized);
+        }
         Self::require_initialized(&env)?;
         Self::require_no_reentrancy(&env)?;
 

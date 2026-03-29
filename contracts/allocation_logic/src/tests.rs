@@ -469,6 +469,158 @@ fn test_no_active_pools_fails() {
 }
 
 // ============================================================================
+// THREAT MODEL TESTS - Issue #242: Caller Authentication & Spoofing Prevention
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #3)")]
+fn test_zero_address_caller_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    // Test with zero address - should be rejected as unauthorized
+    let zero_address = Address::from_string(&soroban_sdk::String::from_str(&env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    client.allocate(&zero_address, &1, &100_000_000, &Strategy::Safe);
+}
+
+#[test]
+fn test_caller_authentication_enforced() {
+    let env = Env::default();
+    // Don't mock all auths - we want to test actual authentication
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    
+    // Mock auth only for the specific user
+    env.mock_auths(&[
+        (&admin, &1, &admin),
+        (&user, &1, &user),
+    ]);
+
+    // This should succeed with proper authentication
+    let summary = client.allocate(&user, &1, &100_000_000, &Strategy::Safe);
+    assert_eq!(summary.commitment_id, 1);
+    assert_eq!(summary.total_allocated, 100_000_000);
+}
+
+#[test]
+fn test_allocation_ownership_tracking() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let commitment_id = 1u64;
+
+    // User1 allocates - should track ownership correctly
+    let summary = client.allocate(&user1, &commitment_id, &100_000_000, &Strategy::Safe);
+    assert_eq!(summary.total_allocated, 100_000_000);
+
+    // Verify allocation exists
+    let allocation = client.get_allocation(&commitment_id);
+    assert_eq!(allocation.total_allocated, 100_000_000);
+
+    // User2 cannot rebalance User1's allocation (ownership enforced)
+    env.mock_auths(&[
+        (&admin, &1, &admin),
+        (&user1, &1, &user1),
+        (&user2, &1, &user2), // Mock auth but should still fail due to ownership
+    ]);
+
+    // This should fail because user2 doesn't own the allocation
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.rebalance(&user2, &commitment_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_authentication_prevents_commitment_id_spoofing() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let commitment_id = 1u64;
+
+    // User1 creates allocation
+    client.allocate(&user1, &commitment_id, &50_000_000, &Strategy::Safe);
+
+    // User2 cannot allocate to same commitment_id (double allocation prevention)
+    // This tests that authentication + ownership tracking prevents spoofing
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.allocate(&user2, &commitment_id, &25_000_000, &Strategy::Balanced);
+    }));
+    assert!(result.is_err()); // Should panic with AlreadyInitialized error
+}
+
+#[test]
+fn test_caller_auth_isolation_between_users() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+
+    // Both users create separate allocations
+    let summary1 = client.allocate(&user1, &1, &100_000_000, &Strategy::Safe);
+    let summary2 = client.allocate(&user2, &2, &100_000_000, &Strategy::Safe);
+
+    // Verify allocations are properly isolated
+    assert_eq!(summary1.commitment_id, 1);
+    assert_eq!(summary2.commitment_id, 2);
+    assert_ne!(summary1.commitment_id, summary2.commitment_id);
+
+    // Each user can only rebalance their own allocation
+    client.rebalance(&user1, &1); // Should succeed
+    client.rebalance(&user2, &2); // Should succeed
+
+    // Cross-user rebalance should fail
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.rebalance(&user1, &2); // user1 trying to rebalance user2's allocation
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_authentication_with_rate_limiting() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    // Configure strict rate limit
+    let fn_symbol = soroban_sdk::Symbol::new(&env, "alloc");
+    client.set_rate_limit(&admin, &fn_symbol, &60u64, &1u32);
+
+    let user = Address::generate(&env);
+
+    // First allocation should succeed
+    client.allocate(&user, &1, &50_000_000, &Strategy::Safe);
+
+    // Second allocation should fail due to rate limit
+    // This tests that authentication works correctly with rate limiting
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.allocate(&user, &2, &50_000_000, &Strategy::Safe);
+    }));
+    assert!(result.is_err());
+}
+
+// ============================================================================
 // BALANCE CHECKING TESTS - Issue #147
 // ============================================================================
 
