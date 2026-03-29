@@ -905,7 +905,162 @@ fn test_total_supply_unchanged_after_transfer_and_settle() {
     });
 }
 
-// ... [KEEP ALL YOUR 2,000 LINES OF EXISTING TESTS] ...
+// ============================================
+// create_commitment Validation Tests
+// ============================================
+
+#[test]
+#[should_panic(expected = "Duration would cause expiration timestamp overflow")]
+fn test_create_commitment_expiration_overflow() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    client.initialize(&admin);
+
+    // Mint 5 NFTs
+    for _ in 0..5 {
+        client.mint(
+            &admin,
+            &owner,
+            &String::from_str(&e, "commitment"),
+            &30,
+            &10,
+            &String::from_str(&e, "safe"),
+            &1000,
+            &asset_address,
+            &5,
+        );
+    }
+
+    assert_eq!(client.total_supply(), 5);
+}
+
+// Issue #111: total_supply unchanged after transfer or settle
+#[test]
+fn test_total_supply_unchanged_after_transfer_and_settle() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let owner1 = Address::generate(&e);
+    let owner2 = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    assert_eq!(client.total_supply(), 0);
+    let token_id = client.mint(
+        &owner1,
+        &String::from_str(&e, "c1"),
+        &1,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+    assert_eq!(client.total_supply(), 1);
+    e.ledger().with_mut(|li| {
+        li.timestamp = 172800;
+    });
+
+    // Set ledger timestamp so created_at + duration_days * 86400 overflows u64
+    e.ledger().with_mut(|l| {
+        l.timestamp = u64::MAX - 50_000;
+    });
+
+    let rules = CommitmentRules {
+        duration_days: 1,
+        max_loss_percent: 10,
+        commitment_type: String::from_str(&e, "safe"),
+        early_exit_penalty: 5,
+        min_fee_threshold: 100,
+        grace_period_days: 0,
+    };
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, asset_address, rules);
+    });
+}
+
+// ============================================
+// get_all_metadata Tests
+// ============================================
+
+#[test]
+fn test_get_all_metadata_empty() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+
+    client.initialize(&admin);
+
+    let all_nfts = client.get_all_metadata();
+    assert_eq!(all_nfts.len(), 0);
+}
+
+#[test]
+fn test_get_all_metadata() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Mint 3 NFTs
+    for _ in 0..3 {
+        client.mint(
+            &admin,
+            &owner,
+            &String::from_str(&e, "commitment"),
+            &30,
+            &10,
+            &String::from_str(&e, "balanced"),
+            &1000,
+            &asset_address,
+            &5,
+        );
+    }
+
+    // MERGED: Pass admin.clone() as the caller argument
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::update_value(e.clone(), admin.clone(), String::from_str(&e, "test_id"), 950);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    let updated = client.get_commitment(&String::from_str(&e, "test_id"));
+    assert_eq!(updated.current_value, 950);
+    assert_eq!(updated.status, String::from_str(&e, "active"));
+}
+
+#[test]
+fn test_check_violations_after_update_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        let commitment = create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, e.ledger().timestamp());
+        set_commitment(&e, &commitment);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &1000i128);
+    });
+    client.settle(&token_id);
+    client.transfer(&owner, &recipient, &token_id);
+    assert_eq!(client.balance_of(&owner), 0);
+    assert_eq!(client.balance_of(&recipient), 1);
+}
+
 #[test]
 fn test_balance_of_after_minting() {
     let e = Env::default();
@@ -2903,4 +3058,100 @@ fn test_get_commitment_by_invalid_id_fails() {
     // Try to get non-existent commitment
     let invalid_id = String::from_str(&e, "COMMIT_999");
     let _ = client.get_commitment_by_id(&invalid_id);
+}
+
+/// Property-style test: Token ID monotonicity (strictly increasing, no repeats)
+#[test]
+fn test_token_id_monotonicity() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let mut last_token_id = None;
+    // Mint 20 NFTs and check token_id is strictly increasing
+    for i in 0..20 {
+        let token_id = client.mint(
+            &owner,
+            &String::from_str(&e, &format!("monotonic_{i}")),
+            &30,
+            &10,
+            &String::from_str(&e, "safe"),
+            &1000,
+            &asset_address,
+            &5,
+        );
+        if let Some(last) = last_token_id {
+            assert!(token_id > last, "Token ID not strictly increasing: {} !> {}", token_id, last);
+        }
+        last_token_id = Some(token_id);
+    }
+}
+
+/// Property-style test: Ownership list invariants
+/// For each owner, the list of owned token IDs matches the NFTs actually owned (no missing/extra tokens)
+#[test]
+fn test_ownership_list_invariants() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, client) = setup_contract(&e);
+    let asset = Address::generate(&e);
+
+    let alice = Address::generate(&e);
+    let bob = Address::generate(&e);
+    let carol = Address::generate(&e);
+    let owners = [&alice, &bob, &carol];
+
+    client.initialize(&admin);
+
+    // Mint NFTs for each owner
+    let mut all_token_ids = Vec::new();
+    for (i, owner) in owners.iter().enumerate() {
+        for j in 0..(i + 1) {
+            let token_id = client.mint(
+                owner,
+                &String::from_str(&e, &format!("nft_{}_{}", i, j)),
+                &30,
+                &10,
+                &String::from_str(&e, "safe"),
+                &1000,
+                &asset,
+                &5,
+            );
+            all_token_ids.push((owner, token_id));
+        }
+    }
+
+    // For each owner, check their token list matches actual NFTs owned
+    for owner in &owners {
+        let nfts = client.get_nfts_by_owner(owner);
+        let token_ids: std::collections::HashSet<u32> = nfts.iter().map(|nft| nft.token_id).collect();
+        // Cross-check with balance_of
+        assert_eq!(token_ids.len() as u32, client.balance_of(owner));
+        // All NFTs in the list must have the correct owner
+        for nft in nfts.iter() {
+            assert_eq!(nft.owner, **owner);
+        }
+    }
+
+    // Transfer one NFT from Alice to Bob (after settling)
+    let token_to_transfer = all_token_ids.iter().find(|(owner, _)| *owner == &alice).unwrap().1;
+    // Settle so it can be transferred
+    let core_id = e.register_contract(None, CommitmentNFTContract);
+    e.as_contract(&core_id, || {
+        client.settle(&token_to_transfer);
+    });
+    client.transfer(&alice, &bob, &token_to_transfer);
+
+    // Check invariants again after transfer
+    for owner in &owners {
+        let nfts = client.get_nfts_by_owner(owner);
+        let token_ids: std::collections::HashSet<u32> = nfts.iter().map(|nft| nft.token_id).collect();
+        assert_eq!(token_ids.len() as u32, client.balance_of(owner));
+        for nft in nfts.iter() {
+            assert_eq!(nft.owner, **owner);
+        }
+    }
 }
