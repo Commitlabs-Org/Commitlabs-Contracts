@@ -1259,6 +1259,7 @@ fn test_transfer_to_self() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #19)")] // NFTLocked
 fn test_transfer_locked_nft() {
     let e = Env::default();
     e.mock_all_auths();
@@ -1288,12 +1289,8 @@ fn test_transfer_locked_nft() {
     // Verify NFT is active
     assert_eq!(client.is_active(&token_id), true);
 
-    // Transfer active NFT (now allowed for secondary market)
+    // Transfer active NFT (locked) - should fail
     client.transfer(&owner, &recipient, &token_id);
-
-    // Verify ownership changed
-    assert_eq!(client.owner_of(&token_id), recipient);
-    assert_eq!(client.is_active(&token_id), true); // Still active after transfer
 }
 
 #[test]

@@ -1,4 +1,18 @@
 #![no_std]
+//! Commitment NFT Contract
+//!
+//! This contract manages the lifecycle of NFTs representing liquidity commitments.
+//! It handles minting, transfers, and settlement status.
+//!
+//! ### NFT Lock Rules
+//! Commitment NFTs are "locked" (untransferable) while they are linked to an active commitment.
+//! They only become transferable once the commitment is settled or marked inactive.
+//!
+//! ### Transfer State Machine
+//! The transfer process follows a strict state transition validated by ownership,
+//! authorization, and active status. For a detailed specification, see:
+//! [docs/CONTRACT_FUNCTIONS.md#transfer-state-machine](../../../docs/CONTRACT_FUNCTIONS.md#transfer-state-machine)
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
@@ -706,11 +720,25 @@ impl CommitmentNFTContract {
         Ok(nft.owner)
     }
 
-    /// Transfer NFT to new owner
+    /// @notice Transfers the ownership of an NFT from one address to another.
+    /// @dev This function enforces "lock rules" where active commitments cannot be transferred.
     ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern. This function only writes to storage
-    /// and doesn't make external calls, but still protected for consistency.
+    /// @param from The current owner address (must authorize).
+    /// @param to The recipient address (cannot be zero or same as from).
+    /// @param token_id The unique identifier of the token.
+    ///
+    /// @return Result<(), ContractError>
+    ///
+    /// @error ContractError::TokenNotFound If the token does not exist.
+    /// @error ContractError::NotOwner If 'from' does not own the token.
+    /// @error ContractError::TransferToZeroAddress If 'to' is invalid (zero or self-transfer).
+    /// @error ContractError::NFTLocked If the commitment is still active.
+    ///
+    /// @security
+    /// - Requires auth from the 'from' address.
+    /// - Protected by reentrancy guard.
+    /// - Implements the Transfer State Machine:
+    ///   [docs/CONTRACT_FUNCTIONS.md#transfer-state-machine](../../../docs/CONTRACT_FUNCTIONS.md#transfer-state-machine)
     pub fn transfer(
         e: Env,
         from: Address,
