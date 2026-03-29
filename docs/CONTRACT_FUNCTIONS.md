@@ -117,6 +117,41 @@ CI drift tests compare its source-defined types and expected signatures against
 | set_rate_limit(admin, function, window, max_calls) -> Result                   | Configure rate limits.                  | Admin require_auth.  | Uses shared RateLimiter.                  |
 | set_rate_limit_exempt(admin, address, exempt) -> Result                        | Configure rate limit exemption.         | Admin require_auth.  | Uses shared RateLimiter.                  |
 
+## commitment_transformation
+
+| Function                                                                              | Summary                                            | Access control                                      | Notes                                                               |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------- |
+| initialize(admin, core_contract)                                                      | Set admin, core trust boundary, and counters.      | None (single-use).                                  | Stores canonical `commitment_core` used for ownership resolution.   |
+| set_transformation_fee(caller, fee_bps)                                               | Configure tranche creation fee.                    | Admin require_auth.                                 | Fee math uses basis points and rounds down.                         |
+| set_authorized_transformer(caller, transformer, allowed)                              | Manage protocol transformer role.                  | Admin require_auth.                                 | Protocol transformers may execute owner-bound transforms.           |
+| create_tranches(caller, commitment_id, total_value, shares, risks, asset) -> String   | Split commitment value into risk tranches.         | Commitment owner, admin, or authorized transformer. | Stored owner always comes from `commitment_core`, not the executor. |
+| collateralize(caller, commitment_id, collateral_amount, asset_address) -> String      | Create collateralized derivative record.           | Commitment owner, admin, or authorized transformer. | Resolves owner from core before mutating storage.                   |
+| create_secondary_instrument(caller, commitment_id, instrument_type, amount) -> String | Create receivable/option/warrant style instrument. | Commitment owner, admin, or authorized transformer. | Stored owner always comes from `commitment_core`.                   |
+| add_protocol_guarantee(caller, commitment_id, guarantee_type, terms_hash) -> String   | Attach protocol-controlled guarantee metadata.     | Admin or authorized transformer only.               | Commitment owners cannot mint guarantees directly.                  |
+| get_tranche_set(id) -> TrancheSet                                                     | Fetch tranche set by id.                           | View.                                               | Returns TransformationNotFound if missing.                          |
+| get_collateralized_asset(id) -> CollateralizedAsset                                   | Fetch collateralized asset by id.                  | View.                                               | Returns TransformationNotFound if missing.                          |
+| get_secondary_instrument(id) -> SecondaryInstrument                                   | Fetch secondary instrument by id.                  | View.                                               | Returns TransformationNotFound if missing.                          |
+| get_protocol_guarantee(id) -> ProtocolGuarantee                                       | Fetch protocol guarantee by id.                    | View.                                               | Returns TransformationNotFound if missing.                          |
+| get_commitment_tranche_sets(commitment_id) -> Vec<String>                             | List tranche set ids for a commitment.             | View.                                               | Returns empty Vec if none.                                          |
+| get_commitment_collateral(commitment_id) -> Vec<String>                               | List collateralized asset ids for a commitment.    | View.                                               | Returns empty Vec if none.                                          |
+| get_commitment_instruments(commitment_id) -> Vec<String>                              | List secondary instrument ids for a commitment.    | View.                                               | Returns empty Vec if none.                                          |
+| get_commitment_guarantees(commitment_id) -> Vec<String>                               | List guarantee ids for a commitment.               | View.                                               | Returns empty Vec if none.                                          |
+| get_admin() -> Address                                                                | Fetch admin address.                               | View.                                               | Panics if not initialized.                                          |
+| get_core_contract() -> Address                                                        | Fetch canonical core contract.                     | View.                                               | Panics if not initialized.                                          |
+| is_authorized_transformer(address) -> bool                                            | Check protocol transformer role.                   | View.                                               | Reads local whitelist only.                                         |
+| get_transformation_fee_bps() -> u32                                                   | Read current transformation fee rate.              | View.                                               | Defaults to 0 when unset.                                           |
+| set_fee_recipient(caller, recipient)                                                  | Configure treasury for fee withdrawals.            | Admin require_auth.                                 | Required before `withdraw_fees`.                                    |
+| withdraw_fees(caller, asset_address, amount)                                          | Withdraw collected fees for a specific asset.      | Admin require_auth.                                 | Amount must be positive and not exceed `CollectedFees(asset)`.      |
+| get_fee_recipient() -> Option<Address>                                                | Read configured fee recipient.                     | View.                                               | Returns `None` until configured.                                    |
+| get_collected_fees(asset_address) -> i128                                             | Read collected fees for a specific asset.          | View.                                               | Stored per asset address.                                           |
+
+### commitment_transformation authorization notes
+
+- Ownership is resolved from the configured `commitment_core` contract on each mutating transformation call.
+- Admin and authorized transformers may execute owner-bound transformations on behalf of the commitment owner, but stored artifacts keep the canonical owner from core.
+- `add_protocol_guarantee` is intentionally restricted to protocol roles.
+- Detailed trust-boundary and arithmetic notes live in `docs/COMMITMENT_TRANSFORMATION_AUTHORIZATION.md`.
+
 ## price_oracle
 
 | Function                                                            | Summary                                    | Access control       | Notes                                                                         |

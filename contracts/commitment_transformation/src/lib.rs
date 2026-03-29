@@ -2,13 +2,19 @@
 //!
 //! Transforms commitments into risk tranches, collateralized assets,
 //! and secondary market instruments with protocol-specific guarantees.
+//!
+//! Authorization model:
+//! - commitment owners may create owner-bound transformations for their own commitments
+//! - admin may configure the contract and may also execute owner-bound transformations
+//! - authorized protocol transformers may execute owner-bound transformations and add guarantees
+//! - protocol guarantees are reserved to protocol roles and are not owner-callable
 
 #![no_std]
 
-use shared_utils::{emit_error_event, Validation};
+use shared_utils::{emit_error_event, fees, Validation};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    IntoVal, String, Symbol, TryIntoVal, Val, Vec,
 };
 
 // ============================================================================
@@ -108,6 +114,32 @@ pub struct SecondaryInstrument {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct CoreCommitmentRules {
+    pub duration_days: u32,
+    pub max_loss_percent: u32,
+    pub commitment_type: String,
+    pub early_exit_penalty: u32,
+    pub min_fee_threshold: i128,
+    pub grace_period_days: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CoreCommitment {
+    pub commitment_id: String,
+    pub owner: Address,
+    pub nft_token_id: u32,
+    pub rules: CoreCommitmentRules,
+    pub amount: i128,
+    pub asset_address: Address,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub current_value: i128,
+    pub status: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolGuarantee {
     pub guarantee_id: String,
     pub commitment_id: String,
@@ -145,31 +177,70 @@ pub enum DataKey {
 
 fn require_admin(e: &Env, caller: &Address) {
     caller.require_auth();
-    let admin = e
-        .storage()
-        .instance()
-        .get::<_, Address>(&DataKey::Admin)
-        .unwrap_or_else(|| fail(e, TransformationError::NotInitialized, "require_admin"));
+    let admin = read_admin(e);
     if *caller != admin {
         fail(e, TransformationError::Unauthorized, "require_admin");
     }
 }
 
-fn require_authorized(e: &Env, caller: &Address) {
-    caller.require_auth();
-    let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
-    let is_authorized = e
-        .storage()
+fn read_admin(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get::<_, Address>(&DataKey::Admin)
+        .unwrap_or_else(|| fail(e, TransformationError::NotInitialized, "read_admin"))
+}
+
+fn read_core_contract(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get::<_, Address>(&DataKey::CoreContract)
+        .unwrap_or_else(|| fail(e, TransformationError::NotInitialized, "read_core_contract"))
+}
+
+fn is_authorized_transformer_address(e: &Env, caller: &Address) -> bool {
+    e.storage()
         .instance()
         .get::<_, bool>(&DataKey::AuthorizedTransformer(caller.clone()))
-        .unwrap_or(false);
-    if let Some(a) = admin {
-        if *caller == a {
-            return;
-        }
+        .unwrap_or(false)
+}
+
+fn is_protocol_role(e: &Env, caller: &Address) -> bool {
+    *caller == read_admin(e) || is_authorized_transformer_address(e, caller)
+}
+
+fn load_commitment(e: &Env, commitment_id: &String) -> CoreCommitment {
+    let core_contract = read_core_contract(e);
+    let mut args = Vec::new(e);
+    args.push_back(commitment_id.clone().into_val(e));
+
+    let commitment_val: Val = match e.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &core_contract,
+        &Symbol::new(e, "get_commitment"),
+        args,
+    ) {
+        Ok(Ok(val)) => val,
+        _ => fail(e, TransformationError::CommitmentNotFound, "load_commitment"),
+    };
+
+    commitment_val
+        .try_into_val(e)
+        .unwrap_or_else(|_| fail(e, TransformationError::CommitmentNotFound, "load_commitment"))
+}
+
+fn require_owner_or_protocol(e: &Env, caller: &Address, commitment_id: &String) -> CoreCommitment {
+    caller.require_auth();
+    let commitment = load_commitment(e, commitment_id);
+    if *caller == commitment.owner || is_protocol_role(e, caller) {
+        return commitment;
     }
-    if !is_authorized {
-        fail(e, TransformationError::Unauthorized, "require_authorized");
+
+    fail(e, TransformationError::Unauthorized, "require_owner_or_protocol");
+}
+
+fn require_protocol_role(e: &Env, caller: &Address) {
+    caller.require_auth();
+    if !is_protocol_role(e, caller) {
+        fail(e, TransformationError::Unauthorized, "require_protocol_role");
     }
 }
 
@@ -204,6 +275,17 @@ pub struct CommitmentTransformationContract;
 #[contractimpl]
 impl CommitmentTransformationContract {
     /// Initialize the transformation contract.
+    ///
+    /// # Parameters
+    /// - `admin`: configuration authority for fees and protocol role assignment.
+    /// - `core_contract`: canonical `commitment_core` contract used to resolve commitment ownership.
+    ///
+    /// # Errors
+    /// - Panics with `AlreadyInitialized` if called more than once.
+    ///
+    /// # Security
+    /// - Single-use initializer.
+    /// - Stores the trust boundary used for owner resolution on all transformation writes.
     pub fn initialize(e: Env, admin: Address, core_contract: Address) {
         if e.storage().instance().has(&DataKey::Admin) {
             fail(&e, TransformationError::AlreadyInitialized, "initialize");
@@ -215,12 +297,25 @@ impl CommitmentTransformationContract {
         e.storage()
             .instance()
             .set(&DataKey::TransformationFeeBps, &0u32);
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
         e.storage()
             .instance()
             .set(&DataKey::TrancheSetCounter, &0u64);
     }
 
-    /// Set transformation fee in basis points (0-10000). Admin only.
+    /// Set the transformation fee in basis points.
+    ///
+    /// # Parameters
+    /// - `caller`: must match the stored admin address.
+    /// - `fee_bps`: fee rate in the inclusive range `0..=10000`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` if `caller` is not admin.
+    /// - `InvalidFeeBps` if `fee_bps > 10000`.
+    ///
+    /// # Security
+    /// - Admin-only configuration.
+    /// - Fee math later uses checked basis-point helpers from `shared_utils::fees`.
     pub fn set_transformation_fee(e: Env, caller: Address, fee_bps: u32) {
         require_admin(&e, &caller);
         if fee_bps > 10000 {
@@ -239,7 +334,19 @@ impl CommitmentTransformationContract {
         );
     }
 
-    /// Set or clear authorized transformer contract. Admin only.
+    /// Add or remove a protocol transformer role.
+    ///
+    /// # Parameters
+    /// - `caller`: must match the stored admin address.
+    /// - `transformer`: address granted or revoked protocol-executor privileges.
+    /// - `allowed`: `true` to authorize, `false` to revoke.
+    ///
+    /// # Errors
+    /// - `Unauthorized` if `caller` is not admin.
+    ///
+    /// # Security
+    /// - Admin-only role management.
+    /// - Protocol transformers may execute owner-bound transformations and create guarantees.
     pub fn set_authorized_transformer(
         e: Env,
         caller: Address,
@@ -257,9 +364,27 @@ impl CommitmentTransformationContract {
         );
     }
 
-    /// Split a commitment into risk tranches. Caller must be commitment owner or authorized.
-    /// When transformation_fee_bps > 0, caller must send fee_amount of fee_asset to the contract.
-    /// tranche_share_bps: e.g. [6000, 3000, 1000] for 60% senior, 30% mezzanine, 10% equity.
+    /// Split a commitment into risk tranches.
+    ///
+    /// # Parameters
+    /// - `caller`: commitment owner, admin, or authorized transformer.
+    /// - `commitment_id`: canonical commitment identifier resolved through `commitment_core`.
+    /// - `total_value`: gross value to split before fees.
+    /// - `tranche_share_bps`: tranche shares in basis points; must sum to `10000`.
+    /// - `risk_levels`: tranche labels parallel to `tranche_share_bps`.
+    /// - `fee_asset`: asset collected when a transformation fee is configured.
+    ///
+    /// # Errors
+    /// - `CommitmentNotFound` if `commitment_core` has no such commitment.
+    /// - `Unauthorized` if `caller` is neither owner nor protocol role.
+    /// - `InvalidAmount` if `total_value <= 0`.
+    /// - `InvalidTrancheRatios` if lengths mismatch or shares do not sum to `10000`.
+    ///
+    /// # Security
+    /// - Reads commitment ownership from the configured core contract before mutating storage.
+    /// - Uses a reentrancy guard around fee collection and state writes.
+    /// - Fee math uses checked basis-point helpers and rounds down in the protocol's favor.
+    /// - Stored `owner` is always the canonical commitment owner, even when a protocol actor executes.
     pub fn create_tranches(
         e: Env,
         caller: Address,
@@ -269,7 +394,7 @@ impl CommitmentTransformationContract {
         risk_levels: Vec<String>,
         fee_asset: Address,
     ) -> String {
-        require_authorized(&e, &caller);
+        let commitment = require_owner_or_protocol(&e, &caller, &commitment_id);
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
 
@@ -284,7 +409,16 @@ impl CommitmentTransformationContract {
         }
         let mut sum_bps: u32 = 0;
         for bps in tranche_share_bps.iter() {
-            sum_bps = sum_bps.saturating_add(bps);
+            sum_bps = sum_bps
+                .checked_add(bps)
+                .unwrap_or_else(|| {
+                    set_reentrancy_guard(&e, false);
+                    fail(
+                        &e,
+                        TransformationError::InvalidTrancheRatios,
+                        "create_tranches",
+                    )
+                });
         }
         if sum_bps != 10000 {
             set_reentrancy_guard(&e, false);
@@ -300,7 +434,7 @@ impl CommitmentTransformationContract {
             .instance()
             .get::<_, u32>(&DataKey::TransformationFeeBps)
             .unwrap_or(0);
-        let fee_amount = (total_value * fee_bps as i128) / 10000i128;
+        let fee_amount = fees::fee_from_bps(total_value, fee_bps);
 
         // Collect transformation fee from caller when fee_bps > 0
         if fee_amount > 0 {
@@ -323,7 +457,10 @@ impl CommitmentTransformationContract {
             .set(&DataKey::TrancheSetCounter, &(counter + 1));
 
         let mut tranches = Vec::new(&e);
-        let net_value = total_value - fee_amount;
+        let net_value = total_value.checked_sub(fee_amount).unwrap_or_else(|| {
+            set_reentrancy_guard(&e, false);
+            fail(&e, TransformationError::InvalidAmount, "create_tranches")
+        });
         for (i, (bps, risk)) in tranche_share_bps.iter().zip(risk_levels.iter()).enumerate() {
             let bps_u32: u32 = bps;
             let amount = (net_value * bps_u32 as i128) / 10000i128;
@@ -341,7 +478,7 @@ impl CommitmentTransformationContract {
         let set = TrancheSet {
             transformation_id: transformation_id.clone(),
             commitment_id: commitment_id.clone(),
-            owner: caller.clone(),
+            owner: commitment.owner.clone(),
             total_value,
             tranches: tranches.clone(),
             fee_paid: fee_amount,
@@ -375,6 +512,21 @@ impl CommitmentTransformationContract {
     }
 
     /// Create a collateralized asset backed by a commitment.
+    ///
+    /// # Parameters
+    /// - `caller`: commitment owner, admin, or authorized transformer.
+    /// - `commitment_id`: canonical commitment identifier.
+    /// - `collateral_amount`: positive amount represented by the derived asset.
+    /// - `asset_address`: asset contract associated with the derived position.
+    ///
+    /// # Errors
+    /// - `CommitmentNotFound` if the core contract cannot resolve the commitment.
+    /// - `Unauthorized` if `caller` is neither owner nor protocol role.
+    /// - `InvalidAmount` if `collateral_amount <= 0`.
+    ///
+    /// # Security
+    /// - Owner is sourced from `commitment_core`, not from the caller.
+    /// - Uses a reentrancy guard even though the current flow has no outbound contract writes.
     pub fn collateralize(
         e: Env,
         caller: Address,
@@ -382,7 +534,7 @@ impl CommitmentTransformationContract {
         collateral_amount: i128,
         asset_address: Address,
     ) -> String {
-        require_authorized(&e, &caller);
+        let commitment = require_owner_or_protocol(&e, &caller, &commitment_id);
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
 
@@ -401,7 +553,7 @@ impl CommitmentTransformationContract {
         let collateral = CollateralizedAsset {
             asset_id: asset_id.clone(),
             commitment_id: commitment_id.clone(),
-            owner: caller.clone(),
+            owner: commitment.owner.clone(),
             collateral_amount,
             asset_address: asset_address.clone(),
             created_at: e.ledger().timestamp(),
@@ -433,7 +585,22 @@ impl CommitmentTransformationContract {
         asset_id
     }
 
-    /// Create a secondary market instrument (receivable, option, warrant).
+    /// Create a secondary market instrument.
+    ///
+    /// # Parameters
+    /// - `caller`: commitment owner, admin, or authorized transformer.
+    /// - `commitment_id`: canonical commitment identifier.
+    /// - `instrument_type`: free-form instrument label such as `receivable`, `option`, or `warrant`.
+    /// - `amount`: positive face amount of the derived instrument.
+    ///
+    /// # Errors
+    /// - `CommitmentNotFound` if the core contract cannot resolve the commitment.
+    /// - `Unauthorized` if `caller` is neither owner nor protocol role.
+    /// - `InvalidAmount` if `amount <= 0`.
+    ///
+    /// # Security
+    /// - Owner is sourced from `commitment_core`, not from the caller.
+    /// - Uses a reentrancy guard around storage mutation.
     pub fn create_secondary_instrument(
         e: Env,
         caller: Address,
@@ -441,7 +608,7 @@ impl CommitmentTransformationContract {
         instrument_type: String,
         amount: i128,
     ) -> String {
-        require_authorized(&e, &caller);
+        let commitment = require_owner_or_protocol(&e, &caller, &commitment_id);
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
 
@@ -460,7 +627,7 @@ impl CommitmentTransformationContract {
         let instrument = SecondaryInstrument {
             instrument_id: instrument_id.clone(),
             commitment_id: commitment_id.clone(),
-            owner: caller.clone(),
+            owner: commitment.owner.clone(),
             instrument_type: instrument_type.clone(),
             amount,
             created_at: e.ledger().timestamp(),
@@ -495,6 +662,20 @@ impl CommitmentTransformationContract {
     }
 
     /// Add a protocol-specific guarantee to a commitment.
+    ///
+    /// # Parameters
+    /// - `caller`: admin or authorized transformer.
+    /// - `commitment_id`: canonical commitment identifier.
+    /// - `guarantee_type`: protocol-defined guarantee class.
+    /// - `terms_hash`: immutable reference to off-chain or versioned guarantee terms.
+    ///
+    /// # Errors
+    /// - `CommitmentNotFound` if the core contract cannot resolve the commitment.
+    /// - `Unauthorized` if `caller` is not a protocol role.
+    ///
+    /// # Security
+    /// - Guarantees are protocol-controlled metadata; commitment owners cannot mint them directly.
+    /// - Uses a reentrancy guard around storage mutation.
     pub fn add_protocol_guarantee(
         e: Env,
         caller: Address,
@@ -502,7 +683,8 @@ impl CommitmentTransformationContract {
         guarantee_type: String,
         terms_hash: String,
     ) -> String {
-        require_authorized(&e, &caller);
+        require_protocol_role(&e, &caller);
+        load_commitment(&e, &commitment_id);
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
 
@@ -640,12 +822,20 @@ impl CommitmentTransformationContract {
     }
 
     pub fn get_admin(e: Env) -> Address {
-        e.storage()
-            .instance()
-            .get::<_, Address>(&DataKey::Admin)
-            .unwrap_or_else(|| fail(&e, TransformationError::NotInitialized, "get_admin"))
+        read_admin(&e)
     }
 
+    /// Return the configured canonical core contract used for owner resolution.
+    pub fn get_core_contract(e: Env) -> Address {
+        read_core_contract(&e)
+    }
+
+    /// Return whether an address currently has the authorized transformer role.
+    pub fn is_authorized_transformer(e: Env, address: Address) -> bool {
+        is_authorized_transformer_address(&e, &address)
+    }
+
+    /// Return the configured transformation fee in basis points.
     pub fn get_transformation_fee_bps(e: Env) -> u32 {
         e.storage()
             .instance()
@@ -653,7 +843,17 @@ impl CommitmentTransformationContract {
             .unwrap_or(0)
     }
 
-    /// Set fee recipient (protocol treasury). Admin only.
+    /// Set the fee recipient treasury.
+    ///
+    /// # Parameters
+    /// - `caller`: must match the stored admin address.
+    /// - `recipient`: treasury address that receives future fee withdrawals.
+    ///
+    /// # Errors
+    /// - `Unauthorized` if `caller` is not admin.
+    ///
+    /// # Security
+    /// - Admin-only configuration.
     pub fn set_fee_recipient(e: Env, caller: Address, recipient: Address) {
         require_admin(&e, &caller);
         e.storage()
@@ -665,7 +865,22 @@ impl CommitmentTransformationContract {
         );
     }
 
-    /// Withdraw collected transformation fees to the configured fee recipient. Admin only.
+    /// Withdraw collected transformation fees to the configured treasury.
+    ///
+    /// # Parameters
+    /// - `caller`: must match the stored admin address.
+    /// - `asset_address`: asset bucket to withdraw from.
+    /// - `amount`: positive amount, capped by `CollectedFees(asset_address)`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` if `caller` is not admin.
+    /// - `InvalidAmount` if `amount <= 0`.
+    /// - `FeeRecipientNotSet` if no treasury has been configured.
+    /// - `InsufficientFees` if `amount` exceeds collected fees for that asset.
+    ///
+    /// # Security
+    /// - Admin-only payout path.
+    /// - Uses stored per-asset fee buckets and token transfer after state decrement.
     pub fn withdraw_fees(e: Env, caller: Address, asset_address: Address, amount: i128) {
         require_admin(&e, &caller);
         if amount <= 0 {
@@ -731,5 +946,5 @@ fn format_tranformation_id(e: &Env, prefix: &str, n: u64) -> String {
     String::from_str(e, core::str::from_utf8(&buf[..i]).unwrap_or("t0"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
