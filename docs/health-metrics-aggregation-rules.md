@@ -12,12 +12,14 @@ The `get_health_metrics` function aggregates data from multiple attestations to 
 
 **Rule**: Cumulative Sum
 
-**Behavior**: 
+**Behavior**:
+
 - All `fee_generation` attestations are summed together
 - Each call to `record_fees` adds to the total
 - The total persists across the lifetime of the commitment
 
 **Implementation**:
+
 ```rust
 // In get_health_metrics (lines 827-843)
 for att in attestations.iter() {
@@ -32,6 +34,7 @@ for att in attestations.iter() {
 ```
 
 **Example**:
+
 ```rust
 record_fees(cid, 10);   // fees_generated = 10
 record_fees(cid, 20);   // fees_generated = 30
@@ -39,20 +42,24 @@ record_fees(cid, 5);    // fees_generated = 35
 ```
 
 **Edge Cases**:
+
 - Zero fees are included in the sum
 - Overflow protection uses `checked_add` with fallback
 - Negative fees are not allowed (validation in `record_fees`)
+- Malformed `fee_amount` strings in generic `attest()` calls are ignored instead of causing a panic
 
 ### 2. Drawdown Percent (`drawdown_percent`)
 
 **Rule**: Latest Value Wins
 
 **Behavior**:
+
 - Each `record_drawdown` call overwrites the previous value
 - Only the most recent drawdown percentage is stored
 - Historical drawdown values are not preserved
 
 **Implementation**:
+
 ```rust
 // In update_health_metrics (lines 540-547)
 if attestation.attestation_type == drawdown_type {
@@ -66,6 +73,7 @@ if attestation.attestation_type == drawdown_type {
 ```
 
 **Example**:
+
 ```rust
 record_drawdown(cid, 5);   // drawdown_percent = 5
 record_drawdown(cid, 10);  // drawdown_percent = 10
@@ -73,21 +81,43 @@ record_drawdown(cid, 3);   // drawdown_percent = 3 (latest value)
 ```
 
 **Compliance Check**:
+
 - Drawdown is compared against `commitment.rules.max_loss_percent`
 - If `drawdown_percent <= max_loss_percent`, the attestation is marked compliant
 - Otherwise, it's marked non-compliant and affects the compliance score
 
-### 3. Compliance Score (`compliance_score`)
+### 3. Volatility Exposure (`volatility_exposure`)
+
+**Rule**: Cumulative Absolute Drawdown Change
+
+**Behavior**:
+
+- Volatility is derived from valid `drawdown` attestations only
+- The first valid drawdown establishes a baseline and contributes 0 volatility
+- Each subsequent valid drawdown adds the absolute change from the previous valid drawdown
+- Invalid drawdown strings are ignored instead of causing a panic
+
+**Example**:
+
+```rust
+record_drawdown(cid, 5);   // volatility_exposure = 0
+record_drawdown(cid, 12);  // volatility_exposure = 7
+record_drawdown(cid, 3);   // volatility_exposure = 16
+```
+
+### 4. Compliance Score (`compliance_score`)
 
 **Rule**: Incremental Updates with Bounds
 
 **Behavior**:
+
 - Starts at 100 for new commitments
 - Decreases for violations and non-compliant attestations
 - Increases for compliant attestations (capped at 100)
 - Persists in stored health metrics
 
 **Implementation**:
+
 ```rust
 // In update_health_metrics (lines 548-566)
 if attestation.attestation_type == violation {
@@ -106,13 +136,15 @@ if attestation.is_compliant && attestation.attestation_type != violation {
 ```
 
 **Penalty Structure**:
+
 - **High severity violations**: -30 points
-- **Medium severity violations**: -20 points  
+- **Medium severity violations**: -20 points
 - **Low severity violations**: -10 points
 - **Non-compliant attestations**: Treated as violations
 - **Compliant attestations**: +1 point (capped at 100)
 
 **Example**:
+
 ```rust
 // Initial: compliance_score = 100
 record_fees(cid, 10);           // compliance_score = 100 (compliant, +1 but capped)
@@ -125,6 +157,7 @@ record_drawdown(cid, 15);       // compliance_score = 100 (non-compliant, -20 fo
 **Rule**: Maximum Timestamp
 
 **Behavior**:
+
 - Tracks the most recent attestation timestamp
 - Updated on every attestation regardless of type
 - Used for freshness checks and analytics
@@ -132,13 +165,17 @@ record_drawdown(cid, 15);       // compliance_score = 100 (non-compliant, -20 fo
 ## Storage vs Calculation
 
 ### Stored Metrics
+
 - `compliance_score` is stored and incrementally updated
 - `drawdown_percent` is stored (latest value)
-- `fees_generated` is calculated dynamically from attestations
+- `fees_generated` is recomputed from attestation history and cached on updates
+- `volatility_exposure` is recomputed from drawdown history and cached on updates
 
 ### Calculated Metrics
-- `fees_generated` is recalculated each time `get_health_metrics` is called
-- `drawdown_percent` can also be calculated from commitment value changes
+
+- `fees_generated` is recalculated from attestations each time `get_health_metrics` is called
+- `drawdown_percent` falls back to commitment value changes when no drawdown attestation exists
+- `volatility_exposure` is recalculated from drawdown attestation deltas each time `get_health_metrics` is called
 - `compliance_score` uses stored value but can be recalculated if missing
 
 ## Test Coverage
@@ -155,12 +192,16 @@ The aggregation rules are tested in `health_metrics_consistency_tests.rs`:
    - `test_record_drawdown_compliance_check`
    - `test_record_drawdown_non_compliant`
 
-3. **Compliance Score Tests**:
+3. **Volatility Aggregation Tests**:
+   - `test_drawdown_history_updates_volatility_exposure`
+
+4. **Compliance Score Tests**:
    - `test_compliance_score_updates_after_fees`
    - `test_compliance_score_updates_after_drawdown`
    - `test_compliance_score_with_violation_attestation`
+   - `test_calculate_compliance_score_uses_aggregated_fee_bonus`
 
-4. **Mixed Operations Tests**:
+5. **Mixed Operations Tests**:
    - `test_mixed_fees_and_drawdown_operations`
    - `test_health_metrics_persistence`
 
@@ -170,10 +211,10 @@ The aggregation rules are tested in `health_metrics_consistency_tests.rs`:
    - Consider optimization for high-volume commitments
    - Current implementation prioritizes correctness over performance
 
-2. **Storage Efficiency**: 
+2. **Storage Efficiency**:
    - Compliance score stored to avoid recalculation
    - Drawdown percent stored as latest value
-   - Fees calculated to ensure accuracy
+   - Fees and volatility recomputed from attestations to ensure accuracy
 
 3. **Overflow Protection**:
    - Uses `checked_add` and `checked_mul` for arithmetic safety
