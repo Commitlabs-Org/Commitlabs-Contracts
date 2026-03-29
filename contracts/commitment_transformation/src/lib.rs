@@ -274,7 +274,7 @@ impl CommitmentTransformationContract {
         set_reentrancy_guard(&e, true);
 
         Validation::require_positive(total_value);
-        if tranche_share_bps.len() != risk_levels.len() || tranche_share_bps.len() == 0 {
+        if tranche_share_bps.len() != risk_levels.len() || tranche_share_bps.is_empty() {
             set_reentrancy_guard(&e, false);
             fail(
                 &e,

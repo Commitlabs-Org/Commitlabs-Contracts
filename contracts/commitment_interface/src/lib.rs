@@ -18,13 +18,11 @@ use crate::types::{Commitment, CommitmentRules};
 /// =======================
 /// Interface Metadata
 /// =======================
-
 pub const INTERFACE_VERSION: u32 = 2;
 
 /// =======================
 /// Events
 /// =======================
-
 pub const COMMITMENT_CREATED: Symbol = symbol_short!("created");
 pub const COMMITMENT_SETTLED: Symbol = symbol_short!("settled");
 pub const COMMITMENT_EXITED: Symbol = symbol_short!("exited");
@@ -118,7 +116,10 @@ impl CommitmentInterface {
 #[cfg(test)]
 mod tests {
     use super::INTERFACE_VERSION;
-    use alloc::{string::{String, ToString}, vec::Vec};
+    use alloc::{
+        string::{String, ToString},
+        vec::Vec,
+    };
 
     const INTERFACE_TYPES: &str = include_str!("types.rs");
     const CORE_SOURCE: &str = include_str!("../../commitment_core/src/lib.rs");
@@ -173,7 +174,10 @@ mod tests {
     #[test]
     fn commitment_rules_source_matches_commitment_core() {
         assert_eq!(
-            normalize(&extract_block(INTERFACE_TYPES, "pub struct CommitmentRules {")),
+            normalize(&extract_block(
+                INTERFACE_TYPES,
+                "pub struct CommitmentRules {"
+            )),
             normalize(&extract_block(CORE_SOURCE, "pub struct CommitmentRules {"))
         );
     }
@@ -181,8 +185,14 @@ mod tests {
     #[test]
     fn commitment_rules_source_matches_attestation_engine() {
         assert_eq!(
-            normalize(&extract_block(INTERFACE_TYPES, "pub struct CommitmentRules {")),
-            normalize(&extract_block(ATTESTATION_SOURCE, "pub struct CommitmentRules {"))
+            normalize(&extract_block(
+                INTERFACE_TYPES,
+                "pub struct CommitmentRules {"
+            )),
+            normalize(&extract_block(
+                ATTESTATION_SOURCE,
+                "pub struct CommitmentRules {"
+            ))
         );
     }
 
@@ -198,7 +208,10 @@ mod tests {
     fn commitment_source_matches_attestation_engine() {
         assert_eq!(
             normalize(&extract_block(INTERFACE_TYPES, "pub struct Commitment {")),
-            normalize(&extract_block(ATTESTATION_SOURCE, "pub struct Commitment {"))
+            normalize(&extract_block(
+                ATTESTATION_SOURCE,
+                "pub struct Commitment {"
+            ))
         );
     }
 

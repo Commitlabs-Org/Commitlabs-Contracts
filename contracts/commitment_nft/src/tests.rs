@@ -1,19 +1,19 @@
 #![cfg(test)]
 
 use super::*;
-use shared_utils::TimeUtils;
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
     testutils::{Address as _, Events, Ledger},
-    token::StellarAssetClient,
     vec, Address, Env, IntoVal, String,
 };
 
 #[contract]
 struct MockNftContract;
 
+#[allow(clippy::too_many_arguments)]
 #[contractimpl]
 impl MockNftContract {
+    #[allow(clippy::too_many_arguments)]
     pub fn mint(
         _e: Env,
         _owner: Address,
@@ -31,15 +31,6 @@ impl MockNftContract {
     pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
 }
 
-fn test_rules(e: &Env) -> CommitmentRules {
-    CommitmentRules {
-        duration_days: 30,
-        max_loss_percent: 10,
-        commitment_type: String::from_str(e, "balanced"),
-        early_exit_penalty: 5,
-        min_fee_threshold: 100,
-        grace_period_days: 0,
-    }
 fn setup_contract(e: &Env) -> (Address, CommitmentNFTContractClient<'_>) {
     let contract_id = e.register_contract(None, CommitmentNFTContract);
     let client = CommitmentNFTContractClient::new(e, &contract_id);
@@ -54,7 +45,7 @@ fn setup_contract_with_core(e: &Env) -> (Address, CommitmentNFTContractClient<'_
     let (admin, client) = setup_contract(e);
     client.initialize(&admin);
     let core_id = e.register_contract(None, CommitmentNFTContract);
-    let _ = client.set_core_contract(&core_id);
+    client.set_core_contract(&core_id);
     (admin, client, core_id)
 }
 
@@ -81,6 +72,7 @@ fn create_test_metadata(
 // Helper Functions
 // ============================================================================
 
+#[allow(dead_code)]
 fn setup_env() -> (Env, Address, Address) {
     let e = Env::default();
     let (admin, contract_id) = {
@@ -119,11 +111,13 @@ fn assert_balance_supply_invariant(client: &CommitmentNFTContractClient, owners:
 fn mint_to_owner(
     e: &Env,
     client: &CommitmentNFTContractClient,
+    caller: &Address,
     owner: &Address,
     asset_address: &Address,
     label: &str,
 ) -> u32 {
     client.mint(
+        caller,
         owner,
         &String::from_str(e, label),
         &1, // 1 day duration — easy to settle
@@ -162,9 +156,9 @@ fn test_add_remove_is_authorized_contract() {
     let other = Address::generate(&e);
 
     assert!(!client.is_authorized(&other));
-    client.add_authorized_contract(&admin, &other).unwrap();
+    client.add_authorized_contract(&admin, &other);
     assert!(client.is_authorized(&other));
-    client.remove_authorized_contract(&admin, &other).unwrap();
+    client.remove_authorized_contract(&admin, &other);
     assert!(!client.is_authorized(&other));
 }
 
@@ -301,7 +295,7 @@ fn test_mint_multiple() {
 #[should_panic(expected = "Error(Contract, #1)")] // NotInitialized
 fn test_mint_without_initialize_fails() {
     let e = Env::default();
-    let (_admin, client) = setup_contract(&e);
+    let (admin, client) = setup_contract(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
@@ -336,6 +330,7 @@ fn test_mint_empty_commitment_type() {
     client.initialize(&admin);
 
     client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_empty"),
         &30,
@@ -358,6 +353,7 @@ fn test_mint_invalid_commitment_type() {
     client.initialize(&admin);
 
     client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_invalid"),
         &30,
@@ -380,6 +376,7 @@ fn test_mint_wrong_case_commitment_type() {
     client.initialize(&admin);
 
     client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_case"),
         &30,
@@ -403,6 +400,7 @@ fn test_mint_valid_commitment_types_all_three() {
 
     // Test "safe"
     let token_id_safe = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_safe"),
         &30,
@@ -416,6 +414,7 @@ fn test_mint_valid_commitment_types_all_three() {
 
     // Test "balanced"
     let token_id_balanced = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_balanced"),
         &30,
@@ -429,6 +428,7 @@ fn test_mint_valid_commitment_types_all_three() {
 
     // Test "aggressive"
     let token_id_aggressive = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_aggressive"),
         &30,
@@ -479,6 +479,7 @@ fn test_mint_empty_commitment_id() {
 
     // User provides empty commitment_id, but it will be ignored and COMMIT_0 will be used
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, ""), // Empty commitment_id - will be ignored
         &30,
@@ -514,6 +515,7 @@ fn test_mint_commitment_id_very_long() {
 
     // Mint with very long commitment_id - it will be ignored and COMMIT_0 will be used
     let token_id = client.mint(
+        &admin,
         &owner,
         &long_id,
         &30,
@@ -549,6 +551,7 @@ fn test_mint_commitment_id_max_allowed_length() {
 
     // Mint with max length commitment_id - it will be ignored and COMMIT_0 will be used
     let token_id = client.mint(
+        &admin,
         &owner,
         &commitment_id,
         &30,
@@ -579,6 +582,7 @@ fn test_mint_commitment_id_normal_length() {
 
     let commitment_id = String::from_str(&e, "test_commitment_normal_length_123");
     let token_id = client.mint(
+        &admin,
         &owner,
         &commitment_id,
         &30,
@@ -615,6 +619,7 @@ fn test_get_metadata_with_long_commitment_id() {
 
     // Mint with long commitment_id
     let token_id = client.mint(
+        &admin,
         &owner,
         &long_id,
         &30,
@@ -778,7 +783,7 @@ fn test_is_active() {
     );
 
     // Newly minted NFT should be active
-    assert_eq!(client.is_active(&token_id), true);
+    assert!(client.is_active(&token_id));
 }
 
 #[test]
@@ -820,29 +825,20 @@ fn test_owner_of_nonexistent_token_returns_error() {
     );
 }
 
-// ... [KEEP ALL YOUR HELPER FUNCTIONS: create_test_commitment, store_commitment, setup_token_contract] ...
-
 // ============================================
-// create_commitment Validation Tests
+// Issue #111: Supply Tests
 // ============================================
 
 #[test]
-#[should_panic(expected = "Duration would cause expiration timestamp overflow")]
-fn test_create_commitment_expiration_overflow() {
+fn test_total_supply_five_mints() {
     let e = Env::default();
     e.mock_all_auths();
-
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let (admin, client) = setup_contract(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
     client.initialize(&admin);
 
-    // Mint 5 NFTs
     for _ in 0..5 {
         client.mint(
             &admin,
@@ -860,18 +856,21 @@ fn test_create_commitment_expiration_overflow() {
     assert_eq!(client.total_supply(), 5);
 }
 
-// Issue #111: total_supply unchanged after transfer or settle
+/// Issue #111: total_supply is never decremented by settle() or transfer().
 #[test]
 fn test_total_supply_unchanged_after_transfer_and_settle() {
     let e = Env::default();
     e.mock_all_auths();
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client) = setup_contract(&e);
     let owner1 = Address::generate(&e);
     let owner2 = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
+    client.initialize(&admin);
+
     assert_eq!(client.total_supply(), 0);
     let token_id = client.mint(
+        &admin,
         &owner1,
         &String::from_str(&e, "c1"),
         &1,
@@ -882,30 +881,18 @@ fn test_total_supply_unchanged_after_transfer_and_settle() {
         &5,
     );
     assert_eq!(client.total_supply(), 1);
+
     e.ledger().with_mut(|li| {
         li.timestamp = 172800;
     });
 
-    // Set ledger timestamp so created_at + duration_days * 86400 overflows u64
-    e.ledger().with_mut(|l| {
-        l.timestamp = u64::MAX - 50_000;
-    });
+    client.settle(&token_id);
+    assert_eq!(client.total_supply(), 1); // settle does not change total_supply
 
-    let rules = CommitmentRules {
-        duration_days: 1,
-        max_loss_percent: 10,
-        commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 5,
-        min_fee_threshold: 100,
-        grace_period_days: 0,
-    };
-
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, asset_address, rules);
-    });
+    client.transfer(&owner1, &owner2, &token_id);
+    assert_eq!(client.total_supply(), 1); // transfer does not change total_supply
 }
 
-// ... [KEEP ALL YOUR 2,000 LINES OF EXISTING TESTS] ...
 #[test]
 fn test_balance_of_after_minting() {
     let e = Env::default();
@@ -950,30 +937,6 @@ fn test_balance_of_after_minting() {
     assert_eq!(client.balance_of(&owner2), 2);
 }
 
-#[test]
-fn test_update_value_no_violation() {
-    let e = Env::default();
-    e.mock_all_auths();
-    
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
-    let owner = Address::generate(&e);
-
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
-        let commitment = create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, e.ledger().timestamp());
-        set_commitment(&e, &commitment);
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalValueLocked, &1000i128);
-    });
-    client.settle(&token_id);
-    client.transfer(&owner, &recipient, &token_id);
-    assert_eq!(client.balance_of(&owner), 0);
-    assert_eq!(client.balance_of(&recipient), 1);
-}
-
 // ============================================
 // get_all_metadata Tests
 // ============================================
@@ -1014,44 +977,8 @@ fn test_get_all_metadata() {
     }
 
     // MERGED: Pass admin.clone() as the caller argument
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::update_value(e.clone(), admin.clone(), String::from_str(&e, "test_id"), 950);
-    });
-
-    let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    let updated = client.get_commitment(&String::from_str(&e, "test_id"));
-    assert_eq!(updated.current_value, 950);
-    assert_eq!(updated.status, String::from_str(&e, "active"));
-}
-
-#[test]
-fn test_check_violations_after_update_value() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
-    let owner = Address::generate(&e);
-    
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
-        let commitment = create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, 1000);
-        set_commitment(&e, &commitment);
-    });
-
-    let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    
-    e.as_contract(&contract_id, || {
-        let mut commitment = read_commitment(&e, &String::from_str(&e, "test_id")).unwrap();
-        commitment.current_value = 850; // 15% loss > 10% max
-        set_commitment(&e, &commitment);
-    });
-    
-    assert!(client.check_violations(&String::from_str(&e, "test_id")));
-    client.initialize(&admin);
-
-    let nfts = client.get_nfts_by_owner(&owner);
-    assert_eq!(nfts.len(), 0);
+    let all_nfts = client.get_all_metadata();
+    assert_eq!(all_nfts.len(), 3);
 }
 
 #[test]
@@ -1107,27 +1034,29 @@ fn test_get_nfts_by_owner() {
 }
 
 // ============================================
-// Issue #140: Zero Address Validation
+// Basic Transfer Test
 // ============================================
 
+/// Verifies the happy path for `transfer`: ownership, balances, and the
+/// Transfer event are all updated correctly after a successful transfer.
 #[test]
-#[should_panic(expected = "Zero address is not allowed")]
-fn test_create_commitment_zero_address_fails() {
+fn test_transfer() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let client = CommitmentCoreContractClient::new(&e, &contract_id);
-
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let (admin, client) = setup_contract(&e);
+    let owner1 = Address::generate(&e);
+    let owner2 = Address::generate(&e);
     let asset_address = Address::generate(&e);
-    // Mint with 1 day duration so we can settle it
+
+    client.initialize(&admin);
+
+    // Mint with 1 day duration so we can settle and then transfer
     let token_id = client.mint(
         &admin,
         &owner1,
         &String::from_str(&e, "commitment_001"),
-        &1, // 1 day duration
+        &1,
         &10,
         &String::from_str(&e, "balanced"),
         &1000,
@@ -1140,22 +1069,12 @@ fn test_create_commitment_zero_address_fails() {
     assert_eq!(client.balance_of(&owner1), 1);
     assert_eq!(client.balance_of(&owner2), 0);
 
-    client.initialize(&admin, &nft_contract);
+    // Advance past expiry and settle to unlock the NFT
+    e.ledger().with_mut(|li| li.timestamp = 172800);
+    client.settle(&token_id);
 
-    let zero_str = String::from_str(&e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
-    let zero_address = Address::from_string(&zero_str);
+    client.transfer(&owner1, &owner2, &token_id);
 
-    let rules = CommitmentRules {
-        duration_days: 30,
-        max_loss_percent: 10,
-        commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 5,
-        min_fee_threshold: 100,
-        grace_period_days: 0,
-    };
-
-    client.create_commitment(&zero_address, &1000i128, &asset_address, &rules);
-}
     // Verify transfer
     assert_eq!(client.owner_of(&token_id), owner2);
     assert_eq!(client.balance_of(&owner1), 0);
@@ -1258,7 +1177,23 @@ fn test_transfer_to_self() {
     client.transfer(&owner, &owner, &token_id);
 }
 
+/// Test that transferring an active (locked) NFT is rejected with `NFTLocked`.
+///
+/// # Summary
+/// When a `CommitmentNFT` is first minted its `is_active` field is `true`,
+/// representing a live commitment.  The contract refuses to transfer such tokens
+/// so that commitment obligations (penalties, settlement) remain tied to the
+/// original owner.
+///
+/// # Errors
+/// Expects `ContractError::NFTLocked` (error code #19).
+///
+/// # Security Note
+/// Without this guard an owner could transfer the NFT to a fresh address
+/// immediately before settlement to shed liability — this test enforces that
+/// the guard is always in effect.
 #[test]
+#[should_panic(expected = "Error(Contract, #19)")] // NFTLocked
 fn test_transfer_locked_nft() {
     let e = Env::default();
     e.mock_all_auths();
@@ -1285,15 +1220,11 @@ fn test_transfer_locked_nft() {
         &penalty,
     );
 
-    // Verify NFT is active
-    assert_eq!(client.is_active(&token_id), true);
+    // Newly minted NFT is always locked (is_active = true)
+    assert!(client.is_active(&token_id));
 
-    // Transfer active NFT (now allowed for secondary market)
+    // Attempt to transfer the locked NFT — must fail with NFTLocked (#19)
     client.transfer(&owner, &recipient, &token_id);
-
-    // Verify ownership changed
-    assert_eq!(client.owner_of(&token_id), recipient);
-    assert_eq!(client.is_active(&token_id), true); // Still active after transfer
 }
 
 #[test]
@@ -1301,7 +1232,7 @@ fn test_transfer_after_settlement() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
     let owner = Address::generate(&e);
     let recipient = Address::generate(&e);
     let asset_address = Address::generate(&e);
@@ -1320,7 +1251,7 @@ fn test_transfer_after_settlement() {
     );
 
     // Verify NFT is active (locked) initially
-    assert_eq!(client.is_active(&token_id), true);
+    assert!(client.is_active(&token_id));
 
     // Fast forward time past expiration (2 days = 172800 seconds)
     e.ledger().with_mut(|li| {
@@ -1331,7 +1262,7 @@ fn test_transfer_after_settlement() {
     client.settle(&token_id);
 
     // Verify NFT is now inactive (unlocked)
-    assert_eq!(client.is_active(&token_id), false);
+    assert!(!client.is_active(&token_id));
 
     // Transfer should now succeed
     client.transfer(&owner, &recipient, &token_id);
@@ -1370,6 +1301,7 @@ fn test_transfer_edge_case_self_transfer() {
         create_test_metadata(&e, &asset_address);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &commitment_id,
         &duration,
@@ -1415,6 +1347,7 @@ fn test_transfer_edge_case_from_non_owner() {
         create_test_metadata(&e, &asset_address);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &commitment_id,
         &duration,
@@ -1460,6 +1393,7 @@ fn test_transfer_edge_case_address_validation_by_sdk() {
         create_test_metadata(&e, &asset_address);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &commitment_id,
         &duration,
@@ -1505,7 +1439,7 @@ fn test_transfer_edge_cases_comprehensive() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, core_id) = setup_contract_with_core(&e);
     let owner1 = Address::generate(&e);
     let owner2 = Address::generate(&e);
     let owner3 = Address::generate(&e);
@@ -1513,6 +1447,7 @@ fn test_transfer_edge_cases_comprehensive() {
 
     // Mint two separate NFTs to test transfer chains
     let token_id_1 = client.mint(
+        &admin,
         &owner1,
         &String::from_str(&e, "commitment_edge_case_1"),
         &1, // 1 day to allow settlement
@@ -1524,6 +1459,7 @@ fn test_transfer_edge_cases_comprehensive() {
     );
 
     let token_id_2 = client.mint(
+        &admin,
         &owner1,
         &String::from_str(&e, "commitment_edge_case_2"),
         &1, // 1 day to allow settlement
@@ -1656,7 +1592,7 @@ fn test_transfer_edge_cases_comprehensive() {
 #[test]
 fn test_settle() {
     let e = Env::default();
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
@@ -1674,7 +1610,7 @@ fn test_settle() {
     );
 
     // NFT should be active initially
-    assert_eq!(client.is_active(&token_id), true);
+    assert!(client.is_active(&token_id));
 
     // Fast forward time past expiration (2 days = 172800 seconds)
     e.ledger().with_mut(|li| {
@@ -1682,13 +1618,13 @@ fn test_settle() {
     });
 
     // Verify it's expired
-    assert_eq!(client.is_expired(&token_id), true);
+    assert!(client.is_expired(&token_id));
 
     // Settle the NFT after expiry
     client.settle(&token_id);
 
     // NFT should now be inactive
-    assert_eq!(client.is_active(&token_id), false);
+    assert!(!client.is_active(&token_id));
 
     // Verify Settle event
     let events = e.events().all();
@@ -1712,7 +1648,7 @@ fn test_settle() {
 #[should_panic(expected = "Error(Contract, #9)")] // NotExpired
 fn test_settle_not_expired() {
     let e = Env::default();
-    let (_admin, client, _core_id) = setup_contract_with_core(&e);
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
@@ -1736,7 +1672,7 @@ fn test_settle_not_expired() {
 #[should_panic(expected = "Error(Contract, #8)")] // AlreadySettled
 fn test_settle_already_settled() {
     let e = Env::default();
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
@@ -1764,13 +1700,14 @@ fn test_settle_already_settled() {
 #[test]
 fn test_settle_succeeds_after_expiry() {
     let e = Env::default();
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
     let token_id = client.mint(
+        &admin,
         &owner,
-        &String::from_str(&e, "test_commitment"),
+        &String::from_str(&e, "settle_after_expiry"),
         &1,
         &10,
         &String::from_str(&e, "safe"),
@@ -1782,7 +1719,7 @@ fn test_settle_succeeds_after_expiry() {
         li.timestamp = 172800;
     });
     client.settle(&token_id);
-    assert_eq!(client.is_active(&token_id), false);
+    assert!(!client.is_active(&token_id));
 }
 
 #[test]
@@ -1794,6 +1731,7 @@ fn test_settle_first_settle_marks_inactive() {
     client.initialize(&admin);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "test"),
         &1,
@@ -1807,13 +1745,13 @@ fn test_settle_first_settle_marks_inactive() {
     e.ledger().with_mut(|li| li.timestamp = 172800);
 
     // Initial state: active
-    assert_eq!(client.is_active(&token_id), true);
+    assert!(client.is_active(&token_id));
 
     // First settle: success
     client.settle(&token_id);
 
     // Result state: inactive
-    assert_eq!(client.is_active(&token_id), false);
+    assert!(!client.is_active(&token_id));
 }
 
 #[test]
@@ -1825,6 +1763,7 @@ fn test_settle_double_settle_returns_error() {
     client.initialize(&admin);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "test"),
         &1,
@@ -1853,6 +1792,7 @@ fn test_settle_consistency_after_double_settle() {
     client.initialize(&admin);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "test"),
         &1,
@@ -1868,11 +1808,11 @@ fn test_settle_consistency_after_double_settle() {
     let _ = client.try_settle(&token_id); // Redundant settle
 
     // State remains consistent
-    assert_eq!(client.is_active(&token_id), false);
+    assert!(!client.is_active(&token_id));
 
     // get_metadata remains consistent
     let metadata = client.get_metadata(&token_id);
-    assert_eq!(metadata.is_active, false);
+    assert!(!metadata.is_active);
     assert_eq!(metadata.owner, owner);
 }
 
@@ -1885,6 +1825,7 @@ fn test_settle_no_double_events() {
     client.initialize(&admin);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "test"),
         &1,
@@ -1935,7 +1876,7 @@ fn test_is_expired() {
     );
 
     // Should not be expired initially
-    assert_eq!(client.is_expired(&token_id), false);
+    assert!(!client.is_expired(&token_id));
 
     // Fast forward 2 days
     e.ledger().with_mut(|li| {
@@ -1943,7 +1884,7 @@ fn test_is_expired() {
     });
 
     // Should now be expired
-    assert_eq!(client.is_expired(&token_id), true);
+    assert!(client.is_expired(&token_id));
 }
 
 #[test]
@@ -1971,7 +1912,7 @@ fn test_token_exists() {
     client.initialize(&admin);
 
     // Token 0 should not exist yet
-    assert_eq!(client.token_exists(&0), false);
+    assert!(!client.token_exists(&0));
 
     let (commitment_id, duration, max_loss, commitment_type, amount, asset, penalty) =
         create_test_metadata(&e, &asset_address);
@@ -1989,10 +1930,10 @@ fn test_token_exists() {
     );
 
     // Token should now exist
-    assert_eq!(client.token_exists(&token_id), true);
+    assert!(client.token_exists(&token_id));
 
     // Non-existent token should return false
-    assert_eq!(client.token_exists(&999), false);
+    assert!(!client.token_exists(&999));
 }
 
 // ============================================
@@ -2033,6 +1974,7 @@ fn test_mint_max_loss_percent_over_100() {
     client.initialize(&admin);
 
     client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_001"),
         &30,
@@ -2054,6 +1996,7 @@ fn test_mint_max_loss_percent_zero() {
     client.initialize(&admin);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_001"),
         &30,
@@ -2080,6 +2023,7 @@ fn test_mint_duration_days_zero() {
     client.initialize(&admin);
 
     client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_001"),
         &0, // duration_days = 0
@@ -2101,6 +2045,7 @@ fn test_mint_duration_days_one() {
     client.initialize(&admin);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_001"),
         &1, // duration_days = 1 (minimum valid)
@@ -2126,6 +2071,7 @@ fn test_mint_duration_days_max() {
     client.initialize(&admin);
 
     let token_id = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "commitment_001"),
         &u32::MAX, // duration_days = u32::MAX
@@ -2190,7 +2136,7 @@ fn test_balance_updates_after_transfer() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
     let owner1 = Address::generate(&e);
     let owner2 = Address::generate(&e);
     let asset_address = Address::generate(&e);
@@ -2321,7 +2267,7 @@ fn _test_unpause_restores_transfer() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
     let owner1 = Address::generate(&e);
     let owner2 = Address::generate(&e);
     let asset_address = Address::generate(&e);
@@ -2400,26 +2346,32 @@ fn test_invariant_balance_sum_equals_supply_after_mints() {
     assert_balance_supply_invariant(&client, &owners);
 
     // Mint 4 to owner_a
-    for i in 0..4 {
-        mint_to_owner(&e, &client, &owner_a, &asset, &std::format!("a_{i}"));
-        assert_balance_supply_invariant(&client, &owners);
-    }
+    mint_to_owner(&e, &client, &admin, &owner_a, &asset, "a_0");
+    assert_balance_supply_invariant(&client, &owners);
+    mint_to_owner(&e, &client, &admin, &owner_a, &asset, "a_1");
+    assert_balance_supply_invariant(&client, &owners);
+    mint_to_owner(&e, &client, &admin, &owner_a, &asset, "a_2");
+    assert_balance_supply_invariant(&client, &owners);
+    mint_to_owner(&e, &client, &admin, &owner_a, &asset, "a_3");
+    assert_balance_supply_invariant(&client, &owners);
 
     // Mint 1 to owner_b
-    mint_to_owner(&e, &client, &owner_b, &asset, "b_0");
+    mint_to_owner(&e, &client, &admin, &owner_b, &asset, "b_0");
     assert_balance_supply_invariant(&client, &owners);
 
     // Mint 3 to owner_c
-    for i in 0..3 {
-        mint_to_owner(&e, &client, &owner_c, &asset, &std::format!("c_{i}"));
-        assert_balance_supply_invariant(&client, &owners);
-    }
+    mint_to_owner(&e, &client, &admin, &owner_c, &asset, "c_0");
+    assert_balance_supply_invariant(&client, &owners);
+    mint_to_owner(&e, &client, &admin, &owner_c, &asset, "c_1");
+    assert_balance_supply_invariant(&client, &owners);
+    mint_to_owner(&e, &client, &admin, &owner_c, &asset, "c_2");
+    assert_balance_supply_invariant(&client, &owners);
 
     // Mint 2 to owner_d
-    for i in 0..2 {
-        mint_to_owner(&e, &client, &owner_d, &asset, &std::format!("d_{i}"));
-        assert_balance_supply_invariant(&client, &owners);
-    }
+    mint_to_owner(&e, &client, &admin, &owner_d, &asset, "d_0");
+    assert_balance_supply_invariant(&client, &owners);
+    mint_to_owner(&e, &client, &admin, &owner_d, &asset, "d_1");
+    assert_balance_supply_invariant(&client, &owners);
 
     // Final state: 4+1+3+2 = 10
     assert_eq!(client.total_supply(), 10);
@@ -2435,14 +2387,14 @@ fn test_invariant_supply_unchanged_after_settle() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, core_id) = setup_contract_with_core(&e);
     let owner = Address::generate(&e);
     let asset = Address::generate(&e);
 
     // Mint 3 NFTs (1-day duration)
-    let t0 = mint_to_owner(&e, &client, &owner, &asset, "s_0");
-    let t1 = mint_to_owner(&e, &client, &owner, &asset, "s_1");
-    let t2 = mint_to_owner(&e, &client, &owner, &asset, "s_2");
+    let t0 = mint_to_owner(&e, &client, &admin, &owner, &asset, "s_0");
+    let t1 = mint_to_owner(&e, &client, &admin, &owner, &asset, "s_1");
+    let t2 = mint_to_owner(&e, &client, &admin, &owner, &asset, "s_2");
 
     let supply_before = client.total_supply();
     let balance_before = client.balance_of(&owner);
@@ -2469,7 +2421,7 @@ fn test_invariant_balance_unchanged_after_settle_multi_owner() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, core_id) = setup_contract_with_core(&e);
     let asset = Address::generate(&e);
 
     let alice = Address::generate(&e);
@@ -2478,11 +2430,11 @@ fn test_invariant_balance_unchanged_after_settle_multi_owner() {
     let owners: [&Address; 3] = [&alice, &bob, &carol];
 
     // Alice: 2, Bob: 2, Carol: 1 => 5 total
-    let a0 = mint_to_owner(&e, &client, &alice, &asset, "a0");
-    let _a1 = mint_to_owner(&e, &client, &alice, &asset, "a1");
-    let b0 = mint_to_owner(&e, &client, &bob, &asset, "b0");
-    let b1 = mint_to_owner(&e, &client, &bob, &asset, "b1");
-    let _c0 = mint_to_owner(&e, &client, &carol, &asset, "c0");
+    let a0 = mint_to_owner(&e, &client, &admin, &alice, &asset, "a0");
+    let _a1 = mint_to_owner(&e, &client, &admin, &alice, &asset, "a1");
+    let b0 = mint_to_owner(&e, &client, &admin, &bob, &asset, "b0");
+    let b1 = mint_to_owner(&e, &client, &admin, &bob, &asset, "b1");
+    let _c0 = mint_to_owner(&e, &client, &admin, &carol, &asset, "c0");
 
     assert_eq!(client.total_supply(), 5);
     assert_balance_supply_invariant(&client, &owners);
@@ -2512,7 +2464,7 @@ fn test_invariant_transfer_balance_conservation() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, core_id) = setup_contract_with_core(&e);
     let asset = Address::generate(&e);
 
     let from = Address::generate(&e);
@@ -2520,10 +2472,10 @@ fn test_invariant_transfer_balance_conservation() {
     let owners: [&Address; 2] = [&from, &to];
 
     // Mint 3 to `from`, 1 to `to`
-    let t0 = mint_to_owner(&e, &client, &from, &asset, "f0");
-    let _t1 = mint_to_owner(&e, &client, &from, &asset, "f1");
-    let _t2 = mint_to_owner(&e, &client, &from, &asset, "f2");
-    let _t3 = mint_to_owner(&e, &client, &to, &asset, "to0");
+    let t0 = mint_to_owner(&e, &client, &admin, &from, &asset, "f0");
+    let _t1 = mint_to_owner(&e, &client, &admin, &from, &asset, "f1");
+    let _t2 = mint_to_owner(&e, &client, &admin, &from, &asset, "f2");
+    let _t3 = mint_to_owner(&e, &client, &admin, &to, &asset, "to0");
 
     assert_eq!(client.total_supply(), 4);
     assert_balance_supply_invariant(&client, &owners);
@@ -2556,7 +2508,7 @@ fn test_invariant_complex_mint_settle_transfer_scenario() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, core_id) = setup_contract_with_core(&e);
     let asset = Address::generate(&e);
 
     let alice = Address::generate(&e);
@@ -2566,12 +2518,12 @@ fn test_invariant_complex_mint_settle_transfer_scenario() {
 
     // --- Phase 1: Mint 6 NFTs ---
     // Alice: 3, Bob: 2, Carol: 1
-    let a0 = mint_to_owner(&e, &client, &alice, &asset, "a0");
-    let a1 = mint_to_owner(&e, &client, &alice, &asset, "a1");
-    let a2 = mint_to_owner(&e, &client, &alice, &asset, "a2");
-    let b0 = mint_to_owner(&e, &client, &bob, &asset, "b0");
-    let b1 = mint_to_owner(&e, &client, &bob, &asset, "b1");
-    let c0 = mint_to_owner(&e, &client, &carol, &asset, "c0");
+    let a0 = mint_to_owner(&e, &client, &admin, &alice, &asset, "a0");
+    let a1 = mint_to_owner(&e, &client, &admin, &alice, &asset, "a1");
+    let a2 = mint_to_owner(&e, &client, &admin, &alice, &asset, "a2");
+    let b0 = mint_to_owner(&e, &client, &admin, &bob, &asset, "b0");
+    let b1 = mint_to_owner(&e, &client, &admin, &bob, &asset, "b1");
+    let c0 = mint_to_owner(&e, &client, &admin, &carol, &asset, "c0");
 
     assert_eq!(client.total_supply(), 6);
     assert_balance_supply_invariant(&client, &owners);
@@ -2622,8 +2574,8 @@ fn test_invariant_complex_mint_settle_transfer_scenario() {
     assert_balance_supply_invariant(&client, &owners);
 
     // --- Phase 5: Mint 2 more (still active, no settle) ---
-    mint_to_owner(&e, &client, &alice, &asset, "a3");
-    mint_to_owner(&e, &client, &bob, &asset, "b2");
+    mint_to_owner(&e, &client, &admin, &alice, &asset, "a3");
+    mint_to_owner(&e, &client, &admin, &bob, &asset, "b2");
 
     assert_eq!(client.total_supply(), 8);
     assert_eq!(client.balance_of(&alice), 2);
@@ -2637,7 +2589,7 @@ fn test_invariant_transfer_chain_preserves_supply() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    let (admin, client, core_id) = setup_contract_with_core(&e);
     let asset = Address::generate(&e);
 
     let a = Address::generate(&e);
@@ -2647,7 +2599,7 @@ fn test_invariant_transfer_chain_preserves_supply() {
     let owners: [&Address; 4] = [&a, &b, &c, &d];
 
     // Single token, chain: A -> B -> C -> D
-    let token = mint_to_owner(&e, &client, &a, &asset, "chain");
+    let token = mint_to_owner(&e, &client, &admin, &a, &asset, "chain");
 
     assert_eq!(client.total_supply(), 1);
     assert_balance_supply_invariant(&client, &owners);
@@ -2698,6 +2650,7 @@ fn test_commitment_id_uniqueness() {
 
     // Mint first commitment
     let token_id_1 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "ignored_id_1"), // Will be overridden with auto-generated ID
         &30,
@@ -2710,6 +2663,7 @@ fn test_commitment_id_uniqueness() {
 
     // Mint second commitment
     let token_id_2 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "ignored_id_2"), // Will be overridden with auto-generated ID
         &30,
@@ -2754,6 +2708,7 @@ fn test_commitment_id_format_consistency() {
 
     // Mint first commitment - should have COMMIT_0
     let token_id_0 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "any_id"),
         &30,
@@ -2771,6 +2726,7 @@ fn test_commitment_id_format_consistency() {
 
     // Mint second commitment - should have COMMIT_1
     let token_id_1 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "any_id"),
         &30,
@@ -2788,6 +2744,7 @@ fn test_commitment_id_format_consistency() {
 
     // Mint third commitment - should have COMMIT_2
     let token_id_2 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "any_id"),
         &30,
@@ -2805,6 +2762,7 @@ fn test_commitment_id_format_consistency() {
 
     // Mint fourth commitment - should have COMMIT_3
     let token_id_3 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "any_id"),
         &30,
@@ -2822,6 +2780,7 @@ fn test_commitment_id_format_consistency() {
 
     // Mint fifth commitment - should have COMMIT_4
     let token_id_4 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "any_id"),
         &30,
@@ -2853,6 +2812,7 @@ fn test_get_commitment_by_id() {
 
     // Mint two commitments
     let token_id_1 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "any_id_1"),
         &30,
@@ -2864,6 +2824,7 @@ fn test_get_commitment_by_id() {
     );
 
     let token_id_2 = client.mint(
+        &admin,
         &owner,
         &String::from_str(&e, "any_id_2"),
         &30,
@@ -2903,4 +2864,502 @@ fn test_get_commitment_by_invalid_id_fails() {
     // Try to get non-existent commitment
     let invalid_id = String::from_str(&e, "COMMIT_999");
     let _ = client.get_commitment_by_id(&invalid_id);
+}
+
+// ============================================================================
+// Issue #211: Unit Tests — Transfer: self-transfer, non-owner, locked NFT,
+//             non-existent token
+// ============================================================================
+//
+// Trust-boundary summary for `transfer`:
+//   • Only the current owner (who satisfies `require_auth`) may send tokens.
+//   • Active (locked) NFTs cannot leave the owner's wallet until settled.
+//   • The sender address must differ from the receiver address.
+//   • The token_id must identify a minted, existing token.
+//
+// Error codes under test:
+//   #3  = TokenNotFound
+//   #5  = NotOwner
+//   #18 = TransferToZeroAddress  (also used for self-transfer)
+//   #19 = NFTLocked
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// 1. Self-transfer
+// ----------------------------------------------------------------------------
+
+/// Verifies that `transfer(from, to, token_id)` is rejected when `from == to`.
+///
+/// # Summary
+/// Transferring an NFT to yourself produces no meaningful state change and can
+/// mask bugs in calling code.  The contract guards against this by returning
+/// `TransferToZeroAddress` (#18) — the same error used for literal zero-address
+/// destinations — to keep the error surface small.
+///
+/// # Parameters tested
+/// - `from` — address that owns the token and initiates the transfer
+/// - `to`   — same address as `from` (self-transfer)
+///
+/// # Errors
+/// Expects `ContractError::TransferToZeroAddress` (error code `#18`).
+///
+/// # Security Note
+/// Without this check a caller could "reset" approval state or confuse
+/// off-chain indexers by emitting spurious Transfer events with `from == to`.
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")] // TransferToZeroAddress
+fn test_transfer_211_self_transfer_panics() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commit_self"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    // Precondition: owner holds the token
+    assert_eq!(client.owner_of(&token_id), owner);
+
+    // Self-transfer must be rejected with TransferToZeroAddress (#18)
+    client.transfer(&owner, &owner, &token_id);
+}
+
+/// Non-panicking variant of the self-transfer test.
+///
+/// Uses `try_transfer` so the error can be inspected programmatically in
+/// integration harnesses that cannot catch panics.
+#[test]
+fn test_transfer_211_self_transfer_returns_error() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commit_self_err"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    // try_transfer must return Err — no state mutation should have occurred
+    let result = client.try_transfer(&owner, &owner, &token_id);
+    assert!(
+        result.is_err(),
+        "self-transfer must return an error, not succeed"
+    );
+
+    // Post-condition: ownership and balance unchanged
+    assert_eq!(
+        client.owner_of(&token_id),
+        owner,
+        "owner must remain unchanged after rejected self-transfer"
+    );
+    assert_eq!(
+        client.balance_of(&owner),
+        1,
+        "balance must remain 1 after rejected self-transfer"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 2. Non-owner transfer
+// ----------------------------------------------------------------------------
+
+/// Verifies that `transfer` is rejected when the `from` address does not own
+/// the token.
+///
+/// # Summary
+/// Only the recorded owner of a token is permitted to transfer it.  Any
+/// address that is not the current owner receives `NotOwner` (#5), regardless
+/// of whether it has previously held the token or is the contract admin.
+///
+/// # Parameters tested
+/// - `from` — address that does NOT own the token
+/// - `to`   — a valid third-party recipient address
+///
+/// # Errors
+/// Expects `ContractError::NotOwner` (error code `#5`).
+///
+/// # Security Note
+/// This is the primary ownership-enforcement check.  A missing or bypassed
+/// guard would allow arbitrary theft of NFTs.
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // NotOwner
+fn test_transfer_211_non_owner_panics() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commit_nonowner"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    // Precondition: actual owner is `owner`, not `attacker`
+    assert_eq!(client.owner_of(&token_id), owner);
+    assert_ne!(attacker, owner, "attacker must be a different address");
+
+    // Non-owner transfer must be rejected with NotOwner (#5)
+    client.transfer(&attacker, &recipient, &token_id);
+}
+
+/// Non-panicking variant of the non-owner transfer test.
+///
+/// Also verifies that ownership and balances are unchanged after the rejection.
+#[test]
+fn test_transfer_211_non_owner_returns_error() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commit_nonowner_err"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    // Attempt by non-owner must fail
+    let result = client.try_transfer(&attacker, &recipient, &token_id);
+    assert!(
+        result.is_err(),
+        "non-owner transfer must return an error, not succeed"
+    );
+
+    // Post-condition: original owner retains the token
+    assert_eq!(
+        client.owner_of(&token_id),
+        owner,
+        "owner must be unchanged after rejected non-owner transfer"
+    );
+    assert_eq!(client.balance_of(&owner), 1);
+    assert_eq!(
+        client.balance_of(&attacker),
+        0,
+        "attacker must not gain any balance"
+    );
+    assert_eq!(
+        client.balance_of(&recipient),
+        0,
+        "recipient must not receive any token"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 3. Locked (active) NFT
+// ----------------------------------------------------------------------------
+
+/// Verifies that `transfer` is rejected when the NFT is active (`is_active == true`).
+///
+/// # Summary
+/// A freshly minted commitment NFT has `is_active = true`, meaning the
+/// underlying commitment is still live.  Transferring it is prohibited (#145)
+/// to ensure that settlement obligations remain with the original party.  The
+/// contract returns `NFTLocked` (#19) to signal this state.
+///
+/// # Parameters tested
+/// - `token_id` — a token whose `is_active` field is `true` (never settled)
+///
+/// # Errors
+/// Expects `ContractError::NFTLocked` (error code `#19`).
+///
+/// # Security Note
+/// If this guard were absent an owner could transfer a failing commitment to
+/// an empty wallet immediately before settlement, avoiding penalty deductions.
+/// This test must remain green; any relaxation of the guard requires an
+/// explicit design decision and updated threat model.
+#[test]
+#[should_panic(expected = "Error(Contract, #19)")] // NFTLocked
+fn test_transfer_211_locked_nft_panics() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commit_locked"),
+        &30, // 30-day duration — well within active window
+        &10,
+        &String::from_str(&e, "safe"),
+        &5000,
+        &asset_address,
+        &5,
+    );
+
+    // Precondition: NFT is active/locked immediately after minting
+    assert!(
+        client.is_active(&token_id),
+        "freshly minted NFT must be active"
+    );
+
+    // Transfer of locked NFT must fail with NFTLocked (#19)
+    client.transfer(&owner, &recipient, &token_id);
+}
+
+/// Non-panicking variant of the locked-NFT transfer test.
+///
+/// Also verifies that `is_active` remains `true` and ownership is unchanged
+/// after the attempted transfer.
+#[test]
+fn test_transfer_211_locked_nft_returns_error() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commit_locked_err"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    // Precondition
+    assert!(client.is_active(&token_id));
+
+    // try_transfer must return Err
+    let result = client.try_transfer(&owner, &recipient, &token_id);
+    assert!(
+        result.is_err(),
+        "transfer of locked NFT must return an error"
+    );
+
+    // Post-condition: NFT remains locked and owned by original owner
+    assert!(
+        client.is_active(&token_id),
+        "NFT must still be active after rejected transfer"
+    );
+    assert_eq!(
+        client.owner_of(&token_id),
+        owner,
+        "ownership must be unchanged after rejected locked-NFT transfer"
+    );
+    assert_eq!(client.balance_of(&owner), 1);
+    assert_eq!(client.balance_of(&recipient), 0);
+}
+
+/// Complementary positive test: after settlement the same NFT becomes
+/// transferable.
+///
+/// # Summary
+/// Provides the "happy path" contrast to the locked-NFT rejection test.
+/// Settling an expired NFT flips `is_active` to `false`, which lifts the
+/// transfer lock.  This test confirms the full lifecycle:
+/// mint → lock check fails → time passes → settle → transfer succeeds.
+#[test]
+fn test_transfer_211_succeeds_after_unlock() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Mint a 1-day NFT so expiry is easy to simulate
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commit_unlock"),
+        &1, // 1-day duration
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    // Locked immediately after mint
+    assert!(client.is_active(&token_id));
+    assert!(
+        client.try_transfer(&owner, &recipient, &token_id).is_err(),
+        "transfer must fail while NFT is locked"
+    );
+
+    // Advance ledger past expiry (> 1 day = 86400 s)
+    e.ledger().with_mut(|li| {
+        li.timestamp = 172_800; // 2 days
+    });
+
+    // Settle to unlock
+    client.settle(&token_id);
+    assert!(
+        !client.is_active(&token_id),
+        "NFT must be inactive after settlement"
+    );
+
+    // Transfer must now succeed
+    client.transfer(&owner, &recipient, &token_id);
+
+    assert_eq!(
+        client.owner_of(&token_id),
+        recipient,
+        "recipient must own the NFT after successful transfer"
+    );
+    assert_eq!(client.balance_of(&owner), 0);
+    assert_eq!(client.balance_of(&recipient), 1);
+}
+
+// ----------------------------------------------------------------------------
+// 4. Non-existent token
+// ----------------------------------------------------------------------------
+
+/// Verifies that `transfer` is rejected when the `token_id` does not exist.
+///
+/// # Summary
+/// Attempting to transfer a token that was never minted — or whose ID is
+/// outside the valid range — must return `TokenNotFound` (#3).  There must
+/// be no panic and no storage mutation.
+///
+/// # Parameters tested
+/// - `token_id` — an ID for which no NFT record exists in persistent storage
+///
+/// # Errors
+/// Expects `ContractError::TokenNotFound` (error code `#3`).
+///
+/// # Security Note
+/// Without this check, a transfer call on an unminted ID might silently do
+/// nothing or corrupt balance state.  The explicit error ensures callers
+/// receive deterministic, auditable feedback.
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")] // TokenNotFound
+fn test_transfer_211_nonexistent_token_panics() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let sender = Address::generate(&e);
+    let recipient = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Sanity: no tokens have been minted
+    assert_eq!(client.total_supply(), 0);
+
+    // Transfer of non-existent token_id must fail with TokenNotFound (#3)
+    client.transfer(&sender, &recipient, &9999);
+}
+
+/// Non-panicking variant of the non-existent token transfer test.
+///
+/// Covers large, out-of-range, and boundary token IDs.
+#[test]
+fn test_transfer_211_nonexistent_token_returns_error() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let sender = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Mint exactly one token so token_id 0 exists but 1 and beyond do not
+    let _minted = client.mint(
+        &admin,
+        &sender,
+        &String::from_str(&e, "commit_exist"),
+        &1,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+    assert_eq!(client.total_supply(), 1);
+
+    // token_id 1 does not exist
+    let result_one = client.try_transfer(&sender, &recipient, &1);
+    assert!(
+        result_one.is_err(),
+        "transfer of token_id 1 (never minted) must return an error"
+    );
+
+    // token_id u32::MAX does not exist
+    let result_max = client.try_transfer(&sender, &recipient, &u32::MAX);
+    assert!(
+        result_max.is_err(),
+        "transfer of token_id u32::MAX must return an error"
+    );
+
+    // Post-condition: sender has exactly the one token minted above
+    assert_eq!(
+        client.balance_of(&sender),
+        1,
+        "sender balance must be unchanged after rejected transfers"
+    );
+    assert_eq!(
+        client.balance_of(&recipient),
+        0,
+        "recipient must not gain any token from rejected transfers"
+    );
 }
