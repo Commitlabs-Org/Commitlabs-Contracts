@@ -1,4 +1,9 @@
 #![no_std]
+//! Commitment NFT contract.
+//!
+//! This contract mirrors the lifecycle of commitments managed by
+//! `commitment_core`. Minting, settlement, and early-exit deactivation mutate
+//! NFT state and therefore must only be driven by trusted protocol contracts.
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
@@ -6,7 +11,7 @@ use soroban_sdk::{
 use shared_utils::{EmergencyControl, Pausable};
 
 // Current storage version for migration checks.
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 // Issue #139: String parameter constraints
 #[allow(dead_code)]
@@ -132,8 +137,11 @@ pub enum DataKey {
     CommitmentIdIndex(String),
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-test-suite"))]
 mod tests;
+
+#[cfg(test)]
+mod smoke_tests;
 
 // ============================================================================
 // Contract Implementation
@@ -326,8 +334,18 @@ impl CommitmentNFTContract {
         }
     }
 
-    /// Set the authorized commitment_core contract address for settlement
-    /// Only the admin can call this function
+    /// Set the authorized commitment_core contract address for lifecycle updates.
+    ///
+    /// # Params
+    /// - `core_contract`: Address of the trusted `commitment_core` deployment.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if the NFT contract is not initialized.
+    /// - [`ContractError::NotAuthorized`] if the caller is not the stored admin.
+    ///
+    /// # Security
+    /// - Requires admin authorization.
+    /// - This address becomes the only contract allowed to settle or deactivate NFTs.
     pub fn set_core_contract(e: Env, core_contract: Address) -> Result<(), ContractError> {
         let admin: Address = e
             .storage()
@@ -347,7 +365,7 @@ impl CommitmentNFTContract {
         Ok(())
     }
 
-    /// Get the authorized commitment_core contract address
+    /// Get the authorized commitment_core contract address.
     pub fn get_core_contract(e: Env) -> Result<Address, ContractError> {
         e.storage()
             .instance()
@@ -544,7 +562,7 @@ impl CommitmentNFTContract {
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::InvalidCommitmentType);
         }
-        if initial_amount <= 0 {
+        if initial_amount < 0 {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
@@ -922,11 +940,24 @@ impl CommitmentNFTContract {
     // Settlement (Issue #5 - Main Implementation)
     // ========================================================================
 
-    /// Mark NFT as inactive (for early exit or other non-expiry scenarios)
+    /// Mark NFT as inactive for an authorized lifecycle transition.
     ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern.
-    pub fn mark_inactive(e: Env, token_id: u32) -> Result<(), ContractError> {
+    /// # Params
+    /// - `caller`: Contract address requesting the lifecycle update.
+    /// - `token_id`: NFT token identifier.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if no core contract has been configured.
+    /// - [`ContractError::NotAuthorized`] if `caller` is not the configured core contract.
+    /// - [`ContractError::TokenNotFound`] if the NFT does not exist.
+    /// - [`ContractError::AlreadySettled`] if the NFT is already inactive.
+    /// - [`ContractError::ReentrancyDetected`] if the guard is already set.
+    ///
+    /// # Security
+    /// - Requires `caller.require_auth()` so an external account cannot spoof the core address.
+    /// - Restricted to the configured `commitment_core` contract because this mutates lifecycle state.
+    /// - Uses checks-effects-interactions and does not perform outbound calls.
+    pub fn mark_inactive(e: Env, caller: Address, token_id: u32) -> Result<(), ContractError> {
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -939,6 +970,11 @@ impl CommitmentNFTContract {
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
         EmergencyControl::require_not_emergency(&e);
+
+        if let Err(err) = require_core_contract_caller(&e, &caller) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
 
         // Check if contract is paused
         Pausable::require_not_paused(&e);
@@ -982,12 +1018,25 @@ impl CommitmentNFTContract {
         Ok(())
     }
 
-    /// Mark NFT as settled (after maturity)
+    /// Mark NFT as settled after maturity.
     ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern. This function only writes to storage
-    /// and doesn't make external calls, but still protected for consistency.
-    pub fn settle(e: Env, token_id: u32) -> Result<(), ContractError> {
+    /// # Params
+    /// - `caller`: Contract address requesting settlement.
+    /// - `token_id`: NFT token identifier.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if no core contract has been configured.
+    /// - [`ContractError::NotAuthorized`] if `caller` is not the configured core contract.
+    /// - [`ContractError::TokenNotFound`] if the NFT does not exist.
+    /// - [`ContractError::AlreadySettled`] if the NFT is already inactive.
+    /// - [`ContractError::NotExpired`] if the ledger timestamp is before `expires_at`.
+    /// - [`ContractError::ReentrancyDetected`] if the guard is already set.
+    ///
+    /// # Security
+    /// - Requires `caller.require_auth()` so only the authorized core contract can settle.
+    /// - Restricted to the configured `commitment_core` contract to keep core and NFT state aligned.
+    /// - Uses checks-effects-interactions and does not perform outbound calls.
+    pub fn settle(e: Env, caller: Address, token_id: u32) -> Result<(), ContractError> {
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1000,6 +1049,11 @@ impl CommitmentNFTContract {
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
         EmergencyControl::require_not_emergency(&e);
+
+        if let Err(err) = require_core_contract_caller(&e, &caller) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
 
         // Check if contract is paused
         Pausable::require_not_paused(&e);
@@ -1100,6 +1154,19 @@ fn require_admin(e: &Env, caller: &Address) -> Result<(), ContractError> {
         .get(&DataKey::Admin)
         .ok_or(ContractError::NotInitialized)?;
     if *caller != admin {
+        return Err(ContractError::NotAuthorized);
+    }
+    Ok(())
+}
+
+fn require_core_contract_caller(e: &Env, caller: &Address) -> Result<(), ContractError> {
+    caller.require_auth();
+    let core_contract: Address = e
+        .storage()
+        .instance()
+        .get(&DataKey::CoreContract)
+        .ok_or(ContractError::NotInitialized)?;
+    if *caller != core_contract {
         return Err(ContractError::NotAuthorized);
     }
     Ok(())

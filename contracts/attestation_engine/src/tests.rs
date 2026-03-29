@@ -403,6 +403,108 @@ fn test_get_stored_health_metrics_not_initialized_returns_none() {
 }
 
 #[test]
+fn test_get_stored_health_metrics_remains_none_after_read_only_health_query() {
+    let e = Env::default();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "stored_metrics_read_only");
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+    });
+
+    let commitment = create_mock_commitment_with_status(
+        &e,
+        "stored_metrics_read_only",
+        "active",
+        1_000,
+        980,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    let before = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_stored_health_metrics(e.clone(), commitment_id.clone())
+    });
+    assert!(before.is_none());
+
+    let computed = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_health_metrics(e.clone(), commitment_id.clone())
+    });
+    assert_eq!(computed.commitment_id, commitment_id);
+    assert_eq!(computed.drawdown_percent, 2);
+
+    let after = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_stored_health_metrics(e.clone(), commitment_id.clone())
+    });
+    assert!(after.is_none());
+}
+
+#[test]
+fn test_get_stored_health_metrics_transitions_to_some_after_first_attestation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "stored_metrics_transition");
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+    });
+
+    let commitment = create_mock_commitment_with_status(
+        &e,
+        "stored_metrics_transition",
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    let before = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_stored_health_metrics(e.clone(), commitment_id.clone())
+    });
+    assert!(before.is_none());
+
+    let record_result = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::record_fees(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            250,
+        )
+    });
+    assert_eq!(record_result, Ok(()));
+
+    let after = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_stored_health_metrics(e.clone(), commitment_id.clone())
+    });
+    assert!(after.is_some());
+
+    let metrics = after.unwrap();
+    assert_eq!(metrics.commitment_id, commitment_id);
+    assert_eq!(metrics.fees_generated, 250);
+    assert_eq!(metrics.drawdown_percent, 0);
+    assert_eq!(metrics.compliance_score, 100);
+    assert_eq!(metrics.last_attestation, e.ledger().timestamp());
+}
+
+#[test]
 fn test_fee_queries_not_initialized_return_defaults() {
     let e = Env::default();
     let contract_id = e.register_contract(None, AttestationEngineContract);

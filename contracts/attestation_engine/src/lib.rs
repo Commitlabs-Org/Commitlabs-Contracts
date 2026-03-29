@@ -440,7 +440,18 @@ impl AttestationEngineContract {
         Ok(())
     }
 
-    /// Get stored health metrics for a commitment (without recalculation)
+    /// Get cached health metrics for a commitment without recalculating them.
+    ///
+    /// # Parameters
+    /// * `commitment_id` - Commitment identifier used as the persistent-storage key.
+    ///
+    /// # Returns
+    /// * `Some(HealthMetrics)` after at least one attestation has updated the cache.
+    /// * `None` when no attestation has populated the cache for that commitment.
+    ///
+    /// # Security
+    /// * View-only function.
+    /// * Does not invoke `commitment_core` and does not mutate storage.
     pub fn get_stored_health_metrics(e: Env, commitment_id: String) -> Option<HealthMetrics> {
         let key = DataKey::HealthMetrics(commitment_id);
         e.storage().persistent().get(&key)
@@ -646,28 +657,14 @@ impl AttestationEngineContract {
     // Access Control
     // ========================================================================
 
-    /// Record an attestation for a commitment
-    ///
-    /// # Arguments
-    /// * `caller` - The address recording the attestation (must be authorized verifier)
-    /// * `commitment_id` - The commitment being attested
-    /// * `attestation_type` - Type: "health_check", "violation", "fee_generation", "drawdown"
-    /// * `data` - Type-specific data map
-    /// * `is_compliant` - Whether the commitment is compliant
-    ///
-    /// # Returns
-    /// * `Ok(())` on success
-    /// * `Err(AttestationError::*)` on various validation failures
-    ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern with an explicit guard.
-    pub fn attest(
+    fn attest_internal(
         e: Env,
         caller: Address,
         commitment_id: String,
         attestation_type: String,
         data: Map<String, String>,
         is_compliant: bool,
+        require_auth: bool,
     ) -> Result<(), AttestationError> {
         // 1. Reentrancy protection
         if e.storage().instance().has(&DataKey::ReentrancyGuard) {
@@ -679,7 +676,9 @@ impl AttestationEngineContract {
         Pausable::require_not_paused(&e);
 
         // 2. Verify caller signed the transaction
-        caller.require_auth();
+        if require_auth {
+            caller.require_auth();
+        }
 
         // 3. Check caller is authorized verifier
         if !Self::is_authorized_verifier(&e, &caller) {
@@ -818,6 +817,40 @@ impl AttestationEngineContract {
         e.storage().instance().remove(&DataKey::ReentrancyGuard);
 
         Ok(())
+    }
+
+    /// Record an attestation for a commitment
+    ///
+    /// # Arguments
+    /// * `caller` - The address recording the attestation (must be authorized verifier)
+    /// * `commitment_id` - The commitment being attested
+    /// * `attestation_type` - Type: "health_check", "violation", "fee_generation", "drawdown"
+    /// * `data` - Type-specific data map
+    /// * `is_compliant` - Whether the commitment is compliant
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(AttestationError::*)` on various validation failures
+    ///
+    /// # Reentrancy Protection
+    /// Uses checks-effects-interactions pattern with an explicit guard.
+    pub fn attest(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
+        Self::attest_internal(
+            e,
+            caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+            true,
+        )
     }
 
     /// Get all attestations for a commitment
@@ -1039,6 +1072,8 @@ impl AttestationEngineContract {
         commitment_id: String,
         drawdown_percent: i128,
     ) -> Result<(), AttestationError> {
+        caller.require_auth();
+
         let commitment_core: Address = e
             .storage()
             .instance()
@@ -1061,13 +1096,14 @@ impl AttestationEngineContract {
             Self::i128_to_string(&e, drawdown_percent),
         );
 
-        Self::attest(
+        Self::attest_internal(
             e.clone(),
             caller.clone(),
             commitment_id.clone(),
             String::from_str(&e, "drawdown"),
             data,
             is_compliant,
+            false,
         )?;
 
         if !is_compliant {
@@ -1081,12 +1117,13 @@ impl AttestationEngineContract {
                 String::from_str(&e, "high"),
             );
 
-            Self::attest(
+            Self::attest_internal(
                 e.clone(),
                 caller,
                 commitment_id.clone(),
                 String::from_str(&e, "violation"),
                 violation_data,
+                false,
                 false,
             )?;
 
@@ -1788,5 +1825,5 @@ fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), Attest
 
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

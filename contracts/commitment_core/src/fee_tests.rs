@@ -9,15 +9,24 @@
 
 #![cfg(test)]
 
+use commitment_nft::{CommitmentNFTContract, CommitmentNFTContractClient};
 use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
-    token, Address, Env, IntoVal, String, Symbol,
+    testutils::{Address as _, Ledger},
+    token::{self, StellarAssetClient}, Address, Env, String,
 };
 
-fn create_token_contract<'a>(e: &Env, admin: &Address) -> (Address, token::Client<'a>) {
-    let addr = e.register_stellar_asset_contract(admin.clone());
-    (addr.clone(), token::Client::new(e, &addr))
+fn create_token_contract<'a>(
+    e: &Env,
+    admin: &Address,
+) -> (Address, token::Client<'a>, StellarAssetClient<'a>) {
+    let token = e.register_stellar_asset_contract_v2(admin.clone());
+    let addr = token.address();
+    (
+        addr.clone(),
+        token::Client::new(e, &addr),
+        StellarAssetClient::new(e, &addr),
+    )
 }
 
 fn setup_test() -> (
@@ -33,17 +42,21 @@ fn setup_test() -> (
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
     let user = Address::generate(&e);
-    let (token_address, token_client) = create_token_contract(&e, &admin);
+    let (token_address, token_client, token_admin_client) = create_token_contract(&e, &admin);
 
     // Mint tokens to user
-    token_client.mint(&user, &10_000_000);
+    token_admin_client.mint(&user, &10_000_000);
+
+    let nft_contract = e.register_contract(None, CommitmentNFTContract);
+    let nft_client = CommitmentNFTContractClient::new(&e, &nft_contract);
+    nft_client.initialize(&admin);
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
 
     client.initialize(&admin, &nft_contract);
+    nft_client.set_core_contract(&contract_id);
 
     (e, admin, nft_contract, user, token_address, token_client, client)
 }
@@ -209,6 +222,7 @@ fn test_multiple_commitments_accumulate_fees() {
 #[test]
 fn test_early_exit_penalty_retained_as_fee() {
     let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let initial_balance = token_client.balance(&user);
 
     let amount = 1_000_000i128;
     let mut rules = default_rules(&e);
@@ -225,13 +239,14 @@ fn test_early_exit_penalty_retained_as_fee() {
     // Verify penalty was added to collected fees
     assert_eq!(client.get_collected_fees(&token_address), expected_penalty);
 
-    // Verify user received net amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // User ends down only by the retained penalty.
+    assert_eq!(token_client.balance(&user), initial_balance - expected_penalty);
 }
 
 #[test]
 fn test_early_exit_with_creation_fee_and_penalty() {
     let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let initial_balance = token_client.balance(&user);
 
     // Set 1% creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -255,8 +270,8 @@ fn test_early_exit_with_creation_fee_and_penalty() {
     // Verify both fees were collected
     assert_eq!(client.get_collected_fees(&token_address), total_fees);
 
-    // Verify user received correct amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // User ends down by the creation fee plus the exit penalty.
+    assert_eq!(token_client.balance(&user), initial_balance - total_fees);
 }
 
 // ============================================================================
@@ -442,11 +457,11 @@ fn test_get_collected_fees_multiple_assets() {
     let (e, admin, _, user, _, _, client) = setup_test();
 
     // Create two different tokens
-    let (token1, token1_client) = create_token_contract(&e, &admin);
-    let (token2, token2_client) = create_token_contract(&e, &admin);
+    let (token1, _token1_client, token1_admin_client) = create_token_contract(&e, &admin);
+    let (token2, _token2_client, token2_admin_client) = create_token_contract(&e, &admin);
 
-    token1_client.mint(&user, &10_000_000);
-    token2_client.mint(&user, &10_000_000);
+    token1_admin_client.mint(&user, &10_000_000);
+    token2_admin_client.mint(&user, &10_000_000);
 
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -469,6 +484,7 @@ fn test_get_collected_fees_multiple_assets() {
 #[test]
 fn test_fee_collection_with_settle() {
     let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let initial_balance = token_client.balance(&user);
 
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -478,19 +494,19 @@ fn test_fee_collection_with_settle() {
     let net_amount = amount - creation_fee;
 
     let mut rules = default_rules(&e);
-    rules.duration_days = 0; // Expires immediately
+    rules.duration_days = 1;
 
     let commitment_id = client.create_commitment(&user, &amount, &token_address, &rules);
 
     // Settle commitment
-    e.ledger().with_mut(|li| li.timestamp = li.timestamp + 1);
+    e.ledger().with_mut(|li| li.timestamp += 86_401);
     client.settle(&commitment_id);
 
     // Verify creation fee still collected
     assert_eq!(client.get_collected_fees(&token_address), creation_fee);
 
-    // Verify user got back net amount
-    assert_eq!(token_client.balance(&user), net_amount);
+    // User ends down only by the retained creation fee.
+    assert_eq!(token_client.balance(&user), initial_balance - creation_fee);
 }
 
 #[test]

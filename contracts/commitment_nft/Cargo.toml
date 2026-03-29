@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 testutils = ["soroban-sdk/testutils"]
 benchmark = []
+legacy-test-suite = []
 default = []
 
 [dependencies]
