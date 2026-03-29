@@ -578,3 +578,43 @@ fn test_queue_action_rejects_timestamp_overflow() {
     let result = client.try_queue_action(&ActionType::ParameterChange, &target, &data, &delay);
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
 }
+
+#[test]
+fn test_queue_action_zero_delay() {
+    let (env, admin, target) = create_test_env();
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "zero_delay");
+    // All action types have min delay > 0
+    let result = client.try_queue_action(&ActionType::ParameterChange, &target, &data, &0);
+    assert_eq!(result, Err(Ok(Error::DelayTooShort)));
+}
+
+#[test]
+fn test_execute_action_at_lower_boundary() {
+    let (env, admin, target) = create_test_env();
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "boundary_test");
+    let delay = 86400u64;
+
+    let action_id = client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
+    let action = client.get_action(&action_id);
+    let exec_time = action.executable_at;
+
+    // 1 second before executable_at: Should fail
+    env.ledger().with_mut(|li| li.timestamp = exec_time - 1);
+    assert_eq!(client.try_execute_action(&action_id), Err(Ok(Error::DelayNotMet)));
+
+    // At exactly executable_at: Should succeed
+    env.ledger().with_mut(|li| li.timestamp = exec_time);
+    assert!(client.try_execute_action(&action_id).is_ok());
+}
