@@ -542,3 +542,70 @@ fn test_multiple_allocations_exceed_total_balance_fails() {
         &Strategy::Safe,
     );
 }
+
+#[test]
+fn test_update_pool_capacity_monotonicity_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _commitment_core, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let pool_id = 0u32;
+    let new_capacity = 2_000_000_000i128; // Increase capacity
+
+    client.update_pool_capacity(&admin, &pool_id, &new_capacity);
+
+    let pool = client.get_pool(&pool_id);
+    assert_eq!(pool.max_capacity, new_capacity);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #7)")]
+fn test_update_pool_capacity_monotonicity_failure() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _commitment_core, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // First allocate to increase liquidity
+    client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+
+    let pool = client.get_pool(&0);
+    let current_liquidity = pool.total_liquidity;
+    assert!(current_liquidity > 0);
+
+    // Try to set capacity < current liquidity
+    let low_capacity = current_liquidity - 1;
+    client.update_pool_capacity(&admin, &0, &low_capacity);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #12)")]
+fn test_update_pool_capacity_invalid_capacity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _commitment_core, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    client.update_pool_capacity(&admin, &0, &0i128);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #3)")]
+fn test_update_pool_capacity_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _commitment_core, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let attacker = Address::generate(&env);
+    client.update_pool_capacity(&attacker, &0, &2_000_000_000i128);
+}

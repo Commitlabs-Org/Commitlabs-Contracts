@@ -215,6 +215,23 @@ impl AllocationStrategiesContract {
         Ok(())
     }
 
+    /// Update the active status of a pool.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The administrator address (requires auth)
+    /// * `pool_id` - The identifier for the pool to update
+    /// * `active` - The new active status
+    ///
+    /// # Errors
+    /// * `Error::NotInitialized` - If the contract is not initialized
+    /// * `Error::Unauthorized` - If the caller is not the admin
+    /// * `Error::PoolNotFound` - If the pool ID does not exist
+    /// * `Error::Reentrancy` - If the function is called reentrantly
+    ///
+    /// # Security
+    /// - `require_auth` on the admin address.
+    /// - Reentrancy guard protected.
     pub fn update_pool_status(
         env: Env,
         admin: Address,
@@ -240,6 +257,25 @@ impl AllocationStrategiesContract {
         Ok(())
     }
 
+    /// Update the maximum capacity of a pool.
+    ///
+    /// Enforces monotonicity: the new capacity cannot be less than the current
+    /// total liquidity allocated to the pool.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The administrator address (requires auth)
+    /// * `pool_id` - The identifier for the pool to update
+    /// * `new_capacity` - The new maximum capacity (must be > 0 and >= current liquidity)
+    ///
+    /// # Errors
+    /// * `Error::InvalidCapacity` - If `new_capacity <= 0`
+    /// * `Error::PoolCapacityExceeded` - If `new_capacity < current_liquidity`
+    /// * `Error::Reentrancy` - If the function is called reentrantly
+    ///
+    /// # Security
+    /// - `require_auth` on the admin address.
+    /// - Reentrancy guard protected.
     pub fn update_pool_capacity(
         env: Env,
         admin: Address,
@@ -249,6 +285,7 @@ impl AllocationStrategiesContract {
         admin.require_auth();
         Self::require_initialized(&env)?;
         Self::require_admin(&env, &admin)?;
+        Self::require_no_reentrancy(&env)?;
 
         if new_capacity <= 0 {
             return Err(Error::InvalidCapacity);
