@@ -304,3 +304,292 @@ fn test_fee_withdraw_requires_recipient() {
     let asset = Address::generate(&e);
     client.withdraw_fees(&admin, &asset, &100i128);
 }
+
+// ============================================================================
+// Reentrancy Guard Tests
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn test_create_tranches_reentrancy_guard() {
+    use soroban_sdk::testutils::Ledger;
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    // Manually set reentrancy guard to simulate reentrancy
+    e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let total_value = 1_000_000i128;
+    let tranche_share_bps: Vec<u32> = vec![&e, 10000u32];
+    let risk_levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
+    let fee_asset = Address::generate(&e);
+
+    // This should panic with "Reentrancy detected"
+    client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &tranche_share_bps,
+        &risk_levels,
+        &fee_asset,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn test_collateralize_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    // Manually set reentrancy guard to simulate reentrancy
+    e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let asset = Address::generate(&e);
+
+    // This should panic with "Reentrancy detected"
+    client.collateralize(&user, &commitment_id, &500_000i128, &asset);
+}
+
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn test_create_secondary_instrument_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    // Manually set reentrancy guard to simulate reentrancy
+    e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let instrument_type = String::from_str(&e, "receivable");
+    let amount = 200_000i128;
+
+    // This should panic with "Reentrancy detected"
+    client.create_secondary_instrument(&user, &commitment_id, &instrument_type, &amount);
+}
+
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn test_add_protocol_guarantee_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    // Manually set reentrancy guard to simulate reentrancy
+    e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let guarantee_type = String::from_str(&e, "liquidity_backstop");
+    let terms_hash = String::from_str(&e, "0xabc123");
+
+    // This should panic with "Reentrancy detected"
+    client.add_protocol_guarantee(&user, &commitment_id, &guarantee_type, &terms_hash);
+}
+
+#[test]
+fn test_reentrancy_guard_cleared_after_create_tranches() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let total_value = 1_000_000i128;
+    let tranche_share_bps: Vec<u32> = vec![&e, 10000u32];
+    let risk_levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
+    let fee_asset = Address::generate(&e);
+
+    // First call should succeed
+    client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &tranche_share_bps,
+        &risk_levels,
+        &fee_asset,
+    );
+
+    // Verify guard is cleared
+    let guard_cleared = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    });
+    assert_eq!(guard_cleared, false);
+
+    // Second call should also succeed (guard was properly cleared)
+    let commitment_id_2 = String::from_str(&e, "c_2");
+    client.create_tranches(
+        &user,
+        &commitment_id_2,
+        &total_value,
+        &tranche_share_bps,
+        &risk_levels,
+        &fee_asset,
+    );
+}
+
+#[test]
+fn test_reentrancy_guard_cleared_after_collateralize() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let asset = Address::generate(&e);
+
+    // First call should succeed
+    client.collateralize(&user, &commitment_id, &500_000i128, &asset);
+
+    // Verify guard is cleared
+    let guard_cleared = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    });
+    assert_eq!(guard_cleared, false);
+
+    // Second call should also succeed
+    let commitment_id_2 = String::from_str(&e, "c_2");
+    client.collateralize(&user, &commitment_id_2, &500_000i128, &asset);
+}
+
+#[test]
+fn test_reentrancy_guard_cleared_after_create_secondary_instrument() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let instrument_type = String::from_str(&e, "receivable");
+    let amount = 200_000i128;
+
+    // First call should succeed
+    client.create_secondary_instrument(&user, &commitment_id, &instrument_type, &amount);
+
+    // Verify guard is cleared
+    let guard_cleared = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    });
+    assert_eq!(guard_cleared, false);
+
+    // Second call should also succeed
+    let commitment_id_2 = String::from_str(&e, "c_2");
+    client.create_secondary_instrument(&user, &commitment_id_2, &instrument_type, &amount);
+}
+
+#[test]
+fn test_reentrancy_guard_cleared_after_add_protocol_guarantee() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let guarantee_type = String::from_str(&e, "liquidity_backstop");
+    let terms_hash = String::from_str(&e, "0xabc123");
+
+    // First call should succeed
+    client.add_protocol_guarantee(&user, &commitment_id, &guarantee_type, &terms_hash);
+
+    // Verify guard is cleared
+    let guard_cleared = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    });
+    assert_eq!(guard_cleared, false);
+
+    // Second call should also succeed
+    let commitment_id_2 = String::from_str(&e, "c_2");
+    client.add_protocol_guarantee(&user, &commitment_id_2, &guarantee_type, &terms_hash);
+}
+
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_reentrancy_guard_cleared_on_error() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_1");
+    let total_value = 1_000_000i128;
+    // Invalid ratios that don't sum to 10000
+    let tranche_share_bps: Vec<u32> = vec![&e, 5000u32, 3000u32];
+    let risk_levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "mezzanine"),
+    ];
+    let fee_asset = Address::generate(&e);
+
+    // This should fail with invalid ratios
+    client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &tranche_share_bps,
+        &risk_levels,
+        &fee_asset,
+    );
+}
