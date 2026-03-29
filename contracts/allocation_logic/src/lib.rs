@@ -1,4 +1,18 @@
-// Allocation Strategies Contract
+//! Allocation Strategies Contract - Non-Custodial Record Keeping
+//!
+//! # Architecture
+//! This contract serves as a strategy engine and record-keeping layer for commitment allocations.
+//! It is explicitly **non-custodial**: it does not hold actual assets or perform token transfers.
+//! All "liquidity" and "allocations" tracked here are logical records representing intended
+//! asset distributions.
+//!
+//! # Security and Trust Boundaries
+//! - `commitment_core`: The custodial layer that handles actual token movements.
+//! - `allocation_logic`: The accounting layer that calculates and records allocations.
+//! - `require_auth`: Enforced for all admin and owner-specific operations (allocate, rebalance, etc.).
+//! - `RateLimiter`: Applied to public entry points to prevent DoS.
+//! - `ReentrancyGuard`: Protects against reentrant calls during state updates.
+
 #![no_std]
 
 use shared_utils::{Pausable, RateLimiter};
@@ -58,6 +72,10 @@ pub enum RiskLevel {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
+/// Represents an investment pool with its risk profile and liquidity records.
+///
+/// NOTE: `total_liquidity` is a virtual record and does not represent actual on-chain tokens
+/// held by this contract.
 pub struct Pool {
     pub pool_id: u32,
     pub risk_level: RiskLevel,
@@ -71,6 +89,7 @@ pub struct Pool {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
+/// A record of an allocation for a specific commitment into a pool.
 pub struct Allocation {
     pub commitment_id: u64,
     pub pool_id: u32,
@@ -80,6 +99,7 @@ pub struct Allocation {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
+/// A summary of all allocations for a specific commitment across various pools.
 pub struct AllocationSummary {
     pub commitment_id: u64,
     pub strategy: Strategy,
@@ -275,7 +295,17 @@ impl AllocationStrategiesContract {
     // CORE ALLOCATION FUNCTIONS
     // ========================================================================
 
-    /// Allocate funds according to strategy
+    /// Allocate virtual funds for a commitment according to a chosen strategy.
+    ///
+    /// This function performs **record-keeping only**. It updates pool liquidity and
+    /// records allocation entries in persistent storage but does **not** move actual tokens.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `caller` - The user address (requires auth)
+    /// * `commitment_id` - The unique identifier for the commitment
+    /// * `amount` - The logical amount to allocate (checked against commitment balance)
+    /// * `strategy` - The strategy to apply (Safe, Balanced, Aggressive)
     ///
     /// # Formal Verification
     /// **Preconditions:**
@@ -443,6 +473,20 @@ impl AllocationStrategiesContract {
         })
     }
 
+    /// Rebalance existing allocations for a commitment based on its current strategy.
+    ///
+    /// Like `allocate`, this is a **record-keeping operation**. It updates virtual
+    /// pool liquidity totals and replaces existing allocation records.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `caller` - The user address (must be the original allocation owner, requires auth)
+    /// * `commitment_id` - The identifier for the commitment to rebalance
+    ///
+    /// # Security
+    /// - Validates caller ownership: only the address that initiated the allocation can rebalance it.
+    /// - Checked arithmetic: prevents overflow/underflow during liquidity updates.
+    /// - Reentrancy guard: prevents reentrant calls during state updates.
     pub fn rebalance(
         env: Env,
         caller: Address,

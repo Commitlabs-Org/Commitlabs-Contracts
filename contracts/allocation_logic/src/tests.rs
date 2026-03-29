@@ -542,3 +542,33 @@ fn test_multiple_allocations_exceed_total_balance_fails() {
         &Strategy::Safe,
     );
 }
+
+#[test]
+fn test_non_custodial_nature() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _commitment_core, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Verify pool liquidity is zero before
+    let pool_before = client.get_pool(&0);
+    assert_eq!(pool_before.total_liquidity, 0);
+
+    // Perform allocation - this only updates records, no actual tokens are moved/held
+    client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+
+    // Verify record was updated
+    let pool_after = client.get_pool(&0);
+    assert!(pool_after.total_liquidity > 0);
+
+    let summary = client.get_allocation(&commitment_id);
+    assert_eq!(summary.total_allocated, amount);
+
+    // The fact that this test runs without any token contract set up or mock token balances
+    // (other than the virtual check in get_commitment_balance) confirms its non-custodial nature.
+}
