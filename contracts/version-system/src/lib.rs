@@ -449,7 +449,7 @@ impl ContractVersioning {
 
     fn is_valid_increment(old: &Version, new: &Version) -> bool {
         // New version must be greater
-        let cmp = if old.major != new.major {
+        if old.major != new.major {
             if old.major > new.major {
                 return false;
             }
@@ -466,9 +466,7 @@ impl ContractVersioning {
             old.major == new.major && old.minor == new.minor
         } else {
             false
-        };
-
-        cmp
+        }
     }
 
     fn default_compatibility_check(v1: Version, v2: Version) -> (bool, String) {

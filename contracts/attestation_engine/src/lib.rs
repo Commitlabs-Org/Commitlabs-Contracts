@@ -335,7 +335,7 @@ impl AttestationEngineContract {
         Pausable::is_paused(&e)
     }
 
-/// Check if an address is a verifier (public version).
+    /// Check if an address is a verifier (public version).
     /// Check if an address is a verifier (public version)
     pub fn is_verifier(e: Env, address: Address) -> bool {
         Self::is_authorized_verifier(&e, &address)
@@ -509,10 +509,7 @@ impl AttestationEngineContract {
             args,
         );
 
-        match result {
-            Ok(Ok(_)) => true,
-            _ => false,
-        }
+        matches!(result, Ok(Ok(_)))
     }
 
     // ========================================================================
@@ -626,9 +623,9 @@ impl AttestationEngineContract {
         }
 
         // OPTIMIZATION: Single pass parsing with early exit on invalid char
-        for i in start_idx..len as usize {
-            let b = buf[i];
-            if b < b'0' || b > b'9' {
+        for b in buf.iter().take(len as usize).skip(start_idx) {
+            let b = *b;
+            if !b.is_ascii_digit() {
                 return None; // Invalid character - early exit
             }
             result = result.checked_mul(10)?;
@@ -661,7 +658,9 @@ impl AttestationEngineContract {
     ///
     /// # Reentrancy Protection
     /// Uses checks-effects-interactions pattern with an explicit guard.
-    pub fn attest(
+    /// Internal implementation of attest without `require_auth`.
+    /// Callers are responsible for calling `caller.require_auth()` before invoking this.
+    fn attest_internal(
         e: Env,
         caller: Address,
         commitment_id: String,
@@ -678,8 +677,8 @@ impl AttestationEngineContract {
         // Check if contract is paused
         Pausable::require_not_paused(&e);
 
-        // 2. Verify caller signed the transaction
-        caller.require_auth();
+        // NOTE: require_auth() is intentionally omitted here.
+        // The public entry points (attest, record_drawdown) must call it before invoking this.
 
         // 3. Check caller is authorized verifier
         if !Self::is_authorized_verifier(&e, &caller) {
@@ -692,7 +691,7 @@ impl AttestationEngineContract {
         RateLimiter::check(&e, &caller, &fn_symbol);
 
         // 4. Validate commitment_id is not empty
-        if commitment_id.len() == 0 {
+        if commitment_id.is_empty() {
             e.storage().instance().remove(&DataKey::ReentrancyGuard);
             return Err(AttestationError::InvalidCommitmentId);
         }
@@ -818,6 +817,28 @@ impl AttestationEngineContract {
         e.storage().instance().remove(&DataKey::ReentrancyGuard);
 
         Ok(())
+    }
+
+    /// Public entry point for recording an attestation.
+    /// Verifies caller authorization then delegates to `attest_internal`.
+    pub fn attest(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
+        // 2. Verify caller signed the transaction
+        caller.require_auth();
+        Self::attest_internal(
+            e,
+            caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+        )
     }
 
     /// Get all attestations for a commitment
@@ -1039,6 +1060,9 @@ impl AttestationEngineContract {
         commitment_id: String,
         drawdown_percent: i128,
     ) -> Result<(), AttestationError> {
+        // Authorize caller once for this entire operation (may record multiple attestations).
+        caller.require_auth();
+
         let commitment_core: Address = e
             .storage()
             .instance()
@@ -1061,7 +1085,7 @@ impl AttestationEngineContract {
             Self::i128_to_string(&e, drawdown_percent),
         );
 
-        Self::attest(
+        Self::attest_internal(
             e.clone(),
             caller.clone(),
             commitment_id.clone(),
@@ -1081,7 +1105,7 @@ impl AttestationEngineContract {
                 String::from_str(&e, "high"),
             );
 
-            Self::attest(
+            Self::attest_internal(
                 e.clone(),
                 caller,
                 commitment_id.clone(),
@@ -1262,7 +1286,7 @@ impl AttestationEngineContract {
 
         if expires_at > created_at {
             let total_duration = expires_at.checked_sub(created_at).unwrap_or(1);
-            let elapsed = current_time.checked_sub(created_at).unwrap_or(0);
+            let elapsed = current_time.saturating_sub(created_at);
 
             // Check if we're on track (not too far behind or ahead)
             // Simplified: if elapsed is within reasonable bounds of expected progress
@@ -1279,11 +1303,7 @@ impl AttestationEngineContract {
         }
 
         // Clamp between 0 and 100
-        if score < 0 {
-            score = 0;
-        } else if score > 100 {
-            score = 100;
-        }
+        score = score.clamp(0, 100);
 
         // Emit compliance score update event
         e.events().publish(
@@ -1431,7 +1451,7 @@ impl AttestationEngineContract {
             let params = params_list.get(i).unwrap();
 
             // Validate commitment_id
-            if params.commitment_id.len() == 0 {
+            if params.commitment_id.is_empty() {
                 if mode == BatchMode::Atomic {
                     e.storage().instance().remove(&DataKey::ReentrancyGuard);
                     errors.push_back(BatchError {

@@ -8,10 +8,10 @@ mod integration_tests {
     use crate::storage::Storage;
     use crate::time::TimeUtils;
     use crate::validation::Validation;
+    use soroban_sdk::testutils::{Events as _, Ledger};
     use soroban_sdk::{
         contract, contractimpl, symbol_short, vec, Env, IntoVal, String as SorobanString, Symbol,
     };
-    use soroban_sdk::testutils::{Events as _, Ledger};
 
     // Dummy contract used to provide a valid contract context for integration tests
     #[contract]
@@ -112,7 +112,10 @@ mod integration_tests {
 
             assert!(Storage::has(&env, &expiration_key));
             assert_eq!(Storage::get::<u64>(&env, &expiration_key), Some(expiration));
-            assert_eq!(TimeUtils::seconds_to_days(expiration - TimeUtils::now(&env)), 7);
+            assert_eq!(
+                TimeUtils::seconds_to_days(expiration - TimeUtils::now(&env)),
+                7
+            );
         });
     }
 
@@ -126,7 +129,10 @@ mod integration_tests {
 
         let expiration = TimeUtils::calculate_expiration(&env, 2);
         assert!(TimeUtils::is_valid(&env, expiration));
-        assert_eq!(TimeUtils::time_remaining(&env, expiration), TimeUtils::days_to_seconds(2));
+        assert_eq!(
+            TimeUtils::time_remaining(&env, expiration),
+            TimeUtils::days_to_seconds(2)
+        );
 
         env.ledger().with_mut(|ledger| {
             ledger.timestamp = expiration;

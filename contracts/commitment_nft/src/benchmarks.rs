@@ -27,11 +27,7 @@ impl BenchmarkMetrics {
     }
 
     fn print_summary(&self) {
-        let _gas_used = if self.gas_after > self.gas_before {
-            self.gas_after - self.gas_before
-        } else {
-            0
-        };
+        let _gas_used = self.gas_after.saturating_sub(self.gas_before);
         let _ = &self.function_name;
         // Benchmark metrics collected - can be extended with proper logging
     }
@@ -81,6 +77,7 @@ fn benchmark_mint() {
         let _ = CommitmentNFTContract::mint(
             e.clone(),
             owner.clone(),
+            owner.clone(),
             String::from_str(&e, "commitment_1"),
             30,
             20,
@@ -106,6 +103,7 @@ fn benchmark_get_metadata() {
     let token_id = e.as_contract(&contract_id, || {
         CommitmentNFTContract::mint(
             e.clone(),
+            owner.clone(),
             owner.clone(),
             String::from_str(&e, "commitment_1"),
             30,
@@ -140,6 +138,7 @@ fn benchmark_owner_of() {
         CommitmentNFTContract::mint(
             e.clone(),
             owner.clone(),
+            owner.clone(),
             String::from_str(&e, "commitment_1"),
             30,
             20,
@@ -172,6 +171,7 @@ fn benchmark_balance_of() {
     e.as_contract(&contract_id, || {
         CommitmentNFTContract::mint(
             e.clone(),
+            owner.clone(),
             owner.clone(),
             String::from_str(&e, "commitment_1"),
             30,
@@ -221,6 +221,7 @@ fn benchmark_batch_mint() {
         e.as_contract(&contract_id, || {
             let _ = CommitmentNFTContract::mint(
                 e.clone(),
+                owner.clone(),
                 owner.clone(),
                 String::from_str(&e, commitment_id),
                 30,

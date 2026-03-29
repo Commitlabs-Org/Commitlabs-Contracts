@@ -1,9 +1,9 @@
 #![no_std]
+use shared_utils::{EmergencyControl, Pausable};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
 };
-use shared_utils::{EmergencyControl, Pausable};
 
 // Current storage version for migration checks.
 pub const CURRENT_VERSION: u32 = 1;
@@ -404,7 +404,11 @@ impl CommitmentNFTContract {
                 return true;
             }
         }
-        if let Some(core) = e.storage().instance().get::<_, Address>(&DataKey::CoreContract) {
+        if let Some(core) = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::CoreContract)
+        {
             if contract_address == core {
                 return true;
             }
@@ -476,6 +480,7 @@ impl CommitmentNFTContract {
     // ========================================================================
 
     /// Mint a new Commitment NFT. Caller must be admin or an authorized minter (see add_authorized_contract).
+    #[allow(clippy::too_many_arguments)]
     pub fn mint(
         e: Env,
         caller: Address,
@@ -512,16 +517,25 @@ impl CommitmentNFTContract {
         }
         let admin: Address = e.storage().instance().get(&DataKey::Admin).unwrap();
         let core_contract: Option<Address> = e.storage().instance().get(&DataKey::CoreContract);
-        let is_authorized_minter = e.storage().instance().get(&DataKey::AuthorizedMinter(caller.clone())).unwrap_or(false);
-        let allowed = (caller == admin) || (core_contract.as_ref() == Some(&caller)) || is_authorized_minter;
+        let is_authorized_minter = e
+            .storage()
+            .instance()
+            .get(&DataKey::AuthorizedMinter(caller.clone()))
+            .unwrap_or(false);
+        let allowed =
+            (caller == admin) || (core_contract.as_ref() == Some(&caller)) || is_authorized_minter;
         if !allowed {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotAuthorized);
         }
 
         // CHECKS: Reject zero address owner
         if is_zero_address(&e, &owner) {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::TransferToZeroAddress);
         }
 
@@ -746,7 +760,9 @@ impl CommitmentNFTContract {
 
         // CHECKS: Reject transfer to zero address
         if is_zero_address(&e, &to) {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::TransferToZeroAddress);
         }
 
@@ -1114,13 +1130,14 @@ fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), Contra
 }
 
 fn is_zero_address(e: &Env, address: &Address) -> bool {
-    let zero_str = String::from_str(e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero_str = String::from_str(
+        e,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
     address.to_string() == zero_str
 }
 
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
-
 #[cfg(test)]
 mod test_zero_address;
-mod benchmarks;
