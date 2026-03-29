@@ -662,3 +662,245 @@ fn test_record_drawdown_exceeds_max_loss_records_violation() {
     assert_eq!(violation_type, String::from_str(&e, "max_loss_exceeded"));
     assert_eq!(severity, String::from_str(&e, "high"));
 }
+
+#[test]
+fn test_attest_unauthorized_verifier() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+    let verifier = Address::generate(&e);
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+    });
+
+    let commitment_id = String::from_str(&e, "test_c");
+    let att_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+
+    let result = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            verifier.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        )
+    });
+
+    assert_eq!(result, Err(AttestationError::Unauthorized));
+}
+
+#[test]
+fn test_attest_invalid_commitment_id_empty() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+    });
+
+    let commitment_id = String::from_str(&e, "");
+    let att_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+
+    let result = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        )
+    });
+
+    assert_eq!(result, Err(AttestationError::InvalidCommitmentId));
+}
+
+#[test]
+fn test_attest_commitment_not_found() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+    });
+
+    let commitment_id = String::from_str(&e, "missing");
+    let att_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+
+    let result = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        )
+    });
+
+    assert_eq!(result, Err(AttestationError::CommitmentNotFound));
+}
+
+#[test]
+fn test_attest_invalid_type() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "test_c");
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+    });
+
+    let commitment = create_mock_commitment_with_status(&e, "test_c", "active", 1000, 1000, 10);
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(&commitment_core::DataKey::Commitment(commitment_id.clone()), &commitment);
+    });
+
+    let att_type = String::from_str(&e, "invalid_type");
+    let data = Map::new(&e);
+
+    let result = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        )
+    });
+
+    assert_eq!(result, Err(AttestationError::InvalidAttestationType));
+}
+
+#[test]
+fn test_attest_invalid_data() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "test_c");
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+    });
+
+    let commitment = create_mock_commitment_with_status(&e, "test_c", "active", 1000, 1000, 10);
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(&commitment_core::DataKey::Commitment(commitment_id.clone()), &commitment);
+    });
+
+    let att_type = String::from_str(&e, "violation");
+    let data = Map::new(&e); // Missing required fields for "violation" type
+
+    let result = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        )
+    });
+
+    assert_eq!(result, Err(AttestationError::InvalidAttestationData));
+}
+
+#[test]
+#[should_panic]
+fn test_attest_rate_limiting() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "test_c");
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+        AttestationEngineContract::set_rate_limit(e.clone(), admin.clone(), Symbol::new(&e, "attest"), 100, 1).unwrap();
+    });
+
+    let commitment = create_mock_commitment_with_status(&e, "test_c", "active", 1000, 1000, 10);
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(&commitment_core::DataKey::Commitment(commitment_id.clone()), &commitment);
+    });
+
+    let att_type = String::from_str(&e, "health_check");
+    let data = Map::new(&e);
+
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        ).unwrap();
+        
+        // Second call should fail due to rate limit
+        AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        ).unwrap();
+    });
+}
+
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn test_attest_reentrancy_protection() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+
+    let admin = Address::generate(&e);
+    
+    e.as_contract(&attestation_id, || {
+        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
+        // Artificially trigger reentrancy guard
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+        
+        let commitment_id = String::from_str(&e, "test_c");
+        let att_type = String::from_str(&e, "health_check");
+        let data = Map::new(&e);
+
+        let _ = AttestationEngineContract::attest(
+            e.clone(),
+            admin.clone(),
+            commitment_id.clone(),
+            att_type.clone(),
+            data.clone(),
+            true,
+        );
+    });
+}

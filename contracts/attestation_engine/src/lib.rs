@@ -732,7 +732,10 @@ impl AttestationEngineContract {
                 token_client.transfer(&caller, &contract_address, &fee_amount);
                 let key = DataKey::CollectedFees(fee_asset.clone());
                 let current: i128 = e.storage().instance().get(&key).unwrap_or(0);
-                e.storage().instance().set(&key, &(current + fee_amount));
+                let new_total = current
+                    .checked_add(fee_amount)
+                    .ok_or(AttestationError::StorageError)?;
+                e.storage().instance().set(&key, &new_total);
             }
         }
 
@@ -788,21 +791,27 @@ impl AttestationEngineContract {
 
         e.storage()
             .instance()
-            .set(&DataKey::TotalAttestations, &(total_attestations + 1));
+            .set(
+                &DataKey::TotalAttestations,
+                &(total_attestations.checked_add(1).unwrap()),
+            );
 
         // Track violations (explicit or non-compliant)
         let violation_type = String::from_str(&e, "violation");
         if attestation.attestation_type == violation_type || !attestation.is_compliant {
             e.storage()
                 .instance()
-                .set(&DataKey::TotalViolations, &(total_violations + 1));
+                .set(
+                    &DataKey::TotalViolations,
+                    &(total_violations.checked_add(1).unwrap()),
+                );
         }
 
         // Track per-verifier attestation count
         let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
         e.storage()
             .instance()
-            .set(&verifier_key, &(verifier_count + 1));
+            .set(&verifier_key, &(verifier_count.checked_add(1).unwrap()));
 
         // 12. Emit enhanced AttestationRecorded event
         e.events().publish(
@@ -1539,10 +1548,10 @@ impl AttestationEngineContract {
             e.storage().persistent().set(&counter_key, &(counter + 1));
 
             // Update analytics counters (in memory)
-            total_attestations += 1;
-            verifier_count += 1;
+            total_attestations = total_attestations.checked_add(1).unwrap();
+            verifier_count = verifier_count.checked_add(1).unwrap();
             if attestation.attestation_type == violation_type || !attestation.is_compliant {
-                total_violations += 1;
+                total_violations = total_violations.checked_add(1).unwrap();
             }
 
             results.push_back(());
