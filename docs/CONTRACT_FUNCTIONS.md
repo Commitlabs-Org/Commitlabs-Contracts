@@ -116,6 +116,33 @@ CI drift tests compare its source-defined types and expected signatures against
 | set_rate_limit(admin, function, window, max_calls) -> Result                   | Configure rate limits.                  | Admin require_auth.  | Uses shared RateLimiter.                  |
 | set_rate_limit_exempt(admin, address, exempt) -> Result                        | Configure rate limit exemption.         | Admin require_auth.  | Uses shared RateLimiter.                  |
 
+## mock_oracle
+
+| Function                                                                  | Summary                                            | Access control                | Notes                                                                     |
+| ------------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------- |
+| initialize(admin, staleness_threshold) -> Result                          | Initialize admin, feeder defaults, and threshold.  | None (single-use).            | Admin is auto-added as feeder.                                            |
+| set_price(caller, asset, price, decimals, confidence) -> Result           | Publish price with current ledger timestamp.       | caller.require_auth + feeder. | Rejects negative prices.                                                  |
+| set_price_with_timestamp(caller, asset, price, ts, decimals, confidence) -> Result | Publish price with explicit timestamp.   | caller.require_auth + feeder. | Useful for deterministic stale/fresh CI tests.                            |
+| get_price(asset) -> Result<i128>                                          | Read price with contract staleness threshold.      | View.                         | Returns `StalePrice` when outdated and `NotInitialized` when paused.      |
+| get_price_data(asset) -> Result<PriceData>                                | Read full snapshot struct.                         | View.                         | Includes `price`, `timestamp`, `decimals`, and `confidence`.              |
+| get_price_no_older_than(asset, max_staleness) -> Result<i128>             | Read price with caller-provided freshness window.  | View.                         | Deterministic for boundary testing.                                       |
+| has_price(asset) -> bool                                                   | Check if asset has a configured feed.              | View.                         | Useful before asserting read errors.                                      |
+| remove_price(caller, asset) -> Result                                     | Remove asset price feed.                           | Admin require_auth.           | Simulates missing-feed scenarios.                                         |
+| pause(caller) -> Result                                                    | Pause oracle read availability.                    | Admin require_auth.           | Read paths return `NotInitialized` while paused.                          |
+| unpause(caller) -> Result                                                  | Resume oracle read availability.                   | Admin require_auth.           | Restores normal reads.                                                    |
+| add_feeder(caller, feeder) -> Result                                       | Grant feeder write permission.                     | Admin require_auth.           | Feeder may overwrite latest price per asset.                              |
+| remove_feeder(caller, feeder) -> Result                                    | Revoke feeder write permission.                    | Admin require_auth.           | Revocation applies immediately to write calls.                            |
+| set_staleness_threshold(caller, threshold) -> Result                       | Update contract default stale window.              | Admin require_auth.           | Applied by `get_price`.                                                   |
+| get_admin() -> Result<Address>                                             | Read configured admin.                             | View.                         | Fails with `NotInitialized` before setup.                                 |
+| is_feeder(address) -> bool                                                 | Check feeder authorization state.                  | View.                         | Includes admin after initialize.                                          |
+
+### mock_oracle testing notes
+
+- `mock_oracle` is test-support infrastructure, not an on-chain price discovery system.
+- Deterministic CI usage should pin ledger timestamps and use `set_price_with_timestamp`.
+- Failure-path simulation relies on `pause`/`unpause` and `remove_price`.
+- Extended usage guide: `docs/MOCK_ORACLE_TESTING.md`
+
 ## price_oracle
 
 | Function                                               | Summary                                          | Access control            | Notes                                                                          |

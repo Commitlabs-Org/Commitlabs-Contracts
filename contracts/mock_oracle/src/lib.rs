@@ -7,6 +7,28 @@
 //! - Price values per asset
 //! - Staleness simulation
 //! - Error conditions
+//!
+//! ## Local Soroban test usage
+//!
+//! Typical unit/integration setup:
+//! 1. Register the contract in `Env`.
+//! 2. Initialize once with admin + staleness threshold.
+//! 3. Seed prices with `set_price` or `set_price_with_timestamp`.
+//! 4. Read with `get_price` / `get_price_data` and assert outcomes.
+//!
+//! For deterministic local tests with multiple authorized actors, use
+//! `env.mock_all_auths_allowing_non_root_auth()` and explicit ledger timestamps
+//! when freshness behavior is under test.
+//!
+//! ## CI usage pattern
+//!
+//! CI test runs should avoid wall-clock assumptions:
+//! - Pin the ledger timestamp before writes.
+//! - Use `set_price_with_timestamp` to model stale/fresh boundaries precisely.
+//! - Use `pause`/`unpause` and `remove_price` to exercise failure branches in a
+//!   deterministic way.
+//!
+//! See also: `docs/MOCK_ORACLE_TESTING.md`.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
@@ -70,9 +92,19 @@ pub struct MockOracleContract;
 impl MockOracleContract {
     /// Initialize the mock oracle contract
     ///
-    /// # Arguments
-    /// * `admin` - The admin address for the contract
-    /// * `staleness_threshold` - Maximum age of price data in seconds before considered stale
+    /// Summary:
+    /// Sets admin authority, default staleness threshold, and paused state.
+    ///
+    /// Params:
+    /// - `admin`: contract admin and initial feeder.
+    /// - `staleness_threshold`: maximum allowed age (seconds) for `get_price`.
+    ///
+    /// Errors:
+    /// - [`OracleError::AlreadyInitialized`] if called more than once.
+    ///
+    /// Security:
+    /// - No `require_auth` because this is single-use bootstrap. Callers should only
+    ///   invoke during test setup, immediately after deployment.
     pub fn initialize(e: Env, admin: Address, staleness_threshold: u64) -> Result<(), OracleError> {
         if e.storage().instance().has(&DataKey::Admin) {
             return Err(OracleError::AlreadyInitialized);
@@ -99,12 +131,25 @@ impl MockOracleContract {
 
     /// Set a price for an asset (admin/feeder only)
     ///
-    /// # Arguments
-    /// * `caller` - Must be admin or authorized feeder
-    /// * `asset` - The asset address to set price for
-    /// * `price` - The price value
-    /// * `decimals` - Number of decimal places
-    /// * `confidence` - Confidence interval for the price
+    /// Summary:
+    /// Writes a price snapshot using the current ledger timestamp.
+    ///
+    /// Params:
+    /// - `caller`: must auth and be admin or feeder.
+    /// - `asset`: asset identifier.
+    /// - `price`: non-negative price value.
+    /// - `decimals`: decimal precision metadata.
+    /// - `confidence`: confidence interval metadata.
+    ///
+    /// Errors:
+    /// - [`OracleError::NotInitialized`] when admin state is missing.
+    /// - [`OracleError::Unauthorized`] when caller is not admin/feeder.
+    /// - [`OracleError::InvalidPrice`] when `price < 0`.
+    ///
+    /// Security:
+    /// - Enforces `caller.require_auth()`.
+    /// - Trust boundary is explicit: any authorized feeder can overwrite the latest
+    ///   value for an asset.
     pub fn set_price(
         e: Env,
         caller: Address,
@@ -146,13 +191,26 @@ impl MockOracleContract {
 
     /// Set a price with a specific timestamp (for testing staleness)
     ///
-    /// # Arguments
-    /// * `caller` - Must be admin or authorized feeder
-    /// * `asset` - The asset address
-    /// * `price` - The price value
-    /// * `timestamp` - Custom timestamp for the price
-    /// * `decimals` - Number of decimal places
-    /// * `confidence` - Confidence interval
+    /// Summary:
+    /// Writes a price snapshot using a caller-specified timestamp.
+    ///
+    /// Params:
+    /// - `caller`: must auth and be admin or feeder.
+    /// - `asset`: asset identifier.
+    /// - `price`: non-negative price value.
+    /// - `timestamp`: explicit timestamp used for deterministic stale/fresh tests.
+    /// - `decimals`: decimal precision metadata.
+    /// - `confidence`: confidence interval metadata.
+    ///
+    /// Errors:
+    /// - [`OracleError::NotInitialized`] when admin state is missing.
+    /// - [`OracleError::Unauthorized`] when caller is not admin/feeder.
+    /// - [`OracleError::InvalidPrice`] when `price < 0`.
+    ///
+    /// Security:
+    /// - Enforces `caller.require_auth()`.
+    /// - This function is intended for test control; production-like consumers should
+    ///   treat timestamp authority as trusted publisher input.
     pub fn set_price_with_timestamp(
         e: Env,
         caller: Address,
@@ -193,11 +251,23 @@ impl MockOracleContract {
 
     /// Get the current price for an asset
     ///
-    /// # Arguments
-    /// * `asset` - The asset address to get price for
+    /// Summary:
+    /// Reads current price and enforces contract staleness threshold.
     ///
-    /// # Returns
-    /// * The current price or an error
+    /// Params:
+    /// - `asset`: asset identifier.
+    ///
+    /// Returns:
+    /// - `Ok(price)` when present and fresh.
+    ///
+    /// Errors:
+    /// - [`OracleError::NotInitialized`] when paused (simulated unavailability).
+    /// - [`OracleError::PriceNotFound`] when missing.
+    /// - [`OracleError::StalePrice`] when older than configured threshold.
+    ///
+    /// Security:
+    /// - Read-only path with no auth checks; freshness must be validated by callers
+    ///   through this method or `get_price_no_older_than`.
     pub fn get_price(e: Env, asset: Address) -> Result<i128, OracleError> {
         // Check if oracle is paused
         let paused: bool = e
@@ -234,11 +304,18 @@ impl MockOracleContract {
 
     /// Get full price data for an asset
     ///
-    /// # Arguments
-    /// * `asset` - The asset address
+    /// Summary:
+    /// Reads raw `PriceData` for an asset.
     ///
-    /// # Returns
-    /// * Full PriceData struct or error
+    /// Params:
+    /// - `asset`: asset identifier.
+    ///
+    /// Returns:
+    /// - `Ok(PriceData)` when present and unpaused.
+    ///
+    /// Errors:
+    /// - [`OracleError::NotInitialized`] when paused.
+    /// - [`OracleError::PriceNotFound`] when missing.
     pub fn get_price_data(e: Env, asset: Address) -> Result<PriceData, OracleError> {
         let paused: bool = e
             .storage()
@@ -257,12 +334,19 @@ impl MockOracleContract {
 
     /// Get price with staleness check
     ///
-    /// # Arguments
-    /// * `asset` - The asset address
-    /// * `max_staleness` - Maximum acceptable age in seconds
+    /// Summary:
+    /// Reads price with caller-defined freshness window.
     ///
-    /// # Returns
-    /// * Price if fresh enough, error otherwise
+    /// Params:
+    /// - `asset`: asset identifier.
+    /// - `max_staleness`: maximum accepted age in seconds.
+    ///
+    /// Returns:
+    /// - `Ok(price)` when present and fresh enough.
+    ///
+    /// Errors:
+    /// - [`OracleError::PriceNotFound`] when missing.
+    /// - [`OracleError::StalePrice`] when older than `max_staleness`.
     pub fn get_price_no_older_than(
         e: Env,
         asset: Address,
@@ -290,6 +374,9 @@ impl MockOracleContract {
     }
 
     /// Remove a price (for testing missing price scenarios)
+    ///
+    /// Security:
+    /// - Admin-only (`require_auth` + admin check).
     pub fn remove_price(e: Env, caller: Address, asset: Address) -> Result<(), OracleError> {
         caller.require_auth();
 
@@ -308,6 +395,10 @@ impl MockOracleContract {
     }
 
     /// Pause the oracle (for testing unavailability)
+    ///
+    /// Security:
+    /// - Admin-only (`require_auth` + admin check).
+    /// - Paused state forces reads to return `NotInitialized` to simulate outage.
     pub fn pause(e: Env, caller: Address) -> Result<(), OracleError> {
         caller.require_auth();
 
@@ -323,6 +414,9 @@ impl MockOracleContract {
     }
 
     /// Unpause the oracle
+    ///
+    /// Security:
+    /// - Admin-only (`require_auth` + admin check).
     pub fn unpause(e: Env, caller: Address) -> Result<(), OracleError> {
         caller.require_auth();
 
@@ -338,6 +432,9 @@ impl MockOracleContract {
     }
 
     /// Add an authorized price feeder
+    ///
+    /// Security:
+    /// - Admin-only (`require_auth` + admin check).
     pub fn add_feeder(e: Env, caller: Address, feeder: Address) -> Result<(), OracleError> {
         caller.require_auth();
 
@@ -356,6 +453,9 @@ impl MockOracleContract {
     }
 
     /// Remove an authorized price feeder
+    ///
+    /// Security:
+    /// - Admin-only (`require_auth` + admin check).
     pub fn remove_feeder(e: Env, caller: Address, feeder: Address) -> Result<(), OracleError> {
         caller.require_auth();
 
@@ -374,6 +474,9 @@ impl MockOracleContract {
     }
 
     /// Update staleness threshold
+    ///
+    /// Security:
+    /// - Admin-only (`require_auth` + admin check).
     pub fn set_staleness_threshold(
         e: Env,
         caller: Address,
@@ -438,10 +541,12 @@ impl MockOracleContract {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
+    const CI_FIXED_TIMESTAMP: u64 = 1_704_067_200; // Jan 1, 2024 UTC
 
     #[test]
     fn test_initialize() {
@@ -458,7 +563,7 @@ mod tests {
     #[test]
     fn test_set_and_get_price() {
         let e = Env::default();
-        e.mock_all_auths();
+        e.mock_all_auths_allowing_non_root_auth();
         let contract_id = e.register_contract(None, MockOracleContract);
         let admin = Address::generate(&e);
         let asset = Address::generate(&e);
@@ -491,6 +596,262 @@ mod tests {
             MockOracleContract::initialize(e.clone(), admin.clone(), 3600).unwrap();
             let result = MockOracleContract::get_price(e.clone(), asset.clone());
             assert_eq!(result, Err(OracleError::PriceNotFound));
+        });
+    }
+
+    #[test]
+    fn test_local_usage_admin_and_feeder_flow() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+        let contract_id = e.register_contract(None, MockOracleContract);
+        let admin = Address::generate(&e);
+        let feeder = Address::generate(&e);
+        let asset = Address::generate(&e);
+
+        e.as_contract(&contract_id, || {
+            MockOracleContract::initialize(e.clone(), admin.clone(), 3600).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            // Local test pattern: admin is feeder by default, then explicit feeder onboarding.
+            assert!(MockOracleContract::is_feeder(e.clone(), admin.clone()));
+            assert!(!MockOracleContract::is_feeder(e.clone(), feeder.clone()));
+        });
+
+        e.as_contract(&contract_id, || {
+            MockOracleContract::add_feeder(e.clone(), admin.clone(), feeder.clone()).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert!(MockOracleContract::is_feeder(e.clone(), feeder.clone()));
+        });
+
+        e.as_contract(&contract_id, || {
+            // Feeder writes deterministic price data for test assertions.
+            MockOracleContract::set_price(
+                e.clone(),
+                feeder.clone(),
+                asset.clone(),
+                150_000_000,
+                8,
+                500,
+            )
+            .unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert!(MockOracleContract::has_price(e.clone(), asset.clone()));
+            assert_eq!(
+                MockOracleContract::get_price(e.clone(), asset.clone()).unwrap(),
+                150_000_000
+            );
+
+            let data = MockOracleContract::get_price_data(e.clone(), asset.clone()).unwrap();
+            assert_eq!(data.price, 150_000_000);
+            assert_eq!(data.decimals, 8);
+            assert_eq!(data.confidence, 500);
+        });
+
+        e.as_contract(&contract_id, || {
+            // Removing feeder should immediately revoke write privileges.
+            MockOracleContract::remove_feeder(e.clone(), admin.clone(), feeder.clone()).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert!(!MockOracleContract::is_feeder(e.clone(), feeder.clone()));
+            assert_eq!(
+                MockOracleContract::set_price(
+                    e.clone(),
+                    feeder.clone(),
+                    asset,
+                    151_000_000,
+                    8,
+                    500,
+                ),
+                Err(OracleError::Unauthorized)
+            );
+        });
+    }
+
+    #[test]
+    fn test_ci_usage_deterministic_staleness_boundaries() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+        let contract_id = e.register_contract(None, MockOracleContract);
+        let admin = Address::generate(&e);
+        let asset = Address::generate(&e);
+
+        e.ledger().with_mut(|ledger| {
+            ledger.timestamp = CI_FIXED_TIMESTAMP;
+        });
+
+        e.as_contract(&contract_id, || {
+            MockOracleContract::initialize(e.clone(), admin.clone(), 60).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            // CI pattern: force stale data using explicit old timestamp.
+            MockOracleContract::set_price_with_timestamp(
+                e.clone(),
+                admin.clone(),
+                asset.clone(),
+                90_000_000,
+                CI_FIXED_TIMESTAMP - 61,
+                8,
+                1000,
+            )
+            .unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::get_price(e.clone(), asset.clone()),
+                Err(OracleError::StalePrice)
+            );
+        });
+
+        e.as_contract(&contract_id, || {
+            // Exactly-at-threshold boundary should be accepted (strictly greater is stale).
+            MockOracleContract::set_price_with_timestamp(
+                e.clone(),
+                admin.clone(),
+                asset.clone(),
+                91_000_000,
+                CI_FIXED_TIMESTAMP - 60,
+                8,
+                1000,
+            )
+            .unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::get_price(e.clone(), asset.clone()).unwrap(),
+                91_000_000
+            );
+            assert_eq!(
+                MockOracleContract::get_price_no_older_than(e.clone(), asset.clone(), 59),
+                Err(OracleError::StalePrice)
+            );
+            assert_eq!(
+                MockOracleContract::get_price_no_older_than(e.clone(), asset, 60).unwrap(),
+                91_000_000
+            );
+        });
+    }
+
+    #[test]
+    fn test_ci_usage_error_simulation_pause_and_missing_price() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+        let contract_id = e.register_contract(None, MockOracleContract);
+        let admin = Address::generate(&e);
+        let asset = Address::generate(&e);
+
+        e.as_contract(&contract_id, || {
+            MockOracleContract::initialize(e.clone(), admin.clone(), 3600).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            MockOracleContract::set_price(
+                e.clone(),
+                admin.clone(),
+                asset.clone(),
+                100_000_000,
+                8,
+                1000,
+            )
+            .unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            // Simulate upstream outage in CI suites.
+            MockOracleContract::pause(e.clone(), admin.clone()).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::get_price(e.clone(), asset.clone()),
+                Err(OracleError::NotInitialized)
+            );
+            assert_eq!(
+                MockOracleContract::get_price_data(e.clone(), asset.clone()),
+                Err(OracleError::NotInitialized)
+            );
+        });
+
+        e.as_contract(&contract_id, || {
+            MockOracleContract::unpause(e.clone(), admin.clone()).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::get_price(e.clone(), asset.clone()).unwrap(),
+                100_000_000
+            );
+        });
+
+        e.as_contract(&contract_id, || {
+            // Simulate missing feed after removal.
+            MockOracleContract::remove_price(e.clone(), admin.clone(), asset.clone()).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert!(!MockOracleContract::has_price(e.clone(), asset.clone()));
+            assert_eq!(
+                MockOracleContract::get_price(e.clone(), asset),
+                Err(OracleError::PriceNotFound)
+            );
+        });
+    }
+
+    #[test]
+    fn test_unauthorized_admin_paths_rejected() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+        let contract_id = e.register_contract(None, MockOracleContract);
+        let admin = Address::generate(&e);
+        let attacker = Address::generate(&e);
+        let feeder = Address::generate(&e);
+        let asset = Address::generate(&e);
+
+        e.as_contract(&contract_id, || {
+            MockOracleContract::initialize(e.clone(), admin.clone(), 3600).unwrap();
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::add_feeder(e.clone(), attacker.clone(), feeder.clone()),
+                Err(OracleError::Unauthorized)
+            );
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::set_staleness_threshold(e.clone(), attacker.clone(), 30),
+                Err(OracleError::Unauthorized)
+            );
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::remove_price(e.clone(), attacker.clone(), asset.clone()),
+                Err(OracleError::Unauthorized)
+            );
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::pause(e.clone(), attacker.clone()),
+                Err(OracleError::Unauthorized)
+            );
+        });
+
+        e.as_contract(&contract_id, || {
+            assert_eq!(
+                MockOracleContract::unpause(e.clone(), attacker),
+                Err(OracleError::Unauthorized)
+            );
         });
     }
 }
