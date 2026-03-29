@@ -191,4 +191,70 @@ mod integration_tests {
         let data: (i128, u64) = last_event.2.into_val(&env);
         assert_eq!(data, (750i128, 77_777u64));
     }
+
+    #[test]
+    fn test_time_and_storage_ledger_zero() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.ledger().with_mut(|ledger| {
+            ledger.timestamp = 0;
+        });
+
+        env.as_contract(&contract_id, || {
+            Storage::set_initialized(&env);
+            let expiration_key = symbol_short!("EXP0");
+            
+            // Calculate an expiration and store it
+            let exp = TimeUtils::calculate_expiration(&env, 1);
+            Storage::set(&env, &expiration_key, &exp);
+            
+            // Validate it
+            assert!(TimeUtils::is_valid(&env, exp));
+            assert_eq!(TimeUtils::time_remaining(&env, exp), 86_400);
+
+            // Using require_not_expired shouldn't panic
+            TimeUtils::require_not_expired(&env, exp);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "expired")]
+    fn test_time_require_not_expired_exact_boundary() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.ledger().with_mut(|ledger| {
+            ledger.timestamp = 100_000;
+        });
+
+        env.as_contract(&contract_id, || {
+            let exp = 100_000; // exactly at ledger timestamp
+            // Should panic because expiration is inclusive
+            TimeUtils::require_not_expired(&env, exp);
+        });
+    }
+
+    #[test]
+    fn test_require_valid_duration_integration() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            TimeUtils::require_valid_duration(365); // valid
+            TimeUtils::require_valid_duration(0);   // valid
+            TimeUtils::require_valid_duration(crate::time::MAX_DURATION_DAYS); // valid
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "duration_exceeds_max")]
+    fn test_require_valid_duration_integration_panic() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            TimeUtils::require_valid_duration(crate::time::MAX_DURATION_DAYS + 1);
+        });
+    }
 }
