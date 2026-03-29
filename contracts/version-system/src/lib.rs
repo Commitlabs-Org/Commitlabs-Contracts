@@ -391,7 +391,7 @@ impl ContractVersioning {
         }
 
         // Use default compatibility rules
-        Self::default_compatibility_check(v1, v2)
+        Self::default_compatibility_check(&env, v1, v2)
     }
 
     /// Check if client is compatible with current version
@@ -471,12 +471,12 @@ impl ContractVersioning {
         cmp
     }
 
-    fn default_compatibility_check(v1: Version, v2: Version) -> (bool, String) {
+    fn default_compatibility_check(env: &Env, v1: Version, v2: Version) -> (bool, String) {
         // Same major version = compatible (for version > 0)
         if v1.major == v2.major && v1.major > 0 {
             return (
                 true,
-                String::from_str(&Env::default(), "Same major version - backward compatible"),
+                String::from_str(env, "Same major version - backward compatible"),
             );
         }
 
@@ -484,10 +484,7 @@ impl ContractVersioning {
         if v1.major != v2.major {
             return (
                 false,
-                String::from_str(
-                    &Env::default(),
-                    "Different major versions - breaking changes",
-                ),
+                String::from_str(env, "Different major versions - breaking changes"),
             );
         }
 
@@ -496,20 +493,17 @@ impl ContractVersioning {
             if v1.minor == v2.minor {
                 return (
                     true,
-                    String::from_str(&Env::default(), "Version 0.x.x - same minor version"),
+                    String::from_str(env, "Version 0.x.x - same minor version"),
                 );
             } else {
                 return (
                     false,
-                    String::from_str(&Env::default(), "Version 0.x.x - different minor versions"),
+                    String::from_str(env, "Version 0.x.x - different minor versions"),
                 );
             }
         }
 
-        (
-            false,
-            String::from_str(&Env::default(), "Unknown compatibility"),
-        )
+        (false, String::from_str(env, "Unknown compatibility"))
     }
 }
 
@@ -661,5 +655,615 @@ mod test {
         assert!(client.meets_minimum_version(&2, &0, &0));
         assert!(client.meets_minimum_version(&1, &0, &0));
         assert!(!client.meets_minimum_version(&3, &0, &0));
+    }
+
+    #[test]
+    fn test_get_version_metadata() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let description = String::from_str(&env, "Initial release");
+
+        client.initialize(&deployer, &1, &0, &0, &description);
+
+        let version = Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        let metadata = client.get_version_metadata(&version);
+
+        assert_eq!(metadata.version.major, 1);
+        assert_eq!(metadata.version.minor, 0);
+        assert_eq!(metadata.version.patch, 0);
+        assert_eq!(metadata.description, description);
+        assert_eq!(metadata.deployed_by, deployer);
+        assert_eq!(metadata.deprecated, false);
+    }
+
+    #[test]
+    fn test_get_version_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &1, &0, &0, &String::from_str(&env, "V1"));
+        client.update_version(&deployer, &1, &1, &0, &String::from_str(&env, "V1.1"));
+        client.update_version(&deployer, &2, &0, &0, &String::from_str(&env, "V2"));
+
+        let history = client.get_version_history();
+        assert_eq!(history.len(), 3);
+
+        assert_eq!(history.get(0).unwrap().major, 1);
+        assert_eq!(history.get(0).unwrap().minor, 0);
+        assert_eq!(history.get(1).unwrap().major, 1);
+        assert_eq!(history.get(1).unwrap().minor, 1);
+        assert_eq!(history.get(2).unwrap().major, 2);
+        assert_eq!(history.get(2).unwrap().minor, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Already initialized")]
+    fn test_double_initialization() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &1, &0, &0, &String::from_str(&env, "V1"));
+        client.initialize(&deployer, &1, &0, &0, &String::from_str(&env, "V1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract not initialized")]
+    fn test_get_current_version_not_initialized() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        client.get_current_version();
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract not initialized")]
+    fn test_get_minimum_version_not_initialized() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        client.get_minimum_version();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid version increment")]
+    fn test_invalid_version_increment_major_decrease() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &2, &0, &0, &String::from_str(&env, "V2"));
+        client.update_version(&deployer, &1, &0, &0, &String::from_str(&env, "V1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid version increment")]
+    fn test_invalid_version_increment_minor_decrease() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &1, &5, &0, &String::from_str(&env, "V1.5"));
+        client.update_version(&deployer, &1, &3, &0, &String::from_str(&env, "V1.3"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid version increment")]
+    fn test_invalid_version_increment_same_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &1, &0, &0, &String::from_str(&env, "V1"));
+        client.update_version(&deployer, &1, &0, &0, &String::from_str(&env, "V1"));
+    }
+
+    #[test]
+    fn test_valid_patch_increment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &1, &0, &0, &String::from_str(&env, "V1.0.0"));
+        client.update_version(&deployer, &1, &0, &1, &String::from_str(&env, "V1.0.1"));
+
+        let version = client.get_current_version();
+        assert_eq!(version.major, 1);
+        assert_eq!(version.minor, 0);
+        assert_eq!(version.patch, 1);
+    }
+
+    #[test]
+    fn test_valid_minor_increment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &1, &0, &5, &String::from_str(&env, "V1.0.5"));
+        client.update_version(&deployer, &1, &1, &0, &String::from_str(&env, "V1.1.0"));
+
+        let version = client.get_current_version();
+        assert_eq!(version.major, 1);
+        assert_eq!(version.minor, 1);
+        assert_eq!(version.patch, 0);
+    }
+
+    #[test]
+    fn test_valid_major_increment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+
+        client.initialize(&deployer, &1, &5, &3, &String::from_str(&env, "V1.5.3"));
+        client.update_version(&deployer, &2, &0, &0, &String::from_str(&env, "V2.0.0"));
+
+        let version = client.get_current_version();
+        assert_eq!(version.major, 2);
+        assert_eq!(version.minor, 0);
+        assert_eq!(version.patch, 0);
+    }
+
+    #[test]
+    fn test_update_minimum_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+        client.update_version(&admin, &2, &0, &0, &String::from_str(&env, "V2"));
+
+        client.update_minimum_version(&admin, &1, &5, &0);
+
+        let min_version = client.get_minimum_version();
+        assert_eq!(min_version.major, 1);
+        assert_eq!(min_version.minor, 5);
+        assert_eq!(min_version.patch, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Minimum version cannot exceed current version")]
+    fn test_update_minimum_version_exceeds_current() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+        client.update_minimum_version(&admin, &2, &0, &0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Already deprecated")]
+    fn test_double_deprecation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let version = Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        client.deprecate_version(&admin, &version, &String::from_str(&env, "Outdated"));
+        client.deprecate_version(&admin, &version, &String::from_str(&env, "Still outdated"));
+    }
+
+    #[test]
+    fn test_is_version_deprecated_nonexistent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let nonexistent = Version {
+            major: 5,
+            minor: 0,
+            patch: 0,
+        };
+        assert_eq!(client.is_version_deprecated(&nonexistent), false);
+    }
+
+    #[test]
+    #[should_panic(expected = "Version not found")]
+    fn test_get_version_metadata_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let nonexistent = Version {
+            major: 5,
+            minor: 0,
+            patch: 0,
+        };
+        client.get_version_metadata(&nonexistent);
+    }
+
+    #[test]
+    fn test_check_compatibility_same_major_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &2, &0, &0, &String::from_str(&env, "V2"));
+
+        let v1 = Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        let v2 = Version {
+            major: 1,
+            minor: 5,
+            patch: 3,
+        };
+
+        let (compatible, _) = client.check_compatibility(&v1, &v2);
+        assert!(compatible);
+    }
+
+    #[test]
+    fn test_check_compatibility_different_major_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &2, &0, &0, &String::from_str(&env, "V2"));
+
+        let v1 = Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        let v2 = Version {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+
+        let (compatible, _) = client.check_compatibility(&v1, &v2);
+        assert!(!compatible);
+    }
+
+    #[test]
+    fn test_check_compatibility_version_zero_same_minor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let v1 = Version {
+            major: 0,
+            minor: 1,
+            patch: 0,
+        };
+        let v2 = Version {
+            major: 0,
+            minor: 1,
+            patch: 5,
+        };
+
+        let (compatible, _) = client.check_compatibility(&v1, &v2);
+        assert!(compatible);
+    }
+
+    #[test]
+    fn test_check_compatibility_version_zero_different_minor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let v1 = Version {
+            major: 0,
+            minor: 1,
+            patch: 0,
+        };
+        let v2 = Version {
+            major: 0,
+            minor: 2,
+            patch: 0,
+        };
+
+        let (compatible, _) = client.check_compatibility(&v1, &v2);
+        assert!(!compatible);
+    }
+
+    #[test]
+    fn test_set_compatibility_explicit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let v1 = Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        let v2 = Version {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+
+        client.set_compatibility(
+            &admin,
+            &v1,
+            &v2,
+            &true,
+            &String::from_str(&env, "Migration tested"),
+        );
+
+        let (compatible, notes) = client.check_compatibility(&v1, &v2);
+        assert!(compatible);
+        assert_eq!(notes, String::from_str(&env, "Migration tested"));
+    }
+
+    #[test]
+    fn test_set_compatibility_bidirectional() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let v1 = Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        let v2 = Version {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+
+        client.set_compatibility(
+            &admin,
+            &v1,
+            &v2,
+            &false,
+            &String::from_str(&env, "Breaking changes"),
+        );
+
+        let (compatible1, _) = client.check_compatibility(&v1, &v2);
+        let (compatible2, _) = client.check_compatibility(&v2, &v1);
+        assert!(!compatible1);
+        assert!(!compatible2);
+    }
+
+    #[test]
+    fn test_is_client_compatible_true() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &5, &0, &String::from_str(&env, "V1.5"));
+
+        let client_version = Version {
+            major: 1,
+            minor: 3,
+            patch: 0,
+        };
+
+        assert!(client.is_client_compatible(&client_version));
+    }
+
+    #[test]
+    fn test_is_client_compatible_false() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let client_version = Version {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+
+        assert!(!client.is_client_compatible(&client_version));
+    }
+
+    #[test]
+    fn test_version_comparison_minor_difference() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let v1 = Version {
+            major: 1,
+            minor: 2,
+            patch: 0,
+        };
+        let v2 = Version {
+            major: 1,
+            minor: 5,
+            patch: 0,
+        };
+
+        assert_eq!(client.compare_versions(&v1, &v2), -1);
+        assert_eq!(client.compare_versions(&v2, &v1), 1);
+    }
+
+    #[test]
+    fn test_version_comparison_patch_difference() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let v1 = Version {
+            major: 1,
+            minor: 0,
+            patch: 1,
+        };
+        let v2 = Version {
+            major: 1,
+            minor: 0,
+            patch: 3,
+        };
+
+        assert_eq!(client.compare_versions(&v1, &v2), -1);
+        assert_eq!(client.compare_versions(&v2, &v1), 1);
+    }
+
+    #[test]
+    fn test_version_support_after_minimum_update() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+        client.update_version(&admin, &2, &0, &0, &String::from_str(&env, "V2"));
+        client.update_minimum_version(&admin, &1, &5, &0);
+
+        assert!(!client.is_version_supported(&Version {
+            major: 1,
+            minor: 0,
+            patch: 0
+        }));
+        assert!(client.is_version_supported(&Version {
+            major: 1,
+            minor: 5,
+            patch: 0
+        }));
+        assert!(client.is_version_supported(&Version {
+            major: 2,
+            minor: 0,
+            patch: 0
+        }));
+    }
+
+    #[test]
+    fn test_migration_events() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+
+        let from_version = Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        let to_version = Version {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+
+        client.start_migration(&admin, &from_version, &to_version);
+        client.complete_migration(&admin, &from_version, &to_version, &true);
+    }
+
+    #[test]
+    fn test_version_count_increments() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ContractVersioning);
+        let client = ContractVersioningClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &1, &0, &0, &String::from_str(&env, "V1"));
+        assert_eq!(client.get_version_count(), 1);
+
+        client.update_version(&admin, &1, &1, &0, &String::from_str(&env, "V1.1"));
+        assert_eq!(client.get_version_count(), 2);
+
+        client.update_version(&admin, &1, &2, &0, &String::from_str(&env, "V1.2"));
+        assert_eq!(client.get_version_count(), 3);
+
+        client.update_version(&admin, &2, &0, &0, &String::from_str(&env, "V2"));
+        assert_eq!(client.get_version_count(), 4);
     }
 }
