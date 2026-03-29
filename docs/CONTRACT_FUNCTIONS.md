@@ -365,3 +365,131 @@ cargo test -p commitment_transformation
 | storage        | set_initialized, get_admin, get_or_default                             | Instance storage helpers.                 |
 | time           | now, calculate_expiration, is_expired                                  | Ledger time utilities.                    |
 | validation     | require_positive, require_valid_percent, require_valid_commitment_type | Common validation guards.                 |
+
+## version-system
+
+Tracks semantic versions on-chain, enforces monotonic upgrades, manages compatibility between versions,
+and provides integrators with a stable query surface for version negotiation.
+
+| Function | Summary | Access control | Notes |
+| --- | --- | --- | --- |
+| initialize(deployer, major, minor, patch, description) | Set the initial version; both `current` and `minimum` start at this value. | `deployer.require_auth()`. | Panics `"Already initialized"` on repeat. |
+| update_version(updater, major, minor, patch, description) | Bump to a new version (must be strictly greater than current). | `updater.require_auth()`. | Panics `"Invalid version increment"` if new ≤ current. |
+| get_current_version() -> Version | Returns the current deployed version. | View. | Panics `"Contract not initialized"` if uninitialized. |
+| get_minimum_version() -> Version | Returns the minimum version still considered supported. | View. | Panics `"Contract not initialized"` if uninitialized. |
+| get_version_count() -> u32 | Returns total number of registered versions. | View. | Includes the initial version. |
+| get_version_metadata(version) -> VersionMetadata | Returns metadata for a specific version. | View. | Panics `"Version not found"` if version was never registered. |
+| get_version_history() -> Vec\<Version\> | Returns the full ordered list of versions since initialization. | View. | Ordered oldest → newest. |
+| compare_versions(v1, v2) -> i32 | Compares two versions: `-1` if v1 < v2, `0` if equal, `1` if v1 > v2. | Pure (no state). | Comparison is major → minor → patch. |
+| is_version_supported(version) -> bool | Returns `true` if version falls within `[minimum, current]` (inclusive). | View. | Deprecated versions are still considered supported. |
+| meets_minimum_version(major, minor, patch) -> bool | Returns `true` if current ≥ required version. | View. | Useful for feature-gating by integrators. |
+| update_minimum_version(updater, major, minor, patch) | Raises the minimum supported version floor. | `updater.require_auth()`. | Panics if new minimum > current. |
+| deprecate_version(admin, version, reason) | Marks a version as deprecated (one-way, irreversible). | `admin.require_auth()`. | Panics `"Version not found"` or `"Already deprecated"`. |
+| is_version_deprecated(version) -> bool | Returns `true` if the version has been deprecated. | View. | Returns `false` for unregistered versions (no panic). |
+| set_compatibility(admin, v1, v2, is_compatible, notes) | Records explicit compatibility between two versions (bidirectional). | `admin.require_auth()`. | Overrides the default heuristic. |
+| check_compatibility(v1, v2) -> (bool, String) | Returns compatibility status and notes for two versions. | View. | Checks explicit records first; falls back to default heuristic. |
+| is_client_compatible(client_version) -> bool | Returns `true` if client_version is compatible with current. | View. | Delegates to `check_compatibility`. |
+| start_migration(initiator, from_version, to_version) | Emits a migration-start event for off-chain tooling. | `initiator.require_auth()`. | No state mutation — coordination signal only. |
+| complete_migration(executor, from_version, to_version, success) | Emits a migration-complete event. | `executor.require_auth()`. | `success = false` signals a failed migration. |
+
+### version-system — trust boundaries
+
+| Function | Auth required | Storage keys written | Notes |
+| --- | --- | --- | --- |
+| `initialize` | `deployer.require_auth()` | `CurrentVersion`, `MinimumVersion`, `VersionMetadata(v)`, `VersionHistory`, `VersionCount`, `Initialized` | Single-use; guard is the `Initialized` flag. |
+| `update_version` | `updater.require_auth()` | `CurrentVersion`, `VersionMetadata(v)`, `VersionHistory`, `VersionCount` | Monotonic guard enforced by `is_valid_increment`. |
+| `update_minimum_version` | `updater.require_auth()` | `MinimumVersion` | Cannot exceed `CurrentVersion`. |
+| `deprecate_version` | `admin.require_auth()` | `VersionMetadata(v)` | One-way flag; no reversal path. |
+| `set_compatibility` | `admin.require_auth()` | `Compatibility(v1,v2)`, `Compatibility(v2,v1)` | Bidirectional write; overrides default heuristic. |
+| `start_migration` | `initiator.require_auth()` | — (event only) | No state mutation; coordination signal. |
+| `complete_migration` | `executor.require_auth()` | — (event only) | No state mutation; `success=false` is a valid signal. |
+| All `get_*`, `compare_*`, `is_*`, `meets_*`, `check_*` | None | — (read only) | Permissionless; no cross-contract calls. |
+
+**Security notes:**
+- No cross-contract calls are made by any function in this contract.
+- No arithmetic on financial values — all comparisons are component-wise on `u32` fields; no overflow risk.
+- The `Initialized` flag in instance storage is the sole reentrancy/double-init guard.
+- `deprecate_version` is irreversible by design; there is no `undeprecate` path.
+- `set_compatibility` overwrites any previous explicit record for the same pair without warning.
+
+### version-system — version semantics invariants
+
+- **Monotonic upgrades:** `update_version` rejects any new version that is not strictly greater than the current one. Regressions and same-version updates both panic with `"Invalid version increment"`.
+- **Supported range:** `is_version_supported` returns `true` for versions in `[minimum, current]` (inclusive). Versions outside this range return `false`.
+- **Deprecated ≠ unsupported:** `deprecate_version` is an advisory signal for integrators. It does not affect `is_version_supported`. Deprecation is irreversible.
+- **Minimum floor:** `update_minimum_version` can only raise the floor, never exceed `current`. Integrators should treat versions below `minimum` as end-of-life.
+
+### version-system — default compatibility rules
+
+When no explicit record exists for a pair, `check_compatibility` applies:
+
+| Condition | Result |
+| --- | --- |
+| `v1.major == v2.major` and `major ≥ 1` | Compatible — same major, backward compatible |
+| `v1.major != v2.major` | Incompatible — breaking changes assumed |
+| `v1.major == 0` and `v2.major == 0` and `v1.minor == v2.minor` | Compatible — pre-release same minor |
+| `v1.major == 0` and `v2.major == 0` and `v1.minor != v2.minor` | Incompatible — pre-release different minor |
+
+Use `set_compatibility` to override these defaults for specific version pairs.
+
+### version-system — panic messages
+
+| Message | Trigger |
+| --- | --- |
+| `"Already initialized"` | `initialize` called more than once |
+| `"Contract not initialized"` | Any function called before `initialize` |
+| `"Invalid version increment"` | `update_version` with new ≤ current |
+| `"Version not found"` | `get_version_metadata` or `deprecate_version` with unregistered version |
+| `"Already deprecated"` | `deprecate_version` called twice on the same version |
+| `"Minimum version cannot exceed current version"` | `update_minimum_version` with new_min > current |
+
+### version-system — test coverage (issue #289)
+
+Tests live in `contracts/version-system/src/lib.rs` (module `test`).
+
+**Error paths:**
+
+| Test | Scenario |
+| --- | --- |
+| `test_initialize_twice_panics` | `initialize` called twice |
+| `test_update_version_regression_panics` | 1.0.0 → 0.9.0 regression |
+| `test_update_version_same_panics` | 1.0.0 → 1.0.0 same version |
+| `test_update_version_not_initialized_panics` | `update_version` before `initialize` |
+| `test_get_current_version_not_initialized_panics` | `get_current_version` before `initialize` |
+| `test_get_version_metadata_not_found_panics` | Metadata for unregistered version |
+| `test_deprecate_version_not_found_panics` | Deprecate unregistered version |
+| `test_deprecate_version_twice_panics` | Deprecate same version twice |
+| `test_update_minimum_version_exceeds_current_panics` | Minimum > current |
+
+**Getter success paths:**
+
+| Test | Scenario |
+| --- | --- |
+| `test_get_minimum_version` | Minimum equals initial version |
+| `test_get_version_metadata_success` | Metadata fields after initialize |
+| `test_get_version_history` | History ordered after 3 versions |
+| `test_update_minimum_version_success` | Floor raised below current |
+| `test_set_and_check_compatibility_explicit` | Explicit record + bidirectional check |
+| `test_check_compatibility_default_same_major` | Default heuristic same major ≥ 1 |
+| `test_check_compatibility_default_diff_major` | Default heuristic different major |
+| `test_check_compatibility_default_v0` | Default heuristic major = 0 |
+| `test_is_client_compatible` | Client at same/different major |
+| `test_start_and_complete_migration` | Event-only functions don't panic |
+
+**Version semantics edge cases:**
+
+| Test | Scenario |
+| --- | --- |
+| `test_compare_versions_minor_diff` | Minor component ordering |
+| `test_compare_versions_patch_diff` | Patch component ordering |
+| `test_update_version_patch_increment` | Patch bump valid |
+| `test_update_version_major_increment` | Major bump valid |
+| `test_is_version_supported_boundary` | Exact boundary of `[min, current]` |
+| `test_deprecation_does_not_affect_support` | Deprecated version still in supported range |
+| `test_metadata_deprecated_flag` | Metadata fields intact after deprecation |
+
+Run:
+
+```bash
+cargo test -p version-system
+```
