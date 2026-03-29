@@ -61,15 +61,43 @@ fn fail(e: &Env, err: TransformationError, context: &str) -> ! {
 // Data types
 // ============================================================================
 
+/// Tranche status for lifecycle management
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrancheStatus {
+    Active,
+    Closed,
+}
+
+/// Risk tranche representing a slice of a transformed commitment.
+/// 
+/// # Fields
+/// * `tranche_id` - Unique identifier for this tranche
+/// * `transformation_id` - Reference to the parent tranche set
+/// * `commitment_id` - Reference to the parent commitment
+/// * `risk_level` - Risk category: "senior", "mezzanine", "equity"
+/// * `amount` - Current allocation amount in the tranche
+/// * `share_bps` - Share in basis points of the parent tranche set
+/// * `created_at` - Ledger timestamp of creation
+/// * `status` - Current lifecycle status (Active/Closed)
+/// * `updated_at` - Ledger timestamp of last update
+/// 
+/// # Security Notes
+/// - Amount modifications require authorization (owner or authorized transformer)
+/// - Closed tranches cannot be modified
+/// - Arithmetic uses checked operations to prevent overflow/underflow
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiskTranche {
     pub tranche_id: String,
+    pub transformation_id: String,
     pub commitment_id: String,
     pub risk_level: String, // "senior", "mezzanine", "equity"
     pub amount: i128,
     pub share_bps: u32,
     pub created_at: u64,
+    pub status: TrancheStatus,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -124,6 +152,8 @@ pub enum DataKey {
     TransformationFeeBps,
     ReentrancyGuard,
     TrancheSet(String),
+    /// Individual tranche storage key for direct access
+    Tranche(String),
     CollateralizedAsset(String),
     SecondaryInstrument(String),
     ProtocolGuarantee(String),
@@ -274,7 +304,7 @@ impl CommitmentTransformationContract {
         set_reentrancy_guard(&e, true);
 
         Validation::require_positive(total_value);
-        if tranche_share_bps.len() != risk_levels.len() || tranche_share_bps.len() == 0 {
+        if tranche_share_bps.len() != risk_levels.len() || tranche_share_bps.is_empty() {
             set_reentrancy_guard(&e, false);
             fail(
                 &e,
@@ -324,18 +354,27 @@ impl CommitmentTransformationContract {
 
         let mut tranches = Vec::new(&e);
         let net_value = total_value - fee_amount;
+        let current_timestamp = e.ledger().timestamp();
         for (i, (bps, risk)) in tranche_share_bps.iter().zip(risk_levels.iter()).enumerate() {
             let bps_u32: u32 = bps;
             let amount = (net_value * bps_u32 as i128) / 10000i128;
             let tranche_id = format_tranformation_id(&e, "t", counter * 10 + i as u64);
-            tranches.push_back(RiskTranche {
+            let tranche = RiskTranche {
                 tranche_id: tranche_id.clone(),
+                transformation_id: transformation_id.clone(),
                 commitment_id: commitment_id.clone(),
                 risk_level: risk.clone(),
                 amount,
                 share_bps: bps_u32,
-                created_at: e.ledger().timestamp(),
-            });
+                created_at: current_timestamp,
+                status: TrancheStatus::Active,
+                updated_at: current_timestamp,
+            };
+            // Store individual tranche for direct access and updates
+            e.storage()
+                .instance()
+                .set(&DataKey::Tranche(tranche_id.clone()), &tranche);
+            tranches.push_back(tranche);
         }
 
         let set = TrancheSet {
@@ -563,6 +602,306 @@ impl CommitmentTransformationContract {
                     "get_tranche_set",
                 )
             })
+    }
+
+    /// Get individual tranche by ID.
+    ///
+    /// # Arguments
+    /// * `e` - The environment
+    /// * `tranche_id` - The unique tranche identifier
+    ///
+    /// # Returns
+    /// The RiskTranche struct with current state
+    ///
+    /// # Errors
+    /// Returns TransformationNotFound if tranche does not exist
+    ///
+    /// # Security Notes
+    /// This is a read-only function - no authorization required
+    pub fn get_tranche(e: Env, tranche_id: String) -> RiskTranche {
+        e.storage()
+            .instance()
+            .get::<_, RiskTranche>(&DataKey::Tranche(tranche_id.clone()))
+            .unwrap_or_else(|| {
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "get_tranche",
+                )
+            })
+    }
+
+    /// Update tranche metadata (risk_level).
+    ///
+    /// # Arguments
+    /// * `caller` - The address requesting the update (must be owner or authorized)
+    /// * `tranche_id` - The unique tranche identifier
+    /// * `risk_level` - New risk level: "senior", "mezzanine", or "equity"
+    ///
+    /// # Returns
+    /// The updated RiskTranche struct
+    ///
+    /// # Errors
+    /// - TransformationNotFound if tranche does not exist
+    /// - Unauthorized if caller is not owner or authorized transformer
+    /// - InvalidState if tranche is closed
+    ///
+    /// # Security Notes
+    /// - Requires authorization from tranche owner or authorized transformer
+    /// - Cannot update closed tranches
+    /// - Emits TrancheUpdated event for off-chain indexing
+    pub fn update_tranche(
+        e: Env,
+        caller: Address,
+        tranche_id: String,
+        risk_level: String,
+    ) -> RiskTranche {
+        require_authorized(&e, &caller);
+        require_no_reentrancy(&e);
+        set_reentrancy_guard(&e, true);
+
+        let mut tranche: RiskTranche = e
+            .storage()
+            .instance()
+            .get::<_, RiskTranche>(&DataKey::Tranche(tranche_id.clone()))
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "update_tranche",
+                )
+            });
+
+        // Cannot modify closed tranches
+        if tranche.status == TrancheStatus::Closed {
+            set_reentrancy_guard(&e, false);
+            fail(
+                &e,
+                TransformationError::InvalidState,
+                "update_tranche: tranche is closed",
+            );
+        }
+
+        // Verify caller is the owner (get from parent tranche set using transformation_id)
+        let tranche_set = e
+            .storage()
+            .instance()
+            .get::<_, TrancheSet>(&DataKey::TrancheSet(tranche.transformation_id.clone()))
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "update_tranche: parent set not found",
+                )
+            });
+        if tranche_set.owner != caller {
+            set_reentrancy_guard(&e, false);
+            fail(&e, TransformationError::Unauthorized, "update_tranche");
+        }
+
+        tranche.risk_level = risk_level.clone();
+        tranche.updated_at = e.ledger().timestamp();
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Tranche(tranche_id.clone()), &tranche);
+
+        set_reentrancy_guard(&e, false);
+        e.events().publish(
+            (symbol_short!("TrUpdated"), tranche_id.clone(), caller),
+            (risk_level, e.ledger().timestamp()),
+        );
+        tranche
+    }
+
+    /// Allocate additional amount to a tranche or withdraw from it.
+    ///
+    /// # Arguments
+    /// * `caller` - The address requesting the allocation (must be owner or authorized)
+    /// * `tranche_id` - The unique tranche identifier
+    /// * `amount` - Amount to add (positive) or remove (negative) from tranche
+    ///
+    /// # Returns
+    /// The updated RiskTranche struct with new amount
+    ///
+    /// # Errors
+    /// - TransformationNotFound if tranche does not exist
+    /// - Unauthorized if caller is not owner or authorized transformer
+    /// - InvalidState if tranche is closed
+    /// - InvalidAmount if resulting amount would be negative
+    ///
+    /// # Security Notes
+    /// - Requires authorization from tranche owner or authorized transformer
+    /// - Cannot modify closed tranches
+    /// - Uses checked arithmetic to prevent overflow/underflow
+    /// - Amount must not cause tranche amount to go negative
+    /// - Emits TrancheAllocated event for off-chain indexing
+    pub fn allocate_to_tranche(
+        e: Env,
+        caller: Address,
+        tranche_id: String,
+        amount: i128,
+    ) -> RiskTranche {
+        require_authorized(&e, &caller);
+        require_no_reentrancy(&e);
+        set_reentrancy_guard(&e, true);
+
+        let mut tranche: RiskTranche = e
+            .storage()
+            .instance()
+            .get::<_, RiskTranche>(&DataKey::Tranche(tranche_id.clone()))
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "allocate_to_tranche",
+                )
+            });
+
+        // Cannot modify closed tranches
+        if tranche.status == TrancheStatus::Closed {
+            set_reentrancy_guard(&e, false);
+            fail(
+                &e,
+                TransformationError::InvalidState,
+                "allocate_to_tranche: tranche is closed",
+            );
+        }
+
+        // Verify caller is the owner
+        let tranche_set = e
+            .storage()
+            .instance()
+            .get::<_, TrancheSet>(&DataKey::TrancheSet(tranche.transformation_id.clone()))
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "allocate_to_tranche: parent set not found",
+                )
+            });
+        if tranche_set.owner != caller {
+            set_reentrancy_guard(&e, false);
+            fail(&e, TransformationError::Unauthorized, "allocate_to_tranche");
+        }
+
+        // Checked arithmetic for allocation
+        let new_amount = tranche.amount.checked_add(amount).unwrap_or_else(|| {
+            set_reentrancy_guard(&e, false);
+            fail(
+                &e,
+                TransformationError::InvalidAmount,
+                "allocate_to_tranche: overflow",
+            )
+        });
+
+        // Ensure new amount is non-negative
+        if new_amount < 0 {
+            set_reentrancy_guard(&e, false);
+            fail(
+                &e,
+                TransformationError::InvalidAmount,
+                "allocate_to_tranche: result would be negative",
+            )
+        }
+
+        tranche.amount = new_amount;
+        tranche.updated_at = e.ledger().timestamp();
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Tranche(tranche_id.clone()), &tranche);
+
+        set_reentrancy_guard(&e, false);
+        e.events().publish(
+            (symbol_short!("TrAlloc"), tranche_id.clone(), caller),
+            (amount, new_amount, e.ledger().timestamp()),
+        );
+        tranche
+    }
+
+    /// Close a tranche, marking it as inactive.
+    ///
+    /// # Arguments
+    /// * `caller` - The address requesting the close (must be owner or authorized)
+    /// * `tranche_id` - The unique tranche identifier
+    ///
+    /// # Returns
+    /// The updated RiskTranche struct with Closed status
+    ///
+    /// # Errors
+    /// - TransformationNotFound if tranche does not exist
+    /// - Unauthorized if caller is not owner or authorized transformer
+    /// - InvalidState if tranche is already closed
+    ///
+    /// # Security Notes
+    /// - Requires authorization from tranche owner or authorized transformer
+    /// - Closed tranches cannot be modified (update/allocate will fail)
+    /// - This is a one-way state transition (cannot reopen)
+    /// - Emits TrancheClosed event for off-chain indexing
+    pub fn close_tranche(e: Env, caller: Address, tranche_id: String) -> RiskTranche {
+        require_authorized(&e, &caller);
+        require_no_reentrancy(&e);
+        set_reentrancy_guard(&e, true);
+
+        let mut tranche: RiskTranche = e
+            .storage()
+            .instance()
+            .get::<_, RiskTranche>(&DataKey::Tranche(tranche_id.clone()))
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "close_tranche",
+                )
+            });
+
+        // Cannot close already closed tranche
+        if tranche.status == TrancheStatus::Closed {
+            set_reentrancy_guard(&e, false);
+            fail(
+                &e,
+                TransformationError::InvalidState,
+                "close_tranche: already closed",
+            );
+        }
+
+        // Verify caller is the owner
+        let tranche_set = e
+            .storage()
+            .instance()
+            .get::<_, TrancheSet>(&DataKey::TrancheSet(tranche.transformation_id.clone()))
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(
+                    &e,
+                    TransformationError::TransformationNotFound,
+                    "close_tranche: parent set not found",
+                )
+            });
+        if tranche_set.owner != caller {
+            set_reentrancy_guard(&e, false);
+            fail(&e, TransformationError::Unauthorized, "close_tranche");
+        }
+
+        tranche.status = TrancheStatus::Closed;
+        tranche.updated_at = e.ledger().timestamp();
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Tranche(tranche_id.clone()), &tranche);
+
+        set_reentrancy_guard(&e, false);
+        e.events().publish(
+            (symbol_short!("TrClosed"), tranche_id.clone(), caller),
+            (e.ledger().timestamp(),),
+        );
+        tranche
     }
 
     /// Get collateralized asset by ID.

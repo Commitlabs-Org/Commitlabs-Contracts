@@ -45,7 +45,15 @@ fn setup_test() -> (
 
     client.initialize(&admin, &nft_contract);
 
-    (e, admin, nft_contract, user, token_address, token_client, client)
+    (
+        e,
+        admin,
+        nft_contract,
+        user,
+        token_address,
+        token_client,
+        client,
+    )
 }
 
 fn default_rules(e: &Env) -> CommitmentRules {
@@ -278,7 +286,10 @@ fn test_set_fee_recipient() {
 fn test_set_fee_recipient_zero_address() {
     let (e, admin, _, _, _, _, client) = setup_test();
 
-    let zero_str = String::from_str(&e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero_str = String::from_str(
+        &e,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
     let zero_addr = Address::from_string(&zero_str);
 
     client.set_fee_recipient(&admin, &zero_addr);

@@ -15,3 +15,4 @@ soroban-sdk = "21.0.0"
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+shared_utils = { path = "../shared_utils" }

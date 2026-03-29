@@ -335,7 +335,7 @@ impl AttestationEngineContract {
         Pausable::is_paused(&e)
     }
 
-/// Check if an address is a verifier (public version).
+    /// Check if an address is a verifier (public version).
     /// Check if an address is a verifier (public version)
     pub fn is_verifier(e: Env, address: Address) -> bool {
         Self::is_authorized_verifier(&e, &address)
