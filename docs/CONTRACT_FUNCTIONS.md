@@ -276,3 +276,80 @@ cargo test --package commitment_nft test_transfer
 | storage        | set_initialized, get_admin, get_or_default                             | Instance storage helpers.                 |
 | time           | now, calculate_expiration, is_expired                                  | Ledger time utilities.                    |
 | validation     | require_positive, require_valid_percent, require_valid_commitment_type | Common validation guards.                 |
+
+
+# Contract Functions — commitment_core
+
+## `update_value`
+
+### Summary
+Updates the persisted `current_value` of an active commitment and emits the
+appropriate event (`ValUpd` or `Violated`). The fix in issue #205 ensures the
+value write always reaches storage so that subsequent reads — including
+settlement, early-exit, and attestation queries — see the correct figure.
+
+### Previous behavior (misleading / broken)
+`current_value` was mutated in memory and `set_commitment` was called, but
+`net_amount` was referenced before its declaration in `create_commitment`,
+causing a compile error that masked the real issue. Additionally, `update_value`
+had **no auth check** — any account could manipulate the tracked value of any
+commitment.
+
+### New behavior
+1. `require_authorized_updater` is called first. The caller must be either the
+   admin or an address added to `AuthorizedUpdaters` via `add_updater`.
+2. `new_value` is validated as non-negative.
+3. `current_value` is unconditionally written to storage via `set_commitment`.
+4. Loss percent is recalculated; if it exceeds `max_loss_percent` the commitment
+   transitions to `"violated"` status and a `Violated` event is emitted.
+5. Otherwise a `ValUpd` event is emitted.
+6. `TotalValueLocked` is updated by the delta `(new_value - old_value)`.
+
+### Signature
+```rust
+pub fn update_value(e: Env, caller: Address, commitment_id: String, new_value: i128)
+```
+
+### Parameters
+| Parameter | Type | Description |
+|---|---|---|
+| `caller` | `Address` | Must be admin or in `AuthorizedUpdaters`. `require_auth` is called on this address. |
+| `commitment_id` | `String` | ID of the commitment to update. |
+| `new_value` | `i128` | New market value of the commitment. Must be ≥ 0. |
+
+### Events emitted
+| Topic | Data | Condition |
+|---|---|---|
+| `(ValUpd, commitment_id)` | `(new_value, timestamp)` | Loss within `max_loss_percent` |
+| `(Violated, commitment_id)` | `(loss_percent, max_loss_percent, timestamp)` | Loss exceeds `max_loss_percent` |
+
+### Trust boundaries
+- **Who can call**: admin (implicit) or any address in `AuthorizedUpdaters`
+  (explicit grant via `add_updater`).
+- **What storage keys mutate**: `DataKey::Commitment(commitment_id)`,
+  `DataKey::TotalValueLocked`.
+- **Cross-contract calls**: none. No reentrancy guard is required.
+- **Arithmetic**: `SafeMath::loss_percent` and the TVL delta. Both are bounded by
+  the `i128` range of `commitment.amount`, which was validated positive on creation.
+
+### Errors
+| Error | Condition |
+|---|---|
+| `NotAuthorizedUpdater` | Caller is neither admin nor in `AuthorizedUpdaters` |
+| `CommitmentNotFound` | `commitment_id` does not exist |
+| `NotActive` | Commitment status is not `"active"` |
+| Panic `"Invalid amount"` | `new_value < 0` |
+
+---
+
+## `add_updater` / `remove_updater`
+
+Admin-only functions to manage the `AuthorizedUpdaters` list that gates
+`update_value` access.
+
+```rust
+pub fn add_updater(e: Env, caller: Address, updater: Address)
+pub fn remove_updater(e: Env, caller: Address, updater: Address)
+```
+
+Both require `caller` to be the admin.
