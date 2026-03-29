@@ -1132,3 +1132,12 @@ mod benchmarks;
 
 #[cfg(test)]
 mod test_zero_address;
+
+/// Invariant tests that verify the correctness of every invariant exercised by
+/// [`benchmarks_optimized`]. These run under the normal `cargo test` profile
+/// (no `benchmark` feature required).
+#[cfg(test)]
+mod benchmark_invariant_tests;
+
+#[cfg(all(test, feature = "benchmark"))]
+mod benchmarks_optimized;
