@@ -213,14 +213,39 @@ impl CommitmentMarketplace {
 
     /// List an NFT for sale
     ///
+    /// Creates a new listing for the specified NFT token ID. The seller must be the
+    /// owner of the NFT and must provide a valid price greater than 0.
+    ///
     /// # Arguments
     /// * `seller` - The seller's address (must be NFT owner)
     /// * `token_id` - The NFT token ID to list
-    /// * `price` - The sale price
+    /// * `price` - The sale price (must be > 0)
     /// * `payment_token` - The token contract address for payment
     ///
-    /// # Reentrancy Protection
-    /// Protected with reentrancy guard as it makes external NFT contract calls
+    /// # Errors
+    /// * `InvalidPrice` - If price is 0 or negative
+    /// * `ListingExists` - If a listing already exists for this token_id
+    /// * `NotInitialized` - If marketplace is not initialized
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    ///
+    /// # Security Notes
+    /// * Protected with reentrancy guard as it makes external NFT contract calls
+    /// * Uses checks-effects-interactions pattern
+    /// * Validates seller authorization via require_auth
+    ///
+    /// # Events
+    /// Emits `ListNFT` event with (token_id, seller, price, payment_token)
+    ///
+    /// # Examples
+    /// ```
+    /// // List NFT for 1000 tokens
+    /// marketplace.list_nft(
+    ///     &seller,
+    ///     &1,
+    ///     &1000,
+    ///     &payment_token_address
+    /// );
+    /// ```
     pub fn list_nft(
         e: Env,
         seller: Address,
@@ -313,8 +338,31 @@ impl CommitmentMarketplace {
 
     /// Cancel a listing
     ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern
+    /// Removes an active listing for the specified NFT token ID. Only the original
+    /// seller can cancel their own listing.
+    ///
+    /// # Arguments
+    /// * `seller` - The seller's address (must match the listing's seller)
+    /// * `token_id` - The NFT token ID to cancel listing for
+    ///
+    /// # Errors
+    /// * `ListingNotFound` - If no listing exists for this token_id
+    /// * `NotSeller` - If caller is not the original seller
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    ///
+    /// # Security Notes
+    /// * Uses checks-effects-interactions pattern
+    /// * Protected with reentrancy guard
+    /// * Validates seller authorization via require_auth
+    ///
+    /// # Events
+    /// Emits `ListCncl` event with (token_id, seller)
+    ///
+    /// # Examples
+    /// ```
+    /// // Cancel listing
+    /// marketplace.cancel_listing(&seller, &1);
+    /// ```
     pub fn cancel_listing(e: Env, seller: Address, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
@@ -379,12 +427,87 @@ impl CommitmentMarketplace {
 
     /// Buy an NFT
     ///
+    /// Purchases an NFT from an active listing. The buyer must have sufficient
+    /// balance of the payment token and cannot be the seller.
+    ///
     /// # Arguments
     /// * `buyer` - The buyer's address
     /// * `token_id` - The NFT token ID to buy
     ///
+    /// # Returns
+    /// * `Result<(), MarketplaceError>` - Ok(()) on successful purchase, Err on failure
+    ///
+    /// # Errors
+    /// * `ListingNotFound` - If no listing exists for this token_id
+    /// * `CannotBuyOwnListing` - If buyer is the same as seller
+    /// * `InsufficientPayment` - If buyer cannot afford the NFT
+    /// * `NotInitialized` - If marketplace is not initialized
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    /// * `TransferFailed` - If token or NFT transfer fails
+    /// * `NFTContractError` - If NFT contract operation fails
+    ///
+    /// # Security Notes
+    /// * Critical - handles token transfers. Protected with reentrancy guard.
+    /// * Uses checks-effects-interactions pattern to prevent reentrancy attacks
+    /// * Removes listing before external calls to prevent reentrancy
+    /// * Calculates and deducts marketplace fee automatically
+    /// * Validates all inputs before state changes
+    /// * Propagates external contract errors transparently
+    ///
+    /// # Fee Calculation
+    /// Marketplace fee is calculated as: (price * fee_basis_points) / 10000
+    /// Fee is transferred to fee_recipient, remainder to seller
+    /// 
+    /// # Failure Handling
+    /// * Payment token transfer failures are propagated as `TransferFailed`
+    /// * NFT transfer failures are propagated as `NFTContractError`
+    /// * Partial failures may require manual intervention due to checks-effects-interactions pattern
+    /// * All external contract errors are propagated for transparency
+    ///
+    /// # Token Flow
+    /// 1. Payment transferred from buyer to seller (minus fee)
+    /// 2. Fee transferred from buyer to fee_recipient (if applicable)
+    /// 3. NFT transferred from seller to buyer
+    ///
+    /// # Events
+    /// Emits `NFTSold` event with (token_id, seller, buyer, price)
+    ///
+    /// # Examples
+    /// ```
+    /// // Buy NFT for 1000 tokens
+    /// marketplace.buy_nft(
+    ///     &buyer,
+    ///     &1,
+    /// );
+    /// ```
+    ///
+    /// # Edge Cases Handled
+    /// * Zero or negative prices (rejected at listing time)
+    /// * Buyer equals seller (rejected with CannotBuyOwnListing)
+    /// * Non-existent listings (rejected with ListingNotFound)
+    /// * Insufficient token balance (handled by token contract)
+    /// * NFT not owned by seller (handled by NFT contract)
+    /// * Fee calculation overflows (prevented by i128 bounds)
+    /// * Reentrancy attacks (prevented by reentrancy guard)
+    ///
+    /// # Gas Considerations
+    /// * Function requires sufficient gas for:
+    ///   - Storage operations (listing removal)
+    ///   - Token transfers (2 transfers if fee > 0)
+    ///   - NFT transfer
+    ///   - Event emission
+    /// * Out of gas errors are propagated from external contracts
+    ///
     /// # Reentrancy Protection
-    /// Critical - handles token transfers. Protected with reentrancy guard.
+    /// * Sets reentrancy guard at function start
+    /// * Clears guard at function end
+    /// * Prevents recursive calls to critical functions
+    ///
+    /// # State Changes
+    /// * Removes listing from persistent storage
+    /// * Removes token from active listings list
+    /// * Does NOT modify NFT ownership (handled by NFT contract)
+    /// * Emits event for off-chain indexing
     pub fn buy_nft(e: Env, buyer: Address, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
@@ -498,6 +621,23 @@ impl CommitmentMarketplace {
     }
 
     /// Get a listing
+    ///
+    /// Retrieves the listing information for the specified token ID.
+    ///
+    /// # Arguments
+    /// * `token_id` - The NFT token ID to get listing for
+    ///
+    /// # Returns
+    /// * `Listing` - The listing struct with seller, price, and metadata
+    ///
+    /// # Errors
+    /// * `ListingNotFound` - If no listing exists for this token_id
+    ///
+    /// # Examples
+    /// ```
+    /// let listing = marketplace.get_listing(&1);
+    /// assert_eq!(listing.price, 1000);
+    /// ```
     pub fn get_listing(e: Env, token_id: u32) -> Result<Listing, MarketplaceError> {
         e.storage()
             .persistent()
@@ -506,6 +646,22 @@ impl CommitmentMarketplace {
     }
 
     /// Get all active listings
+    ///
+    /// Retrieves all currently active listings in the marketplace.
+    ///
+    /// # Returns
+    /// * `Vec<Listing>` - Vector of all active listings
+    ///
+    /// # Notes
+    /// * Returns empty vector if no active listings exist
+    /// * Order is based on active listings list insertion order
+    /// * Excludes cancelled and sold listings
+    ///
+    /// # Examples
+    /// ```
+    /// let listings = marketplace.get_all_listings();
+    /// println!("Active listings: {}", listings.len());
+    /// ```
     pub fn get_all_listings(e: Env) -> Vec<Listing> {
         let active_listings: Vec<u32> = e
             .storage()
@@ -534,8 +690,38 @@ impl CommitmentMarketplace {
 
     /// Make an offer on an NFT
     ///
-    /// # Reentrancy Protection
-    /// Protected with reentrancy guard
+    /// Creates a new offer for the specified NFT token ID. Each user can only
+    /// have one active offer per token.
+    ///
+    /// # Arguments
+    /// * `offerer` - The offerer's address
+    /// * `token_id` - The NFT token ID to make offer on
+    /// * `amount` - The offer amount (must be > 0)
+    /// * `payment_token` - The token contract address for payment
+    ///
+    /// # Errors
+    /// * `InvalidOfferAmount` - If amount is 0 or negative
+    /// * `OfferExists` - If offerer already has an offer for this token
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    ///
+    /// # Security Notes
+    /// * Protected with reentrancy guard
+    /// * Validates offerer authorization via require_auth
+    /// * Prevents duplicate offers from same user
+    ///
+    /// # Events
+    /// Emits `OfferMade` event with (token_id, offerer, amount, payment_token)
+    ///
+    /// # Examples
+    /// ```
+    /// // Make offer of 500 tokens
+    /// marketplace.make_offer(
+    ///     &offerer,
+    ///     &1,
+    ///     &500,
+    ///     &payment_token_address
+    /// );
+    /// ```
     pub fn make_offer(
         e: Env,
         offerer: Address,
@@ -610,8 +796,36 @@ impl CommitmentMarketplace {
 
     /// Accept an offer
     ///
-    /// # Reentrancy Protection
-    /// Critical - handles token transfers. Protected with reentrancy guard.
+    /// Accepts the specified offer and transfers the NFT to the offerer.
+    /// Only the NFT owner (or seller) can accept offers.
+    ///
+    /// # Arguments
+    /// * `seller` - The seller's address (must be NFT owner)
+    /// * `token_id` - The NFT token ID
+    /// * `offerer` - The offerer whose offer to accept
+    ///
+    /// # Errors
+    /// * `OfferNotFound` - If no offer exists from this offerer for this token
+    /// * `NotInitialized` - If marketplace is not initialized
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    ///
+    /// # Security Notes
+    /// * Critical - handles token transfers. Protected with reentrancy guard.
+    /// * Removes all offers for the token after acceptance
+    /// * Removes listing if it exists
+    /// * Calculates and deducts marketplace fee automatically
+    ///
+    /// # Fees
+    /// Marketplace fee is calculated as: (offer_amount * fee_basis_points) / 10000
+    ///
+    /// # Events
+    /// Emits `OffAccpt` event with (token_id, seller, offerer, amount)
+    ///
+    /// # Examples
+    /// ```
+    /// // Accept offer from specific offerer
+    /// marketplace.accept_offer(&seller, &1, &offerer_address);
+    /// ```
     pub fn accept_offer(
         e: Env,
         seller: Address,
@@ -725,6 +939,29 @@ impl CommitmentMarketplace {
     }
 
     /// Cancel an offer
+    ///
+    /// Removes an offer made by the caller. Only the original offerer can
+    /// cancel their own offer.
+    ///
+    /// # Arguments
+    /// * `offerer` - The offerer's address (must match the offer's offerer)
+    /// * `token_id` - The NFT token ID to cancel offer for
+    ///
+    /// # Errors
+    /// * `OfferNotFound` - If no offer exists from this offerer for this token
+    ///
+    /// # Security Notes
+    /// * Validates offerer authorization via require_auth
+    /// * Only allows cancellation of own offers
+    ///
+    /// # Events
+    /// Emits `OfferCanc` event with (token_id, offerer)
+    ///
+    /// # Examples
+    /// ```
+    /// // Cancel your own offer
+    /// marketplace.cancel_offer(&offerer, &1);
+    /// ```
     pub fn cancel_offer(e: Env, offerer: Address, token_id: u32) -> Result<(), MarketplaceError> {
         offerer.require_auth();
 
@@ -756,6 +993,25 @@ impl CommitmentMarketplace {
     }
 
     /// Get all offers for a token
+    ///
+    /// Retrieves all active offers for the specified NFT token ID.
+    ///
+    /// # Arguments
+    /// * `token_id` - The NFT token ID to get offers for
+    ///
+    /// # Returns
+    /// * `Vec<Offer>` - Vector of all offers for this token
+    ///
+    /// # Notes
+    /// * Returns empty vector if no offers exist
+    /// * Order is based on offer creation order
+    /// * Each user can only have one offer per token
+    ///
+    /// # Examples
+    /// ```
+    /// let offers = marketplace.get_offers(&1);
+    /// println!("Offers for token 1: {}", offers.len());
+    /// ```
     pub fn get_offers(e: Env, token_id: u32) -> Vec<Offer> {
         e.storage()
             .persistent()
@@ -769,8 +1025,41 @@ impl CommitmentMarketplace {
 
     /// Start an auction
     ///
-    /// # Reentrancy Protection
-    /// Protected with reentrancy guard
+    /// Creates a new auction for the specified NFT token ID. The seller must
+    /// provide a valid starting price and duration.
+    ///
+    /// # Arguments
+    /// * `seller` - The seller's address (must be NFT owner)
+    /// * `token_id` - The NFT token ID to auction
+    /// * `starting_price` - The minimum starting bid price (must be > 0)
+    /// * `duration_seconds` - Auction duration in seconds (must be > 0)
+    /// * `payment_token` - The token contract address for bids
+    ///
+    /// # Errors
+    /// * `InvalidPrice` - If starting_price is 0 or negative
+    /// * `InvalidDuration` - If duration_seconds is 0
+    /// * `ListingExists` - If an auction already exists for this token_id
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    ///
+    /// # Security Notes
+    /// * Protected with reentrancy guard
+    /// * Validates seller authorization via require_auth
+    /// * Prevents duplicate auctions for same token
+    ///
+    /// # Events
+    /// Emits `AucStart` event with (token_id, seller, starting_price, ends_at)
+    ///
+    /// # Examples
+    /// ```
+    /// // Start 24-hour auction
+    /// marketplace.start_auction(
+    ///     &seller,
+    ///     &1,
+    ///     &1000,
+    ///     &86400,  // 24 hours
+    ///     &payment_token_address
+    /// );
+    /// ```
     pub fn start_auction(
         e: Env,
         seller: Address,
@@ -860,8 +1149,38 @@ impl CommitmentMarketplace {
 
     /// Place a bid
     ///
-    /// # Reentrancy Protection
-    /// Critical - handles token transfers for bid refunds. Protected with reentrancy guard.
+    /// Places a bid on an active auction. The bid amount must be higher than
+    /// the current highest bid.
+    ///
+    /// # Arguments
+    /// * `bidder` - The bidder's address
+    /// * `token_id` - The NFT token ID to bid on
+    /// * `bid_amount` - The bid amount (must be > current_bid)
+    ///
+    /// # Errors
+    /// * `AuctionNotFound` - If no auction exists for this token_id
+    /// * `AuctionEnded` - If auction has already ended
+    /// * `BidTooLow` - If bid_amount is not higher than current_bid
+    /// * `CannotBuyOwnListing` - If bidder is the auction seller
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    ///
+    /// # Security Notes
+    /// * Critical - handles token transfers for bid refunds. Protected with reentrancy guard.
+    /// * Automatically refunds previous highest bidder
+    /// * Transfers new bid amount to contract (escrow)
+    ///
+    /// # Token Flow
+    /// 1. New bid amount transferred from bidder to contract
+    /// 2. Previous bid amount refunded to previous bidder (if exists)
+    ///
+    /// # Events
+    /// Emits `BidPlaced` event with (token_id, bidder, bid_amount)
+    ///
+    /// # Examples
+    /// ```
+    /// // Place bid higher than current
+    /// marketplace.place_bid(&bidder, &1, &1500);
+    /// ```
     pub fn place_bid(
         e: Env,
         bidder: Address,
@@ -955,8 +1274,36 @@ impl CommitmentMarketplace {
 
     /// End an auction
     ///
-    /// # Reentrancy Protection
-    /// Critical - handles final settlement. Protected with reentrancy guard.
+    /// Finalizes an ended auction and transfers the NFT to the highest bidder.
+    /// Can only be called after the auction duration has expired.
+    ///
+    /// # Arguments
+    /// * `token_id` - The NFT token ID to end auction for
+    ///
+    /// # Errors
+    /// * `AuctionNotFound` - If no auction exists for this token_id
+    /// * `AuctionNotEnded` - If auction has not yet ended
+    /// * `ReentrancyDetected` - If reentrancy is detected
+    ///
+    /// # Security Notes
+    /// * Critical - handles final settlement. Protected with reentrancy guard.
+    /// * Transfers NFT to highest bidder
+    /// * Transfers funds to seller (minus marketplace fee)
+    /// * Handles case with no bids (returns to seller)
+    ///
+    /// # Settlement Logic
+    /// * If highest bidder exists: Transfer NFT to bidder, funds to seller
+    /// * If no bids: No transfers occur
+    /// * Marketplace fee deducted from final sale price
+    ///
+    /// # Events
+    /// Emits `AucEnd` event with (token_id, seller, winner, final_price)
+    ///
+    /// # Examples
+    /// ```
+    /// // End auction (only after duration expires)
+    /// marketplace.end_auction(&1);
+    /// ```
     pub fn end_auction(e: Env, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
