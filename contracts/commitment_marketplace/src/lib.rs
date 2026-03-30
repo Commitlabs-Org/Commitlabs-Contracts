@@ -1061,8 +1061,15 @@ impl CommitmentMarketplace {
 
         // INTERACTIONS
         if let Some(winner) = auction.highest_bidder {
-            // Calculate fees safely
-            let marketplace_fee = SafeMath::percent(auction.current_bid, fee_basis_points);
+            // Calculate fees safely using basis points (bps, /10_000)
+            let fee_bps = if fee_basis_points > 10_000 {
+                10_000
+            } else {
+                fee_basis_points
+            };
+            let fee_bps_i128 = fee_bps as i128;
+            let marketplace_fee =
+                SafeMath::div(SafeMath::mul(auction.current_bid, fee_bps_i128), 10_000_i128);
             let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
