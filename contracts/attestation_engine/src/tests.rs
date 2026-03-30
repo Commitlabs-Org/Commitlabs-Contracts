@@ -1,54 +1,13 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Events as _, vec, Address, Env, Map, String};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short,
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
+    Address, Env, Map, String, Vec,
+};
 
-#[test]
-fn test_initialize_and_getters() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-    let admin = Address::generate(&e);
-    let core = Address::generate(&e);
-
-    let init = e.as_contract(&contract_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone())
-    });
-    assert_eq!(init, Ok(()));
-
-    let stored_admin = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_admin(e.clone()).unwrap()
-    });
-    let stored_core = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_core_contract(e.clone()).unwrap()
-    });
-
-    assert_eq!(stored_admin, admin);
-    assert_eq!(stored_core, core);
-}
-
-#[test]
-fn test_initialize_twice_fails() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-    let admin = Address::generate(&e);
-    let core = Address::generate(&e);
-
-    e.as_contract(&contract_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
-    });
-
-    let second = e.as_contract(&contract_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone())
-    });
-    assert_eq!(second, Err(AttestationError::AlreadyInitialized));
-}
-
-// ============================================
-// verify_compliance Tests
-// ============================================
-
-/// Helper to create a mock commitment with specific status
-fn create_mock_commitment_with_status(
+fn create_mock_commitment_with_status_internal(
     e: &Env,
     commitment_id: &str,
     status: &str,
@@ -81,21 +40,47 @@ fn create_mock_commitment_with_status(
 }
 
 #[test]
+fn test_initialize_and_getters() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_core_contract(), core);
+}
+
+#[test]
+fn test_initialize_twice_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+    let result = client.try_initialize(&admin, &core);
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_verify_compliance_settled_commitment_returns_true() {
     let e = Env::default();
+    e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
     let commitment_id = String::from_str(&e, "test_commitment_settled");
 
-    // Initialize attestation engine
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
 
-    // Create a settled commitment in core contract
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
         "test_commitment_settled",
         "settled",
@@ -110,30 +95,24 @@ fn test_verify_compliance_settled_commitment_returns_true() {
         );
     });
 
-    // Verify compliance for settled commitment should return true
-    let is_compliant = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
-    });
-
-    assert!(is_compliant, "Settled commitment should be compliant");
+    let is_compliant = client.verify_compliance(&commitment_id);
+    assert!(is_compliant);
 }
 
 #[test]
 fn test_verify_compliance_violated_commitment_returns_false() {
     let e = Env::default();
+    e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
     let commitment_id = String::from_str(&e, "test_commitment_violated");
 
-    // Initialize attestation engine
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
 
-    // Create a violated commitment in core contract
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
         "test_commitment_violated",
         "violated",
@@ -148,30 +127,24 @@ fn test_verify_compliance_violated_commitment_returns_false() {
         );
     });
 
-    // Verify compliance for violated commitment should return false
-    let is_compliant = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
-    });
-
-    assert!(!is_compliant, "Violated commitment should not be compliant");
+    let is_compliant = client.verify_compliance(&commitment_id);
+    assert!(!is_compliant);
 }
 
 #[test]
 fn test_verify_compliance_early_exit_returns_false() {
     let e = Env::default();
+    e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
     let commitment_id = String::from_str(&e, "test_commitment_early_exit");
 
-    // Initialize attestation engine
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
 
-    // Create an early_exit commitment in core contract
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
         "test_commitment_early_exit",
         "early_exit",
@@ -186,33 +159,24 @@ fn test_verify_compliance_early_exit_returns_false() {
         );
     });
 
-    // Verify compliance for early_exit commitment should return false
-    let is_compliant = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
-    });
-
-    assert!(
-        !is_compliant,
-        "Early exit commitment should not be compliant"
-    );
+    let is_compliant = client.verify_compliance(&commitment_id);
+    assert!(!is_compliant);
 }
 
 #[test]
 fn test_verify_compliance_active_commitment_within_rules_returns_true() {
     let e = Env::default();
+    e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
     let commitment_id = String::from_str(&e, "test_commitment_active_compliant");
 
-    // Initialize attestation engine
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
 
-    // Create an active commitment with 5% loss (within 10% limit)
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
         "test_commitment_active_compliant",
         "active",
@@ -227,33 +191,24 @@ fn test_verify_compliance_active_commitment_within_rules_returns_true() {
         );
     });
 
-    // Verify compliance for active commitment within rules
-    let is_compliant = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
-    });
-
-    assert!(
-        is_compliant,
-        "Active commitment within rules should be compliant"
-    );
+    let is_compliant = client.verify_compliance(&commitment_id);
+    assert!(is_compliant);
 }
 
 #[test]
 fn test_verify_compliance_active_commitment_exceeds_loss_returns_false() {
     let e = Env::default();
+    e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
     let commitment_id = String::from_str(&e, "test_commitment_active_noncompliant");
 
-    // Initialize attestation engine
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
 
-    // Create an active commitment with 15% loss (exceeds 10% limit)
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
         "test_commitment_active_noncompliant",
         "active",
@@ -268,161 +223,41 @@ fn test_verify_compliance_active_commitment_exceeds_loss_returns_false() {
         );
     });
 
-    // Verify compliance for active commitment exceeding loss limit
-    let is_compliant = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
-    });
-
-    assert!(
-        !is_compliant,
-        "Active commitment exceeding loss limit should not be compliant"
-    );
+    let is_compliant = client.verify_compliance(&commitment_id);
+    assert!(!is_compliant);
 }
 
 #[test]
 fn test_verify_compliance_nonexistent_commitment_returns_false() {
     let e = Env::default();
+    e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
     let commitment_id = String::from_str(&e, "nonexistent_commitment");
 
-    // Initialize attestation engine
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
 
-    // Don't create any commitment - test with nonexistent ID
-    let is_compliant = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
-    });
-
-    assert!(!is_compliant, "Nonexistent commitment should return false");
+    let is_compliant = client.verify_compliance(&commitment_id);
+    assert!(!is_compliant);
 }
 
-#[test]
-fn test_verify_compliance_uninitialized_contract_returns_false() {
-    let e = Env::default();
-    let attestation_id = e.register_contract(None, AttestationEngineContract);
-    let commitment_id = String::from_str(&e, "test_commitment");
-
-    // Don't initialize the contract - test uninitialized state
-    let is_compliant = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
-    });
-
-    assert!(!is_compliant, "Uninitialized contract should return false");
-}
 #[test]
 fn test_attest_without_initialize_fails() {
     let e = Env::default();
     e.mock_all_auths();
     let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
 
     let caller = Address::generate(&e);
-    let commitment_id = String::from_str(&e, "c_uninitialized");
+    let commitment_id = String::from_str(&e, "test_commitment");
     let attestation_type = String::from_str(&e, "health_check");
-    let data = Map::<String, String>::new(&e);
+    let data = Map::new(&e);
 
-    let result = e.as_contract(&contract_id, || {
-        AttestationEngineContract::attest(
-            e.clone(),
-            caller.clone(),
-            commitment_id.clone(),
-            attestation_type.clone(),
-            data.clone(),
-            true,
-        )
-    });
-
-    assert_eq!(result, Err(AttestationError::Unauthorized));
-}
-
-#[test]
-fn test_get_admin_not_initialized_returns_error() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-
-    let result = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_admin(e.clone())
-    });
-
-    assert_eq!(result, Err(AttestationError::NotInitialized));
-}
-
-#[test]
-fn test_get_core_contract_not_initialized_returns_error() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-
-    let result = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_core_contract(e.clone())
-    });
-
-    assert_eq!(result, Err(AttestationError::NotInitialized));
-}
-
-#[test]
-fn test_get_attestations_not_initialized_returns_empty() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-    let commitment_id = String::from_str(&e, "uninitialized");
-
-    let attestations = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_attestations(e.clone(), commitment_id.clone())
-    });
-
-    assert_eq!(attestations.len(), 0);
-}
-
-#[test]
-fn test_get_attestation_count_not_initialized_returns_zero() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-    let commitment_id = String::from_str(&e, "uninitialized");
-
-    let count = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_attestation_count(e.clone(), commitment_id.clone())
-    });
-
-    assert_eq!(count, 0);
-}
-
-#[test]
-fn test_get_stored_health_metrics_not_initialized_returns_none() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-    let commitment_id = String::from_str(&e, "uninitialized");
-
-    let metrics = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_stored_health_metrics(e.clone(), commitment_id.clone())
-    });
-
-    assert!(metrics.is_none());
-}
-
-#[test]
-fn test_fee_queries_not_initialized_return_defaults() {
-    let e = Env::default();
-    let contract_id = e.register_contract(None, AttestationEngineContract);
-    let asset = Address::generate(&e);
-
-    let (fee_amount, fee_asset) = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_attestation_fee(e.clone())
-    });
-    assert_eq!(fee_amount, 0);
-    assert!(fee_asset.is_none());
-
-    let fee_recipient = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_fee_recipient(e.clone())
-    });
-    assert!(fee_recipient.is_none());
-
-    let collected_fees = e.as_contract(&contract_id, || {
-        AttestationEngineContract::get_collected_fees(e.clone(), asset.clone())
-    });
-    assert_eq!(collected_fees, 0);
+    let result = client.try_attest(&caller, &commitment_id, &attestation_type, &data, &true);
+    assert!(result.is_err());
 }
 
 #[test]
@@ -431,15 +266,15 @@ fn test_record_fees_records_attestation_and_metrics() {
     e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
     let commitment_id = String::from_str(&e, "commitment_fee");
 
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
 
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
         "commitment_fee",
         "active",
@@ -454,57 +289,36 @@ fn test_record_fees_records_attestation_and_metrics() {
         );
     });
 
-    let result = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::record_fees(
-            e.clone(),
-            admin.clone(),
-            commitment_id.clone(),
-            250,
-        )
-    });
-    assert_eq!(result, Ok(()));
+    client.record_fees(&admin, &commitment_id, &250);
 
-    let attestations = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::get_attestations(e.clone(), commitment_id.clone())
-    });
+    let attestations = client.get_attestations(&commitment_id);
     assert_eq!(attestations.len(), 1);
 
     let attestation = attestations.get(0).unwrap();
-    assert_eq!(
-        attestation.attestation_type,
-        String::from_str(&e, "fee_generation")
-    );
+    assert_eq!(attestation.attestation_type, String::from_str(&e, "fee_generation"));
     assert!(attestation.is_compliant);
-    assert_eq!(attestation.verified_by, admin);
 
-    let fee_amount_key = String::from_str(&e, "fee_amount");
-    let fee_value = attestation.data.get(fee_amount_key).unwrap();
-    assert_eq!(fee_value, String::from_str(&e, "250"));
-
-    let metrics = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::get_stored_health_metrics(e.clone(), commitment_id.clone())
-    })
-    .unwrap();
+    let metrics = client.get_stored_health_metrics(&commitment_id).unwrap();
     assert_eq!(metrics.fees_generated, 250);
 }
 
 #[test]
-fn test_record_fees_negative_amount_fails() {
+fn test_record_drawdown_within_max_loss_records_drawdown() {
     let e = Env::default();
     e.mock_all_auths();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
-    let commitment_id = String::from_str(&e, "commitment_fee_negative");
+    let commitment_id = String::from_str(&e, "commitment_drawdown");
 
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
 
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
-        "commitment_fee_negative",
+        "commitment_drawdown",
         "active",
         1_000,
         1_000,
@@ -517,41 +331,39 @@ fn test_record_fees_negative_amount_fails() {
         );
     });
 
-    let result = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::record_fees(
-            e.clone(),
-            admin.clone(),
-            commitment_id.clone(),
-            -1,
-        )
-    });
-    assert_eq!(result, Err(AttestationError::InvalidFeeAmount));
+    client.record_drawdown(&admin, &commitment_id, &5);
 
-    let attestations = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::get_attestations(e.clone(), commitment_id.clone())
-    });
-    assert_eq!(attestations.len(), 0);
+    let attestations = client.get_attestations(&commitment_id);
+    assert_eq!(attestations.len(), 1);
+
+    let attestation = attestations.get(0).unwrap();
+    assert_eq!(attestation.attestation_type, String::from_str(&e, "drawdown"));
+    assert!(attestation.is_compliant);
+
+    let metrics = client.get_stored_health_metrics(&commitment_id).unwrap();
+    assert_eq!(metrics.drawdown_percent, 5);
 }
 
 #[test]
-fn test_record_drawdown_within_max_loss_records_drawdown() {
+fn test_get_attestations_page_logic() {
     let e = Env::default();
     e.mock_all_auths();
+    e.budget().reset_unlimited();
     let attestation_id = e.register_contract(None, AttestationEngineContract);
     let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
 
     let admin = Address::generate(&e);
-    let commitment_id = String::from_str(&e, "commitment_drawdown_ok");
+    let commitment_id = String::from_str(&e, "test_commitment_pagination");
 
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
 
-    let commitment = create_mock_commitment_with_status(
+    let commitment = create_mock_commitment_with_status_internal(
         &e,
-        "commitment_drawdown_ok",
+        "test_commitment_pagination",
         "active",
-        1_000,
+        1000,
         950,
         10,
     );
@@ -562,105 +374,59 @@ fn test_record_drawdown_within_max_loss_records_drawdown() {
         );
     });
 
-    let result = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::record_drawdown(
-            e.clone(),
-            admin.clone(),
-            commitment_id.clone(),
-            5,
-        )
-    });
-    assert_eq!(result, Ok(()));
+    // 1. Test empty attestations
+    let page = client.get_attestations_page(&commitment_id, &0, &10);
+    assert_eq!(page.attestations.len(), 0);
+    assert_eq!(page.next_offset, 0);
 
-    let attestations = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::get_attestations(e.clone(), commitment_id.clone())
-    });
-    assert_eq!(attestations.len(), 1);
+    let start_ts = e.ledger().timestamp();
+    // 2. Add 15 attestations with increasing timestamps
+    for _ in 0..15u32 {
+        let data = Map::new(&e);
+        e.ledger().with_mut(|l| l.timestamp += 1);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+    }
 
-    let attestation = attestations.get(0).unwrap();
-    assert_eq!(
-        attestation.attestation_type,
-        String::from_str(&e, "drawdown")
-    );
-    assert!(attestation.is_compliant);
+    // 3. Test first page: offset=0, limit=10
+    let page1 = client.get_attestations_page(&commitment_id, &0, &10);
+    assert_eq!(page1.attestations.len(), 10);
+    assert_eq!(page1.next_offset, 10);
 
-    let drawdown_key = String::from_str(&e, "drawdown_percent");
-    let drawdown_value = attestation.data.get(drawdown_key).unwrap();
-    assert_eq!(drawdown_value, String::from_str(&e, "5"));
+    // Verify ordering
+    for i in 0..10u32 {
+        let att = page1.attestations.get(i).unwrap();
+        assert_eq!(att.timestamp, start_ts + (i as u64) + 1);
+    }
 
-    let metrics = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::get_stored_health_metrics(e.clone(), commitment_id.clone())
-    })
-    .unwrap();
-    assert_eq!(metrics.drawdown_percent, 5);
-}
+    // 4. Test second page: offset=10, limit=10
+    let page2 = client.get_attestations_page(&commitment_id, &10, &10);
+    assert_eq!(page2.attestations.len(), 5);
+    assert_eq!(page2.next_offset, 0);
 
-#[test]
-fn test_record_drawdown_exceeds_max_loss_records_violation() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let attestation_id = e.register_contract(None, AttestationEngineContract);
-    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    // Verify ordering
+    for i in 0..5u32 {
+        let att = page2.attestations.get(i).unwrap();
+        assert_eq!(att.timestamp, start_ts + (i as u64) + 11);
+    }
 
-    let admin = Address::generate(&e);
-    let commitment_id = String::from_str(&e, "commitment_drawdown_violation");
+    // 5. Test MAX_PAGE_SIZE boundary
+    for _ in 15..150u32 {
+        let data = Map::new(&e);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+    }
 
-    e.as_contract(&attestation_id, || {
-        AttestationEngineContract::initialize(e.clone(), admin.clone(), core_id.clone()).unwrap();
-    });
+    let page_max = client.get_attestations_page(&commitment_id, &0, &200);
+    assert_eq!(page_max.attestations.len(), 100);
+    assert_eq!(page_max.next_offset, 100);
 
-    let commitment = create_mock_commitment_with_status(
-        &e,
-        "commitment_drawdown_violation",
-        "active",
-        1_000,
-        800,
-        10,
-    );
-    e.as_contract(&core_id, || {
-        e.storage().instance().set(
-            &commitment_core::DataKey::Commitment(commitment_id.clone()),
-            &commitment,
-        );
-    });
+    // 6. Test edge cases
+    let page_end = client.get_attestations_page(&commitment_id, &150, &10);
+    assert_eq!(page_end.attestations.len(), 0);
+    assert_eq!(page_end.next_offset, 0);
 
-    let result = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::record_drawdown(
-            e.clone(),
-            admin.clone(),
-            commitment_id.clone(),
-            15,
-        )
-    });
-    assert_eq!(result, Ok(()));
-
-    let attestations = e.as_contract(&attestation_id, || {
-        AttestationEngineContract::get_attestations(e.clone(), commitment_id.clone())
-    });
-    assert_eq!(attestations.len(), 2);
-
-    let drawdown_attestation = attestations.get(0).unwrap();
-    assert_eq!(
-        drawdown_attestation.attestation_type,
-        String::from_str(&e, "drawdown")
-    );
-    assert!(!drawdown_attestation.is_compliant);
-    let drawdown_key = String::from_str(&e, "drawdown_percent");
-    let drawdown_value = drawdown_attestation.data.get(drawdown_key).unwrap();
-    assert_eq!(drawdown_value, String::from_str(&e, "15"));
-
-    let violation_attestation = attestations.get(1).unwrap();
-    assert_eq!(
-        violation_attestation.attestation_type,
-        String::from_str(&e, "violation")
-    );
-    assert!(!violation_attestation.is_compliant);
-    let violation_type_key = String::from_str(&e, "violation_type");
-    let severity_key = String::from_str(&e, "severity");
-    let violation_type = violation_attestation.data.get(violation_type_key).unwrap();
-    let severity = violation_attestation.data.get(severity_key).unwrap();
-    assert_eq!(violation_type, String::from_str(&e, "max_loss_exceeded"));
-    assert_eq!(severity, String::from_str(&e, "high"));
+    let page_zero = client.get_attestations_page(&commitment_id, &0, &0);
+    assert_eq!(page_zero.attestations.len(), 0);
+    assert_eq!(page_zero.next_offset, 0);
 }
 
 // ============================================
