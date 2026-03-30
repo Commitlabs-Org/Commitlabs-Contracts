@@ -4,6 +4,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
+use shared_utils::math::SafeMath;
 
 // ============================================================================
 // Error Types
@@ -446,9 +447,9 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        // Calculate fee and seller proceeds
-        let marketplace_fee = (listing.price * fee_basis_points as i128) / 10000;
-        let seller_proceeds = listing.price - marketplace_fee;
+        // Calculate fee and seller proceeds safely
+        let marketplace_fee = SafeMath::percent(listing.price, fee_basis_points);
+        let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
 
         // EFFECTS
         // Remove listing first (prevent reentrancy)
@@ -564,6 +565,22 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::InvalidOfferAmount);
         }
 
+        // Check if offerer is the seller of an active listing
+        if let Some(listing) = e.storage().persistent().get::<_, Listing>(&DataKey::Listing(token_id)) {
+            if listing.seller == offerer {
+                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                return Err(MarketplaceError::CannotBuyOwnListing);
+            }
+        }
+
+        // Check if offerer is the seller of an active auction
+        if let Some(auction) = e.storage().persistent().get::<_, Auction>(&DataKey::Auction(token_id)) {
+            if auction.seller == offerer {
+                e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                return Err(MarketplaceError::CannotBuyOwnListing);
+            }
+        }
+
         // EFFECTS
         let offer = Offer {
             token_id,
@@ -632,6 +649,13 @@ impl CommitmentMarketplace {
         // CHECKS
         seller.require_auth();
 
+        if seller == offerer {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::CannotBuyOwnListing);
+        }
+
         let offers: Vec<Offer> = e
             .storage()
             .persistent()
@@ -673,9 +697,9 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        // Calculate fee and seller proceeds
-        let marketplace_fee = (offer.amount * fee_basis_points as i128) / 10000;
-        let seller_proceeds = offer.amount - marketplace_fee;
+        // Calculate fee and seller proceeds safely
+        let marketplace_fee = SafeMath::percent(offer.amount, fee_basis_points);
+        let seller_proceeds = SafeMath::sub(offer.amount, marketplace_fee);
 
         // EFFECTS
         // Remove all offers for this token
@@ -816,7 +840,10 @@ impl CommitmentMarketplace {
 
         // EFFECTS
         let started_at = e.ledger().timestamp();
-        let ends_at = started_at + duration_seconds;
+        let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            MarketplaceError::InvalidDuration
+        })?;
 
         let auction = Auction {
             token_id,
@@ -1034,9 +1061,9 @@ impl CommitmentMarketplace {
 
         // INTERACTIONS
         if let Some(winner) = auction.highest_bidder {
-            // Calculate fees
-            let marketplace_fee = (auction.current_bid * fee_basis_points as i128) / 10000;
-            let seller_proceeds = auction.current_bid - marketplace_fee;
+            // Calculate fees safely
+            let marketplace_fee = SafeMath::percent(auction.current_bid, fee_basis_points);
+            let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
 

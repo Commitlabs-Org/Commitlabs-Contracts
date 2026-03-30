@@ -295,6 +295,53 @@ fn test_make_duplicate_offer_fails() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #8)")] // CannotBuyOwnListing
+fn test_make_offer_own_listing_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    client.list_nft(&seller, &1, &1000, &payment_token);
+    client.make_offer(&seller, &1, &800, &payment_token); // Seller making offer on own listing
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")] // CannotBuyOwnListing
+fn test_make_offer_own_auction_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    client.start_auction(&seller, &1, &1000, &86400, &payment_token);
+    client.make_offer(&seller, &1, &1100, &payment_token); // Seller making offer on own auction
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")] // CannotBuyOwnListing
+fn test_accept_offer_own_listing_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    client.make_offer(&seller, &1, &1000, &payment_token);
+    client.accept_offer(&seller, &1, &seller); // Seller accepting own offer
+}
+
+
+
+#[test]
 fn test_multiple_offers_same_token() {
     let e = Env::default();
     e.mock_all_auths();
