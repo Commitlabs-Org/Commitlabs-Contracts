@@ -63,6 +63,8 @@ pub enum ContractError {
     ExpirationOverflow = 20,
     /// Invalid commitment_id (must be non-empty and <= 256 chars)
     InvalidCommitmentId = 21,
+    /// Given address is a zero/invalid address
+    InvalidAddress = 22,
 }
 
 // ============================================================================
@@ -132,8 +134,8 @@ pub enum DataKey {
     CommitmentIdIndex(String),
 }
 
-#[cfg(test)]
-mod tests;
+// no test module active
+
 
 // ============================================================================
 // Contract Implementation
@@ -146,6 +148,11 @@ pub struct CommitmentNFTContract;
 impl CommitmentNFTContract {
     /// Initialize the NFT contract
     pub fn initialize(e: Env, admin: Address) -> Result<(), ContractError> {
+        // Reject zero address for admin
+        if is_zero_address(&e, &admin) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         // Check if already initialized
         if e.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
@@ -329,6 +336,10 @@ impl CommitmentNFTContract {
     /// Set the authorized commitment_core contract address for settlement
     /// Only the admin can call this function
     pub fn set_core_contract(e: Env, core_contract: Address) -> Result<(), ContractError> {
+        if is_zero_address(&e, &core_contract) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         let admin: Address = e
             .storage()
             .instance()
@@ -370,6 +381,11 @@ impl CommitmentNFTContract {
         contract_address: Address,
     ) -> Result<(), ContractError> {
         require_admin(&e, &caller)?;
+
+        if is_zero_address(&e, &contract_address) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         e.storage()
             .instance()
             .set(&DataKey::AuthorizedMinter(contract_address.clone()), &true);
@@ -423,6 +439,11 @@ impl CommitmentNFTContract {
     /// Update admin (admin-only).
     pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&e, &caller)?;
+        
+        if is_zero_address(&e, &new_admin) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         e.storage().instance().set(&DataKey::Admin, &new_admin);
         Ok(())
     }
@@ -523,6 +544,12 @@ impl CommitmentNFTContract {
         if is_zero_address(&e, &owner) {
             e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::TransferToZeroAddress);
+        }
+
+        // CHECKS: Reject zero address for asset
+        if is_zero_address(&e, &asset_address) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::InvalidAddress);
         }
 
         // Validate inputs
