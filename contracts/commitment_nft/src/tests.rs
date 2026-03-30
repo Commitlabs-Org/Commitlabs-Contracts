@@ -1,13 +1,14 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::testutils::Address;
 use commitment_core::{CommitmentRules, CommitmentCoreContract, CommitmentCoreContractClient};
 use shared_utils::TimeUtils;
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
-    testutils::{Address as _, Events, Ledger},
+    testutils::{Events, Ledger},
     token::StellarAssetClient,
-    vec, Address, Env, IntoVal, String,
+    vec, Address as SdkAddress, Env, IntoVal, String,
 };
 
 #[contract]
@@ -17,19 +18,19 @@ struct MockNftContract;
 impl MockNftContract {
     pub fn mint(
         _e: Env,
-        _owner: Address,
+        _owner: SdkAddress,
         _commitment_id: String,
         _duration_days: u32,
         _max_loss_percent: u32,
         _commitment_type: String,
         _initial_amount: i128,
-        _asset_address: Address,
+        _asset_address: SdkAddress,
         _early_exit_penalty: u32,
     ) -> u32 {
         1
     }
-    pub fn settle(_e: Env, _caller: Address, _token_id: u32) {}
-    pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
+    pub fn settle(_e: Env, _caller: SdkAddress, _token_id: u32) {}
+    pub fn mark_inactive(_e: Env, _caller: SdkAddress, _token_id: u32) {}
 }
 
 fn test_rules(e: &Env) -> CommitmentRules {
@@ -43,16 +44,16 @@ fn test_rules(e: &Env) -> CommitmentRules {
     }
 }
 
-fn setup_contract(e: &Env) -> (Address, CommitmentNFTContractClient<'_>) {
+fn setup_contract(e: &Env) -> (SdkAddress, CommitmentNFTContractClient<'_>) {
     let contract_id = e.register_contract(None, CommitmentNFTContract);
     let client = CommitmentNFTContractClient::new(e, &contract_id);
-    let admin = Address::generate(e);
+    let admin = SdkAddress::generate(e);
     (admin, client)
 }
 
 /// Setup contract with a registered "core" contract.
 /// Returns (admin, client, core_contract_id).
-fn setup_contract_with_core(e: &Env) -> (Address, CommitmentNFTContractClient<'_>, Address) {
+fn setup_contract_with_core(e: &Env) -> (SdkAddress, CommitmentNFTContractClient<'_>, SdkAddress) {
     e.mock_all_auths();
     let (admin, client) = setup_contract(e);
     client.initialize(&admin);
@@ -63,8 +64,8 @@ fn setup_contract_with_core(e: &Env) -> (Address, CommitmentNFTContractClient<'_
 
 fn create_test_metadata(
     e: &Env,
-    asset_address: &Address,
-) -> (String, u32, u32, String, i128, Address, u32) {
+    asset_address: &SdkAddress,
+) -> (String, u32, u32, String, i128, SdkAddress, u32) {
     (
         String::from_str(e, "commitment_001"),
         30, // duration_days
@@ -84,7 +85,7 @@ fn create_test_metadata(
 // Helper Functions
 // ============================================================================
 
-fn setup_env() -> (Env, Address, Address) {
+fn setup_env() -> (Env, SdkAddress, SdkAddress) {
     let e = Env::default();
     let (admin, contract_id) = {
         let (admin, client) = setup_contract(&e);
@@ -106,7 +107,7 @@ fn setup_env() -> (Env, Address, Address) {
 }
 
 /// Asserts that the sum of `balance_of` for all given owners equals `total_supply()`.
-fn assert_balance_supply_invariant(client: &CommitmentNFTContractClient, owners: &[&Address]) {
+fn assert_balance_supply_invariant(client: &CommitmentNFTContractClient, owners: &[&SdkAddress]) {
     let sum: u32 = owners.iter().map(|addr| client.balance_of(addr)).sum();
     assert_eq!(
         sum,
@@ -122,8 +123,8 @@ fn assert_balance_supply_invariant(client: &CommitmentNFTContractClient, owners:
 fn mint_to_owner(
     e: &Env,
     client: &CommitmentNFTContractClient,
-    owner: &Address,
-    asset_address: &Address,
+    owner: &SdkAddress,
+    asset_address: &SdkAddress,
     label: &str,
 ) -> u32 {
     client.mint(
@@ -163,7 +164,7 @@ fn test_add_remove_is_authorized_contract() {
     e.mock_all_auths();
     let (admin, client) = setup_contract(&e);
     client.initialize(&admin);
-    let other = Address::generate(&e);
+    let other = SdkAddress::generate(&e);
 
     assert!(!client.is_authorized(&other));
     client.add_authorized_contract(&admin, &other).unwrap();
@@ -178,12 +179,12 @@ fn test_mint_unauthorized_caller_fails() {
     let e = Env::default();
     e.mock_all_auths();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
     client.initialize(&admin);
     let (commitment_id, duration, max_loss, commitment_type, amount, _asset, penalty) =
         create_test_metadata(&e, &asset_address);
-    let unauthorized = Address::generate(&e);
+    let unauthorized = SdkAddress::generate(&e);
     client.mint(
         &unauthorized, // caller
         &owner, // owner
@@ -205,8 +206,8 @@ fn test_mint_unauthorized_caller_fails() {
 fn test_mint() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -252,8 +253,8 @@ fn test_mint() {
 fn test_mint_multiple() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -281,9 +282,9 @@ fn test_mint_multiple() {
 #[should_panic(expected = "Error(Contract, #1)")] // NotInitialized
 fn test_mint_without_initialize_fails() {
     let e = Env::default();
-    let (_admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let (admin, client) = setup_contract(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     let (commitment_id, duration, max_loss, commitment_type, amount, asset, penalty) =
         create_test_metadata(&e, &asset_address);
@@ -302,8 +303,8 @@ fn test_mint_without_initialize_fails() {
 fn test_mint_empty_commitment_type() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -317,8 +318,8 @@ fn test_mint_empty_commitment_type() {
 fn test_mint_invalid_commitment_type() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -332,8 +333,8 @@ fn test_mint_invalid_commitment_type() {
 fn test_mint_wrong_case_commitment_type() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -347,8 +348,8 @@ fn test_mint_wrong_case_commitment_type() {
 fn test_mint_valid_commitment_types_all_three() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -402,8 +403,8 @@ fn test_mint_valid_commitment_types_all_three() {
 fn test_mint_empty_commitment_id() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -426,8 +427,8 @@ fn test_mint_empty_commitment_id() {
 fn test_mint_commitment_id_very_long() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -454,8 +455,8 @@ fn test_mint_commitment_id_very_long() {
 fn test_mint_commitment_id_max_allowed_length() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -481,8 +482,8 @@ fn test_mint_commitment_id_max_allowed_length() {
 fn test_mint_commitment_id_normal_length() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -506,8 +507,8 @@ fn test_mint_commitment_id_normal_length() {
 fn test_get_metadata_with_long_commitment_id() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -553,8 +554,8 @@ fn test_get_metadata_with_long_commitment_id() {
 fn test_get_metadata() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -601,8 +602,8 @@ fn test_get_metadata_nonexistent_token() {
 fn test_owner_of() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -636,8 +637,8 @@ fn test_owner_of_nonexistent_token() {
 fn test_is_active() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -704,10 +705,10 @@ fn test_create_commitment_expiration_overflow() {
     e.mock_all_auths();
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let admin = SdkAddress::generate(&e);
+    let nft_contract = SdkAddress::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
@@ -726,10 +727,10 @@ fn test_create_commitment_expiration_overflow() {
 fn test_total_supply_unchanged_after_transfer_and_settle() {
     let e = Env::default();
     e.mock_all_auths();
-    let (_admin, client, _core_id) = setup_contract_with_core(&e);
-    let owner1 = Address::generate(&e);
-    let owner2 = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let (admin, client, core_id) = setup_contract_with_core(&e);
+    let owner1 = SdkAddress::generate(&e);
+    let owner2 = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     assert_eq!(client.total_supply(), 0);
     let token_id = client.mint(
@@ -761,9 +762,9 @@ fn test_total_supply_unchanged_after_transfer_and_settle() {
 fn test_balance_of_after_minting() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner1 = Address::generate(&e);
-    let owner2 = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner1 = SdkAddress::generate(&e);
+    let owner2 = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
@@ -789,7 +790,7 @@ fn test_update_value_no_violation() {
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
-    let owner = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
 
     let recipient = Address::generate(&e);
     let token_id = 0u32; // Use a dummy token_id or set up as needed
@@ -826,8 +827,8 @@ fn test_get_all_metadata_empty() {
 fn test_get_all_metadata() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let owner = SdkAddress::generate(&e);
+    let asset_address = SdkAddress::generate(&e);
 
     client.initialize(&admin);
 
