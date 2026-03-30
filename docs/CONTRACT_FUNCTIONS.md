@@ -19,7 +19,7 @@ This document summarizes public entry points for each contract and their access 
 | get_violation_details(commitment_id) -> (bool, bool, bool, i128, u64) | Detailed violation info.                         | View.                                     | Calculates loss percent and time remaining.        |
 | settle(commitment_id)                                                 | Settle expired commitment and NFT.               | No require_auth.                          | Transfers assets and calls NFT settle.             |
 | early_exit(commitment_id, caller)                                     | Exit early with penalty.                         | Checks caller == owner (no require_auth). | Uses SafeMath to compute penalty.                  |
-| allocate(commitment_id, target_pool, amount)                          | Allocate assets to pool.                         | No require_auth.                          | Transfers assets to target pool.                   |
+| allocate(caller, commitment_id, target_pool, amount)                          | Allocate assets from commitment to pool.                         | Admin/authorized allocator only.                          | Validates amount > 0, sufficient balance, active commitment, and reentrancy guard. Transfers assets to target pool.                   |
 | set_rate_limit(caller, function, window, max_calls)                   | Configure rate limits.                           | Admin only.                               | Uses shared RateLimiter.                           |
 | set_rate_limit_exempt(caller, address, exempt)                        | Configure rate limit exemption.                  | Admin only.                               | Uses shared RateLimiter.                           |
 
@@ -236,32 +236,80 @@ All edge cases are tested in `contracts/commitment_nft/src/tests.rs`:
 
 Run all tests:
 
-```bash
-cargo test --package commitment_nft test_transfer
-```
-
-## time_lock
-
 | Function | Summary | Access control | Notes |
-| --- | --- | --- | --- |
-| initialize(admin) | Set the initial timelock admin. | None (single-use). | Establishes the authority allowed to queue and cancel actions. |
-| queue_action(action_type, target, data, delay) -> Result<u64> | Queue a delayed governance action. | Stored admin `require_auth`. | Delay must be at least the action-type minimum and no more than 30 days. |
-| execute_action(action_id) -> Result | Execute a matured action. | Permissionless after delay. | Anyone may execute once `executable_at` is reached. |
-| cancel_action(action_id) -> Result | Cancel a queued action. | Stored admin `require_auth`. | Fails if the action already executed or was already cancelled. |
-| get_action(action_id) -> Result<QueuedAction> | Read queued action metadata. | View. | Includes `queued_at`, `executable_at`, and execution state. |
-| get_all_actions() -> Vec<u64> | Read all queued action ids. | View. | Includes executed and cancelled actions. |
-| get_pending_actions() -> Vec<u64> | Read actions that are neither executed nor cancelled. | View. | Useful for operator review and execution scans. |
-| get_executable_actions() -> Vec<u64> | Read pending actions whose delay has elapsed. | View. | Actions are executable at exactly `executable_at`. |
-| get_admin() -> Address | Read the current admin. | View. | Returns the authority for queue/cancel operations. |
-| get_min_delay(action_type) -> u64 | Read the minimum delay for an action type. | View. | Current floors: 1 day for parameter/fee, 2 days for admin, 3 days for upgrade. |
-| get_max_delay() -> u64 | Read the global maximum allowed delay. | View. | Hard cap is 30 days. |
-| get_action_count() -> u64 | Read total number of queued actions. | View. | Monotonic counter for action ids. |
+| -------- | -------- | ------------- | ------ |
+| initialize(admin, nft_contract, fee_basis_points, fee_recipient) | Set admin, NFT contract, and marketplace fee | None (single-use) | Returns AlreadyInitialized on repeat |
+| get_admin() -> Address | Fetch admin address | View | Fails if not initialized |
+| update_fee(fee_basis_points) | Update marketplace fee percentage | Admin require_auth | Emits FeeUpdated event |
+| list_nft(seller, token_id, price, payment_token) | List NFT for sale | Seller require_auth | Uses reentrancy guard, validates price > 0 |
+| cancel_listing(seller, token_id) | Cancel active listing | Seller require_auth | Removes listing and active listing entry |
+| buy_nft(buyer, token_id) | Purchase NFT from listing | Buyer require_auth | Critical - handles token/NFT transfers with reentrancy guard |
+| get_listing(token_id) -> Listing | Get specific listing details | View | Returns ListingNotFound if not found |
+| get_all_listings() -> Vec<Listing> | Get all active listings | View | Returns empty vector if none |
+| make_offer(offerer, token_id, amount, payment_token) | Make offer on NFT | Offerer require_auth | One offer per user per token, uses reentrancy guard |
+| accept_offer(seller, token_id, offerer) | Accept specific offer | Seller require_auth | Removes all offers, handles transfers with reentrancy guard |
+| cancel_offer(offerer, token_id) | Cancel your offer | Offerer require_auth | Removes specific offer |
+| get_offers(token_id) -> Vec<Offer> | Get all offers for token | View | Returns empty vector if none |
+| start_auction(seller, token_id, starting_price, duration, payment_token) | Start NFT auction | Seller require_auth | Uses reentrancy guard, validates price and duration |
+| place_bid(bidder, token_id, bid_amount) | Place bid on auction | Bidder require_auth | Refunds previous bidder, uses reentrancy guard |
+| end_auction(token_id) | Finalize ended auction | View | Transfers NFT to winner, handles fees, uses reentrancy guard |
+| get_auction(token_id) -> Auction | Get auction details | View | Returns AuctionNotFound if not found |
+| get_all_auctions() -> Vec<Auction> | Get all active auctions | View | Returns empty vector if none |
 
-### time_lock operational notes
+### commitment_marketplace cross-contract notes
 
-- Queueing and cancellation are admin-authorized operations; execution is intentionally permissionless after the delay.
-- Operators should record `action_id`, `queued_at`, and `executable_at` immediately after queueing.
-- Use the smallest action type that accurately reflects blast radius, but not the smallest delay by default.
+- `buy_nft` is the primary outbound write edge into payment token contracts and NFT contracts.
+- `list_nft` depends on NFT contract for ownership verification (not implemented in current version).
+- `accept_offer` and `end_auction` handle complex multi-contract interactions with fee distribution.
+- All functions that handle external calls use reentrancy guards and checks-effects-interactions pattern.
+- Fee calculations use safe arithmetic to prevent overflow/underflow.
+
+### Buy Flow Security Considerations
+
+The `buy_nft` function implements comprehensive security measures:
+
+1. **Reentrancy Protection**: Uses reentrancy guard to prevent recursive calls
+2. **Checks-Effects-Interactions Pattern**: Removes listing before external calls
+3. **Input Validation**: Validates buyer != seller and listing exists
+4. **Fee Safety**: Calculates fees using overflow-safe arithmetic
+5. **Error Propagation**: Transparently propagates external contract errors
+6. **Atomic Operations**: All transfers happen in a single transaction
+
+### Payment Token Handling
+
+- Supports any token contract that implements the standard Soroban token interface
+- Fee calculation: `(price * fee_basis_points) / 10000`
+- Two transfers if fee > 0: buyer→seller and buyer→fee_recipient
+- One transfer if fee = 0: buyer→seller
+- Transfer failures are propagated as `TransferFailed`
+
+### NFT Transfer Failure Handling
+
+The marketplace handles NFT transfer failures through:
+
+1. **Error Propagation**: NFT contract errors are propagated as `NFTContractError`
+2. **State Consistency**: Uses checks-effects-interactions pattern
+3. **Partial Failure Recovery**: Documented behavior for partial transfer failures
+4. **Manual Recovery**: Some failure scenarios may require manual intervention
+5. **Event Logging**: All failures emit events for debugging
+
+### Failure Scenarios
+
+| Scenario | Error Type | Recovery Method |
+| --------- | ----------- | -------------- |
+| Insufficient token balance | `TransferFailed` | Buyer needs to acquire more tokens |
+| NFT not owned by seller | `NFTContractError` | Seller needs to verify ownership |
+| NFT contract error | `NFTContractError` | Check NFT contract status |
+| Reentrancy attack | `ReentrancyDetected` | Attack blocked by guard |
+| Listing not found | `ListingNotFound` | Verify token ID is correct |
+| Buyer equals seller | `CannotBuyOwnListing` | Use different buyer address |
+
+### Gas Optimization
+
+- Storage operations minimized where possible
+- External calls batched when safe
+- Event emission optimized for indexing
+- Reentrancy guard uses efficient storage pattern
 - Runbook reference: `docs/TIMELOCK_RUNBOOK.md#timelock-parameter-runbook`
 
 ## shared_utils

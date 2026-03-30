@@ -2631,3 +2631,166 @@ fn test_owner_multiple_commitments_settle_one() {
     let c3 = client.get_commitment(&String::from_str(&e, "commit_003"));
     assert_eq!(c3.status, String::from_str(&e, "active"));
 }
+
+// ===============================
+// Unit Tests: allocate function edge cases
+// ===============================
+
+#[test]
+#[should_panic(expected = "Insufficient balance")]
+fn test_allocate_insufficient_balance() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let target_pool = Address::generate(&e);
+    let commitment_id = "allocate_insufficient_balance";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    // Create commitment with current_value = 100, but try to allocate 200
+    let mut commitment = create_test_commitment(&e, commitment_id, &owner, 1000, 100, 10, 30, 1000);
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::allocate(
+            e.clone(),
+            admin.clone(), // Admin is authorized by default
+            String::from_str(&e, commitment_id),
+            target_pool.clone(),
+            200, // Amount exceeds current_value (100)
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "Invalid amount")]
+fn test_allocate_zero_amount() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let target_pool = Address::generate(&e);
+    let commitment_id = "allocate_zero_amount";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let mut commitment = create_test_commitment(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000);
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::allocate(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            target_pool.clone(),
+            0, // Zero amount should fail
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "Invalid amount")]
+fn test_allocate_negative_amount() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let target_pool = Address::generate(&e);
+    let commitment_id = "allocate_negative_amount";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let mut commitment = create_test_commitment(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000);
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::allocate(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            target_pool.clone(),
+            -50, // Negative amount should fail
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn test_allocate_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let target_pool = Address::generate(&e);
+    let commitment_id = "allocate_reentrancy";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        // Manually set reentrancy guard to true to simulate reentrancy
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    let mut commitment = create_test_commitment(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000);
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::allocate(
+            e.clone(),
+            admin.clone(),
+            String::from_str(&e, commitment_id),
+            target_pool.clone(),
+            100, // Valid amount, but should fail due to reentrancy guard
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_allocate_unauthorized_caller() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let unauthorized_caller = Address::generate(&e);
+    let target_pool = Address::generate(&e);
+    let commitment_id = "allocate_unauthorized";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let mut commitment = create_test_commitment(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000);
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::allocate(
+            e.clone(),
+            unauthorized_caller.clone(), // Not admin or authorized allocator
+            String::from_str(&e, commitment_id),
+            target_pool.clone(),
+            100,
+        );
+    });
+}
