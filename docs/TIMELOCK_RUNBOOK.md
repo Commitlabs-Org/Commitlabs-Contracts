@@ -95,3 +95,26 @@ Operational guidance:
 - Queueing and cancellation require admin authorization.
 - Execution is intentionally permissionless after the delay to reduce liveness dependence on the admin.
 - The contract stores metadata for queued actions but does not itself enforce off-chain review or approval workflow quality; operators must supply that process.
+
+## Local and CI test guidance
+
+For deterministic `time_lock` tests around schedule/execute/cancel behavior:
+
+1. Seed explicit ledger timestamps before boundary checks.
+2. Validate role checks separately:
+   - schedule (`queue_action`) requires admin auth
+   - cancel (`cancel_action`) requires admin auth
+   - execute (`execute_action`) is permissionless once delay is met
+3. Assert delay boundaries with exact and off-by-one cases:
+   - `current_time == executable_at` should execute
+   - `current_time == executable_at - 1` should fail with `DelayNotMet`
+
+Recommended commands:
+
+```bash
+cargo test -p time_lock
+cargo build -p time_lock --target wasm32v1-none --release
+```
+
+Note: `cargo test --target wasm32v1-none` is not supported on this target because
+Rust's `test` harness crate is unavailable for `wasm32v1-none`.

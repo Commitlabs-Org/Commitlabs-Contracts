@@ -402,5 +402,5 @@ impl TimelockContract {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod test;
