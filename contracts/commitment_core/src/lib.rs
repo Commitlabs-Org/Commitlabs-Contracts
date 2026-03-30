@@ -707,9 +707,23 @@ impl CommitmentCoreContract {
 
     /// Settle an expired commitment, release assets to the owner, and mark the NFT settled.
     ///
-    /// Cross-contract dependency: invokes `commitment_nft::settle` after the core state and
-    /// token transfer path have been prepared. This flow is guarded by the reentrancy flag and
-    /// relies on transaction rollback if the downstream NFT call fails.
+    /// Settles an expired commitment, transfers assets back to the owner, and notifies the NFT contract.
+    ///
+    /// # Arguments
+    /// * `commitment_id` - Unique identifier of the commitment to settle.
+    ///
+    /// # Panics
+    /// * `CommitmentNotFound` - If the commitment ID doesn't exist.
+    /// * `NotExpired` - If the current ledger time is less than the commitment's expiration time.
+    /// * `AlreadySettled` - If the commitment is already in 'settled' status.
+    /// * `NotActive` - If the commitment is not currently 'active'.
+    /// * `NotInitialized` - If the contract state is missing dependencies.
+    ///
+    /// # Security
+    /// * Guarded by a reentrancy flag.
+    /// * Follows the check-effects-interactions pattern: status updated before assets transferred.
+    /// * Cross-contract dependency: invokes `commitment_nft::settle` after the core state and
+    /// token transfer path have been prepared.
     pub fn settle(e: Env, commitment_id: String) {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);

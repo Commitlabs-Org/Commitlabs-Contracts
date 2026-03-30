@@ -123,7 +123,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "early_exit"
+                  "string": "exit"
                 },
                 {
                   "string": "Unknown error"

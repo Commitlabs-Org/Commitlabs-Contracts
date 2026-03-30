@@ -11,13 +11,38 @@
 
 use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
-    token, Address, Env, IntoVal, String, Symbol,
+    contract, contractimpl,
+    testutils::{Address as _, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
+    Address, Env, String,
 };
 
-fn create_token_contract<'a>(e: &Env, admin: &Address) -> (Address, token::Client<'a>) {
-    let addr = e.register_stellar_asset_contract(admin.clone());
-    (addr.clone(), token::Client::new(e, &addr))
+#[contract]
+struct FeeTestMockNft;
+
+#[contractimpl]
+impl FeeTestMockNft {
+    pub fn mint(
+        _e: Env,
+        _caller: Address,
+        _owner: Address,
+        _commitment_id: String,
+        _duration_days: u32,
+        _max_loss_percent: u32,
+        _commitment_type: String,
+        _initial_amount: i128,
+        _asset_address: Address,
+        _early_exit_penalty: u32,
+    ) -> u32 {
+        1
+    }
+    pub fn settle(_e: Env, _caller: Address, _token_id: u32) {}
+    pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
+}
+
+fn create_token_contract(e: &Env, admin: &Address) -> Address {
+    let contract = e.register_stellar_asset_contract_v2(admin.clone());
+    contract.address()
 }
 
 fn setup_test() -> (
@@ -26,26 +51,25 @@ fn setup_test() -> (
     Address,
     Address,
     Address,
-    token::Client<'static>,
     CommitmentCoreContractClient<'static>,
 ) {
     let e = Env::default();
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract_id = e.register_contract(None, FeeTestMockNft);
     let user = Address::generate(&e);
-    let (token_address, token_client) = create_token_contract(&e, &admin);
+    let token_address = create_token_contract(&e, &admin);
 
-    // Mint tokens to user
-    token_client.mint(&user, &10_000_000);
+    // Mint tokens to user via StellarAssetClient
+    StellarAssetClient::new(&e, &token_address).mint(&user, &10_000_000);
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
 
-    client.initialize(&admin, &nft_contract);
+    client.initialize(&admin, &nft_contract_id);
 
-    (e, admin, nft_contract, user, token_address, token_client, client)
+    (e, admin, nft_contract_id, user, token_address, client)
 }
 
 fn default_rules(e: &Env) -> CommitmentRules {
@@ -65,7 +89,7 @@ fn default_rules(e: &Env) -> CommitmentRules {
 
 #[test]
 fn test_set_creation_fee_bps() {
-    let (e, admin, _, _, _, _, client) = setup_test();
+    let (e, admin, _, _, _, client) = setup_test();
 
     // Set creation fee to 1% (100 bps)
     client.set_creation_fee_bps(&admin, &100);
@@ -77,7 +101,7 @@ fn test_set_creation_fee_bps() {
 #[test]
 #[should_panic(expected = "Invalid fee basis points")]
 fn test_set_creation_fee_bps_invalid() {
-    let (e, admin, _, _, _, _, client) = setup_test();
+    let (e, admin, _, _, _, client) = setup_test();
 
     // Try to set fee > 10000 bps (100%)
     client.set_creation_fee_bps(&admin, &10001);
@@ -86,7 +110,7 @@ fn test_set_creation_fee_bps_invalid() {
 #[test]
 #[should_panic(expected = "Unauthorized")]
 fn test_set_creation_fee_bps_unauthorized() {
-    let (e, _, _, user, _, _, client) = setup_test();
+    let (e, _, _, user, _, client) = setup_test();
 
     // Non-admin tries to set fee
     client.set_creation_fee_bps(&user, &100);
@@ -94,7 +118,7 @@ fn test_set_creation_fee_bps_unauthorized() {
 
 #[test]
 fn test_create_commitment_with_zero_fee() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     // No fee set (defaults to 0)
     let amount = 1_000_000i128;
@@ -113,7 +137,7 @@ fn test_create_commitment_with_zero_fee() {
 
 #[test]
 fn test_create_commitment_with_creation_fee() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     // Set 1% creation fee (100 bps)
     client.set_creation_fee_bps(&admin, &100);
@@ -139,7 +163,7 @@ fn test_create_commitment_with_creation_fee() {
 
 #[test]
 fn test_create_commitment_with_max_fee() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     // Set 100% creation fee (10000 bps) - extreme case
     client.set_creation_fee_bps(&admin, &10000);
@@ -161,7 +185,7 @@ fn test_create_commitment_with_max_fee() {
 
 #[test]
 fn test_create_commitment_fee_rounds_down() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     // Set 0.15% creation fee (15 bps)
     client.set_creation_fee_bps(&admin, &15);
@@ -181,7 +205,7 @@ fn test_create_commitment_fee_rounds_down() {
 
 #[test]
 fn test_multiple_commitments_accumulate_fees() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     // Set 1% creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -208,7 +232,8 @@ fn test_multiple_commitments_accumulate_fees() {
 
 #[test]
 fn test_early_exit_penalty_retained_as_fee() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
+    let token_client = TokenClient::new(&e, &token_address);
 
     let amount = 1_000_000i128;
     let mut rules = default_rules(&e);
@@ -225,13 +250,14 @@ fn test_early_exit_penalty_retained_as_fee() {
     // Verify penalty was added to collected fees
     assert_eq!(client.get_collected_fees(&token_address), expected_penalty);
 
-    // Verify user received net amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // Verify user received net amount (Initial 10M - 1M commitment + 900k returned)
+    assert_eq!(token_client.balance(&user), 9_900_000);
 }
 
 #[test]
 fn test_early_exit_with_creation_fee_and_penalty() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
+    let token_client = TokenClient::new(&e, &token_address);
 
     // Set 1% creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -255,8 +281,8 @@ fn test_early_exit_with_creation_fee_and_penalty() {
     // Verify both fees were collected
     assert_eq!(client.get_collected_fees(&token_address), total_fees);
 
-    // Verify user received correct amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // Verify user received correct amount (Initial 10M - 1M commitment + 891k returned)
+    assert_eq!(token_client.balance(&user), 9_891_000);
 }
 
 // ============================================================================
@@ -265,7 +291,7 @@ fn test_early_exit_with_creation_fee_and_penalty() {
 
 #[test]
 fn test_set_fee_recipient() {
-    let (e, admin, _, _, _, _, client) = setup_test();
+    let (e, admin, _, _, _, client) = setup_test();
 
     let recipient = Address::generate(&e);
     client.set_fee_recipient(&admin, &recipient);
@@ -276,7 +302,7 @@ fn test_set_fee_recipient() {
 #[test]
 #[should_panic(expected = "Zero address")]
 fn test_set_fee_recipient_zero_address() {
-    let (e, admin, _, _, _, _, client) = setup_test();
+    let (e, admin, _, _, _, client) = setup_test();
 
     let zero_str = String::from_str(&e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
     let zero_addr = Address::from_string(&zero_str);
@@ -287,7 +313,7 @@ fn test_set_fee_recipient_zero_address() {
 #[test]
 #[should_panic(expected = "Unauthorized")]
 fn test_set_fee_recipient_unauthorized() {
-    let (e, _, _, user, _, _, client) = setup_test();
+    let (e, _, _, user, _, client) = setup_test();
 
     let recipient = Address::generate(&e);
     client.set_fee_recipient(&user, &recipient);
@@ -299,7 +325,8 @@ fn test_set_fee_recipient_unauthorized() {
 
 #[test]
 fn test_withdraw_fees() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
+    let token_client = TokenClient::new(&e, &token_address);
 
     let recipient = Address::generate(&e);
     client.set_fee_recipient(&admin, &recipient);
@@ -324,7 +351,8 @@ fn test_withdraw_fees() {
 
 #[test]
 fn test_withdraw_partial_fees() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
+    let token_client = TokenClient::new(&e, &token_address);
 
     let recipient = Address::generate(&e);
     client.set_fee_recipient(&admin, &recipient);
@@ -352,7 +380,7 @@ fn test_withdraw_partial_fees() {
 #[test]
 #[should_panic(expected = "Fee recipient not set")]
 fn test_withdraw_fees_no_recipient() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     // Collect fees but don't set recipient
     client.set_creation_fee_bps(&admin, &100);
@@ -366,7 +394,7 @@ fn test_withdraw_fees_no_recipient() {
 #[test]
 #[should_panic(expected = "Insufficient collected fees")]
 fn test_withdraw_fees_insufficient() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     let recipient = Address::generate(&e);
     client.set_fee_recipient(&admin, &recipient);
@@ -383,7 +411,7 @@ fn test_withdraw_fees_insufficient() {
 #[test]
 #[should_panic(expected = "Unauthorized")]
 fn test_withdraw_fees_unauthorized() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
 
     let recipient = Address::generate(&e);
     client.set_fee_recipient(&admin, &recipient);
@@ -400,7 +428,7 @@ fn test_withdraw_fees_unauthorized() {
 #[test]
 #[should_panic(expected = "Invalid amount")]
 fn test_withdraw_fees_zero_amount() {
-    let (e, admin, _, _, token_address, _, client) = setup_test();
+    let (e, admin, _, _, token_address, client) = setup_test();
 
     let recipient = Address::generate(&e);
     client.set_fee_recipient(&admin, &recipient);
@@ -415,7 +443,7 @@ fn test_withdraw_fees_zero_amount() {
 
 #[test]
 fn test_get_creation_fee_bps_default() {
-    let (e, _, _, _, _, _, client) = setup_test();
+    let (_, _, _, _, _, client) = setup_test();
 
     // Default should be 0
     assert_eq!(client.get_creation_fee_bps(), 0);
@@ -423,7 +451,7 @@ fn test_get_creation_fee_bps_default() {
 
 #[test]
 fn test_get_fee_recipient_default() {
-    let (e, _, _, _, _, _, client) = setup_test();
+    let (_, _, _, _, _, client) = setup_test();
 
     // Default should be None
     assert_eq!(client.get_fee_recipient(), None);
@@ -431,7 +459,7 @@ fn test_get_fee_recipient_default() {
 
 #[test]
 fn test_get_collected_fees_default() {
-    let (e, _, _, _, token_address, _, client) = setup_test();
+    let (_, _, _, _, token_address, client) = setup_test();
 
     // Default should be 0
     assert_eq!(client.get_collected_fees(&token_address), 0);
@@ -439,14 +467,14 @@ fn test_get_collected_fees_default() {
 
 #[test]
 fn test_get_collected_fees_multiple_assets() {
-    let (e, admin, _, user, _, _, client) = setup_test();
+    let (e, admin, _, user, _, client) = setup_test();
 
     // Create two different tokens
-    let (token1, token1_client) = create_token_contract(&e, &admin);
-    let (token2, token2_client) = create_token_contract(&e, &admin);
+    let token1 = create_token_contract(&e, &admin);
+    let token2 = create_token_contract(&e, &admin);
 
-    token1_client.mint(&user, &10_000_000);
-    token2_client.mint(&user, &10_000_000);
+    StellarAssetClient::new(&e, &token1).mint(&user, &10_000_000);
+    StellarAssetClient::new(&e, &token2).mint(&user, &10_000_000);
 
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -468,7 +496,8 @@ fn test_get_collected_fees_multiple_assets() {
 
 #[test]
 fn test_fee_collection_with_settle() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
+    let token_client = TokenClient::new(&e, &token_address);
 
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -478,24 +507,25 @@ fn test_fee_collection_with_settle() {
     let net_amount = amount - creation_fee;
 
     let mut rules = default_rules(&e);
-    rules.duration_days = 0; // Expires immediately
+    rules.duration_days = 1;
 
     let commitment_id = client.create_commitment(&user, &amount, &token_address, &rules);
 
     // Settle commitment
-    e.ledger().with_mut(|li| li.timestamp = li.timestamp + 1);
+    e.ledger().with_mut(|li| li.timestamp += 86400 + 1);
     client.settle(&commitment_id);
+
+    // Verify user received net amount (Initial 10M - 1M commitment + 990k returned)
+    assert_eq!(token_client.balance(&user), 9_990_000);
 
     // Verify creation fee still collected
     assert_eq!(client.get_collected_fees(&token_address), creation_fee);
-
-    // Verify user got back net amount
-    assert_eq!(token_client.balance(&user), net_amount);
 }
 
 #[test]
 fn test_complete_fee_lifecycle() {
-    let (e, admin, _, user, token_address, token_client, client) = setup_test();
+    let (e, admin, _, user, token_address, client) = setup_test();
+    let token_client = TokenClient::new(&e, &token_address);
 
     let recipient = Address::generate(&e);
 
@@ -514,7 +544,6 @@ fn test_complete_fee_lifecycle() {
     // 3. Early exit with penalty
     client.early_exit(&commitment_id, &user);
 
-    let net_amount = amount - creation_fee;
     let exit_penalty = 99_000i128; // 10% of 990,000
     let total_fees = creation_fee + exit_penalty;
 

@@ -73,7 +73,11 @@ mod instrumented_nft {
             7
         }
 
-        pub fn settle(_e: Env, _caller: Address, _token_id: u32) {}
+        pub fn settle(e: Env, caller: Address, token_id: u32) {
+            e.storage().instance().set(&symbol_short!("set_call"), &true);
+            e.storage().instance().set(&symbol_short!("set_tid"), &token_id);
+            e.storage().instance().set(&symbol_short!("set_clr"), &caller);
+        }
 
         pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
     }
@@ -583,13 +587,17 @@ fn test_create_commitment_zero_address_fails() {
 #[should_panic(expected = "Duration would cause expiration timestamp overflow")]
 fn test_create_commitment_expiration_overflow() {
     let e = Env::default();
-    e.mock_all_auths();
+    e.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    StellarAssetClient::new(&e, &asset_address).mint(&owner, &10_000);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
@@ -1642,6 +1650,196 @@ fn test_settle_rejects_when_not_expired() {
     });
 }
 
+#[test]
+/// settle succeeds when commitment has reached or passed expiration (Issue #115).
+fn test_settle_success_expired() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "settle_success";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let amount = 1000i128;
+    StellarAssetClient::new(&e, &asset_address).mint(&contract_id, &amount);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let created_at = 1000u64;
+    let duration_days = 30u32;
+    let expires_at = created_at + (duration_days as u64) * 86400;
+
+    let mut commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        amount,
+        amount,
+        10,
+        duration_days,
+        created_at
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    // Update TVL as create_commitment would
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &amount);
+        let mut owner_commitments = Vec::new(&e);
+        owner_commitments.push_back(String::from_str(&e, commitment_id));
+        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
+    });
+
+    e.ledger().with_mut(|l| {
+        l.timestamp = expires_at;
+    });
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::settle(e.clone(), String::from_str(&e, commitment_id));
+    });
+
+    let settled = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, commitment_id))
+    });
+
+    assert_eq!(settled.status, String::from_str(&e, "settled"));
+
+    let tvl = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_total_value_locked(e.clone())
+    });
+    assert_eq!(tvl, 0);
+
+    let owner_commitments = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::get_owner_commitments(e.clone(), owner.clone())
+    });
+    assert_eq!(owner_commitments.len(), 0);
+}
+
+#[test]
+/// settle must coordinate with the NFT contract (Issue #115).
+fn test_settle_nft_coordination() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, instrumented_nft::InstrumentedNftContract);
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "settle_nft_coord";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let amount = 1000i128;
+    StellarAssetClient::new(&e, &asset_address).mint(&contract_id, &amount);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let created_at = 1000u64;
+    let duration_days = 30u32;
+    let expires_at = created_at + (duration_days as u64) * 86400;
+    let nft_token_id = 123u32;
+
+    let mut commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        amount,
+        amount,
+        10,
+        duration_days,
+        created_at
+    );
+    commitment.nft_token_id = nft_token_id;
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.ledger().with_mut(|l| {
+        l.timestamp = expires_at;
+    });
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::settle(e.clone(), String::from_str(&e, commitment_id));
+    });
+
+    // Check if InstrumentedNftContract::settle was called correctly
+    let (is_called, called_tid, called_clr) = e.as_contract(&nft_contract, || {
+        let is_called: bool = e.storage().instance().get(&symbol_short!("set_call")).unwrap_or(false);
+        let called_tid: u32 = e.storage().instance().get(&symbol_short!("set_tid")).unwrap_or(0);
+        let called_clr: Address = e.storage().instance().get(&symbol_short!("set_clr")).unwrap();
+        (is_called, called_tid, called_clr)
+    });
+
+    assert!(is_called);
+    assert_eq!(called_tid, nft_token_id);
+    assert_eq!(called_clr, contract_id);
+}
+
+#[test]
+/// settle must transfer assets back to the owner (Issue #115).
+fn test_settle_asset_transfers() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let amount = 1_000i128;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    let token_client = TokenClient::new(&e, &asset_address);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    // Mint tokens to the core contract to simulate custody
+    token_admin_client.mint(&contract_id, &amount);
+
+    let created_at = 1000u64;
+    let duration_days = 30u32;
+    let expires_at = created_at + (duration_days as u64) * 86400;
+    let commitment_id = "settle_assets";
+
+    let mut commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        amount,
+        amount,
+        10,
+        duration_days,
+        created_at
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.ledger().with_mut(|l| {
+        l.timestamp = expires_at;
+    });
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::settle(e.clone(), String::from_str(&e, commitment_id));
+    });
+
+    // Verify balances
+    assert_eq!(token_client.balance(&owner), amount);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
 /// early_exit by owner succeeds; by non-owner (e.g. admin) fails (Issue #116).
 #[test]
 #[should_panic(expected = "Unauthorized: caller not allowed")]
@@ -1756,6 +1954,7 @@ fn test_allocate_when_settled_fails() {
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::allocate(
             e.clone(),
+            admin.clone(),
             String::from_str(&e, commitment_id),
             target_pool.clone(),
             100,
@@ -1788,6 +1987,7 @@ fn test_allocate_when_violated_fails() {
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::allocate(
             e.clone(),
+            admin.clone(),
             String::from_str(&e, commitment_id),
             target_pool.clone(),
             100,
@@ -1820,6 +2020,7 @@ fn test_allocate_when_early_exit_fails() {
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::allocate(
             e.clone(),
+            admin.clone(),
             String::from_str(&e, commitment_id),
             target_pool.clone(),
             100,
@@ -1858,6 +2059,7 @@ fn test_allocate_when_active_succeeds() {
     store_commitment(&e, &contract_id, &commitment);
 
     client.allocate(
+        &admin,
         &String::from_str(&e, commitment_id),
         &target_pool,
         &allocation_amount,
