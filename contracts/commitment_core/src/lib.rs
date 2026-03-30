@@ -785,8 +785,48 @@ impl CommitmentCoreContract {
 
     /// Exit a commitment before maturity, apply the configured penalty, and mark the NFT inactive.
     ///
-    /// Cross-contract dependency: invokes `commitment_nft::mark_inactive` after updating the
-    /// commitment record and returning the post-penalty amount to the owner.
+    /// # Arguments
+    /// * `commitment_id` - The unique identifier of the commitment to exit.
+    /// * `caller` - Must be the commitment owner; `require_auth` is enforced.
+    ///
+    /// # Penalty arithmetic
+    /// `penalty = SafeMath::penalty_amount(current_value, early_exit_penalty)`
+    /// which computes `(current_value * early_exit_penalty) / 100` using checked
+    /// integer arithmetic. Division truncates toward zero, so small values (e.g.
+    /// `current_value < 100 / early_exit_penalty`) may yield a zero penalty.
+    /// The penalty is credited to `CollectedFees(asset_address)` as protocol revenue.
+    /// `returned = current_value - penalty` is transferred back to the owner only
+    /// when `returned > 0`; a 100% penalty results in no transfer.
+    ///
+    /// # Overflow safety
+    /// `SafeMath::mul(current_value, early_exit_penalty as i128)` panics with
+    /// `"Math: multiplication overflow"` if the intermediate product exceeds `i128::MAX`.
+    /// Callers must ensure `current_value * early_exit_penalty <= i128::MAX`.
+    /// In practice `early_exit_penalty <= 100`, so values up to `i128::MAX / 100`
+    /// are safe.
+    ///
+    /// # Trust boundaries
+    /// - Only the commitment owner (verified via `require_auth` + owner equality check)
+    ///   may call this function. Admin and third-party addresses are rejected.
+    /// - The commitment must be in `"active"` status; settled, violated, or already-exited
+    ///   commitments are rejected with `CommitmentError::NotActive`.
+    ///
+    /// # Reentrancy
+    /// Protected by the `ReentrancyGuard` storage flag. The guard is cleared before
+    /// the outbound `commitment_nft::mark_inactive` call to allow the NFT contract to
+    /// read commitment state if needed, but the core state mutation is complete before
+    /// any cross-contract call.
+    ///
+    /// # Errors
+    /// - `CommitmentError::CommitmentNotFound` — commitment_id does not exist.
+    /// - `CommitmentError::Unauthorized` — caller is not the commitment owner.
+    /// - `CommitmentError::NotActive` — commitment is not in `"active"` status.
+    /// - `CommitmentError::ReentrancyDetected` — reentrant call detected.
+    /// - `CommitmentError::NotInitialized` — NFT contract address not set.
+    ///
+    /// # Cross-contract dependency
+    /// Invokes `commitment_nft::mark_inactive` after updating the commitment record
+    /// and returning the post-penalty amount to the owner.
     pub fn early_exit(e: Env, commitment_id: String, caller: Address) {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);

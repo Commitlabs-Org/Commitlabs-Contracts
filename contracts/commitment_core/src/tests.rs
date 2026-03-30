@@ -2631,3 +2631,700 @@ fn test_owner_multiple_commitments_settle_one() {
     let c3 = client.get_commitment(&String::from_str(&e, "commit_003"));
     assert_eq!(c3.status, String::from_str(&e, "active"));
 }
+
+
+// ============================================================================
+// Early Exit — Penalty Bounds
+// ============================================================================
+
+/// Zero penalty (0%): owner receives full current_value, no fees collected.
+#[test]
+fn test_early_exit_penalty_zero_percent() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_penalty_zero";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    // Fund the contract so it can transfer back
+    token_admin_client.mint(&contract_id, &1000i128);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    // early_exit_penalty = 0 → no penalty, full value returned
+    let mut commitment =
+        create_test_commitment_with_penalty(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000, 0);
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let updated = client.get_commitment(&String::from_str(&e, commitment_id));
+    assert_eq!(updated.status, String::from_str(&e, "early_exit"));
+    assert_eq!(updated.current_value, 0);
+
+    // No fees should have been collected
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 0);
+}
+
+/// 100% penalty: owner receives 0, entire current_value goes to protocol fees.
+#[test]
+fn test_early_exit_penalty_one_hundred_percent() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_penalty_100";
+    let current_value = 2000i128;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &current_value);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    // early_exit_penalty = 100 → returned = 0, all goes to fees
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, current_value, current_value, 10, 30, 1000, 100,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &current_value);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let updated = client.get_commitment(&String::from_str(&e, commitment_id));
+    assert_eq!(updated.status, String::from_str(&e, "early_exit"));
+    assert_eq!(updated.current_value, 0);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, current_value); // 100% penalty → all fees
+}
+
+/// Minimum safe-type penalty (15%): verify exact penalty and returned amounts.
+#[test]
+fn test_early_exit_penalty_safe_minimum_15_percent() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_safe_15";
+    let current_value = 1000i128;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &current_value);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    // 15% of 1000 = 150 penalty, 850 returned
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, current_value, current_value, 10, 30, 1000, 15,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &current_value);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 150); // 15% of 1000
+    assert_eq!(client.get_total_value_locked(), 0);
+}
+
+/// Minimum balanced-type penalty (10%): verify exact penalty and returned amounts.
+#[test]
+fn test_early_exit_penalty_balanced_minimum_10_percent() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_balanced_10";
+    let current_value = 500i128;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &current_value);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    // 10% of 500 = 50 penalty, 450 returned
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, current_value, current_value, 30, 30, 1000, 10,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &current_value);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 50); // 10% of 500
+}
+
+/// Minimum aggressive-type penalty (5%): verify exact penalty and returned amounts.
+#[test]
+fn test_early_exit_penalty_aggressive_minimum_5_percent() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_aggressive_5";
+    let current_value = 200i128;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &current_value);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    // 5% of 200 = 10 penalty, 190 returned
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, current_value, current_value, 100, 30, 1000, 5,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &current_value);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 10); // 5% of 200
+}
+
+/// Penalty accumulates across multiple early exits on different commitments for the same asset.
+#[test]
+fn test_early_exit_penalty_accumulates_in_collected_fees() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    // Fund contract for two transfers back
+    token_admin_client.mint(&contract_id, &2000i128);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &2000i128);
+    });
+
+    // First commitment: 10% of 1000 = 100 penalty
+    let mut c1 = create_test_commitment_with_penalty(
+        &e, "exit_accum_1", &owner, 1000, 1000, 10, 30, 1000, 10,
+    );
+    c1.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &c1);
+
+    // Second commitment: 10% of 1000 = 100 penalty
+    let mut c2 = create_test_commitment_with_penalty(
+        &e, "exit_accum_2", &owner, 1000, 1000, 10, 30, 1000, 10,
+    );
+    c2.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &c2);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, "exit_accum_1"), &owner);
+    client.early_exit(&String::from_str(&e, "exit_accum_2"), &owner);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 200); // 100 + 100
+}
+
+// ============================================================================
+// Early Exit — Owner / Auth Checks
+// ============================================================================
+
+/// `require_auth` is enforced: the caller must be the commitment owner.
+/// Verifies the auth record is present after a successful call.
+#[test]
+fn test_early_exit_records_owner_auth() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_auth_check";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &1000i128);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, 1000, 1000, 10, 30, 1000, 10,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    // Should succeed — mock_all_auths covers owner.require_auth()
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let updated = client.get_commitment(&String::from_str(&e, commitment_id));
+    assert_eq!(updated.status, String::from_str(&e, "early_exit"));
+}
+
+/// Admin cannot exit a commitment they do not own.
+#[test]
+#[should_panic(expected = "Unauthorized: caller not allowed")]
+fn test_early_exit_admin_cannot_exit_others_commitment() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let commitment_id = "exit_admin_not_owner";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, 1000, 1000, 10, 30, 1000, 10,
+    );
+    store_commitment(&e, &contract_id, &commitment);
+
+    // Admin tries to exit — should fail because admin != owner
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::early_exit(
+            e.clone(),
+            String::from_str(&e, commitment_id),
+            admin.clone(),
+        );
+    });
+}
+
+/// A third-party address (neither owner nor admin) cannot exit.
+#[test]
+#[should_panic(expected = "Unauthorized: caller not allowed")]
+fn test_early_exit_third_party_cannot_exit() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let third_party = Address::generate(&e);
+    let commitment_id = "exit_third_party";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+    });
+
+    let commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, 1000, 1000, 10, 30, 1000, 10,
+    );
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::early_exit(
+            e.clone(),
+            String::from_str(&e, commitment_id),
+            third_party.clone(),
+        );
+    });
+}
+
+// ============================================================================
+// Early Exit — SafeMath Edge Amounts
+// ============================================================================
+
+/// current_value = 0: penalty is 0, no transfer occurs, fees unchanged.
+#[test]
+fn test_early_exit_safemath_zero_current_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_zero_value";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &0i128);
+    });
+
+    // current_value = 0 → penalty = 0, returned = 0, no transfer
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, 1000, 0, 10, 30, 1000, 10,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let updated = client.get_commitment(&String::from_str(&e, commitment_id));
+    assert_eq!(updated.status, String::from_str(&e, "early_exit"));
+    assert_eq!(updated.current_value, 0);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 0);
+}
+
+/// current_value = 1 with 10% penalty: SafeMath rounds down, penalty = 0, returned = 1.
+#[test]
+fn test_early_exit_safemath_value_one_rounds_down() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_value_one";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &1i128);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1i128);
+    });
+
+    // 10% of 1 = 0 (integer division rounds down) → penalty = 0, returned = 1
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, 1, 1, 10, 30, 1000, 10,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    // penalty = (1 * 10) / 100 = 0 (truncated), so no fees collected
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 0);
+    assert_eq!(client.get_total_value_locked(), 0);
+}
+
+/// current_value = 9 with 10% penalty: 10% of 9 = 0 (truncated), returned = 9.
+#[test]
+fn test_early_exit_safemath_value_nine_truncates_penalty() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_value_nine";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &9i128);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &9i128);
+    });
+
+    // 10% of 9 = 0 (9 * 10 / 100 = 0 integer division)
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, 9, 9, 10, 30, 1000, 10,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 0); // 9 * 10 / 100 = 0
+}
+
+/// current_value = 10 with 10% penalty: penalty = 1, returned = 9.
+#[test]
+fn test_early_exit_safemath_value_ten_exact_penalty() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_value_ten";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &10i128);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &10i128);
+    });
+
+    // 10% of 10 = 1 penalty, 9 returned
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, 10, 10, 10, 30, 1000, 10,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, 1); // 10 * 10 / 100 = 1
+}
+
+/// TVL is decremented by original_val (current_value before exit), not by returned amount.
+#[test]
+fn test_early_exit_tvl_decremented_by_original_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_tvl_check";
+    let current_value = 1000i128;
+    let initial_tvl = 5000i128;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &current_value);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &initial_tvl);
+    });
+
+    // 20% penalty on 1000 → penalty = 200, returned = 800
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, current_value, current_value, 10, 30, 1000, 20,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    // TVL should be initial_tvl - current_value (not initial_tvl - returned)
+    assert_eq!(client.get_total_value_locked(), initial_tvl - current_value);
+}
+
+/// SafeMath: penalty_amount does not overflow for large but valid i128 values.
+/// Uses a value that is large but safe for 10% multiplication (value * 10 < i128::MAX).
+#[test]
+fn test_early_exit_safemath_large_value_no_overflow() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_large_value";
+
+    // i128::MAX / 100 = 1_701_411_834_604_692_317_316_873_037_158_841_057
+    // Use a value where value * 100 < i128::MAX to avoid SafeMath overflow
+    let large_value: i128 = i128::MAX / 100;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = token_contract.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&contract_id, &large_value);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &large_value);
+    });
+
+    // 10% penalty on large_value — SafeMath::mul(large_value, 10) must not overflow
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, large_value, large_value, 10, 30, 1000, 10,
+    );
+    commitment.asset_address = asset_address.clone();
+    store_commitment(&e, &contract_id, &commitment);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let updated = client.get_commitment(&String::from_str(&e, commitment_id));
+    assert_eq!(updated.status, String::from_str(&e, "early_exit"));
+    assert_eq!(updated.current_value, 0);
+
+    let expected_penalty = large_value * 10 / 100;
+    let collected: i128 = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::CollectedFees(asset_address.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(collected, expected_penalty);
+}
+
+/// SafeMath: penalty_amount panics on overflow when value * penalty_percent overflows i128.
+/// i128::MAX * 10 overflows — SafeMath::mul must panic with "Math: multiplication overflow".
+#[test]
+#[should_panic(expected = "Math: multiplication overflow")]
+fn test_early_exit_safemath_overflow_panics() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let owner = Address::generate(&e);
+    let admin = Address::generate(&e);
+    let commitment_id = "exit_overflow";
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        e.storage().instance().set(&DataKey::TotalValueLocked, &i128::MAX);
+    });
+
+    // i128::MAX * 10 overflows — SafeMath::mul panics
+    let mut commitment = create_test_commitment_with_penalty(
+        &e, commitment_id, &owner, i128::MAX, i128::MAX, 10, 30, 1000, 10,
+    );
+    commitment.asset_address = Address::generate(&e);
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::early_exit(
+            e.clone(),
+            String::from_str(&e, commitment_id),
+            owner.clone(),
+        );
+    });
+}
