@@ -990,6 +990,19 @@ fn test_get_all_metadata_empty() {
 }
 
 #[test]
+fn test_token_ids_stored_in_persistent_storage() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+
+    client.initialize(&admin);
+
+    e.as_contract(&client.address, || {
+        assert!(!e.storage().instance().has(&DataKey::TokenIds));
+        assert!(e.storage().persistent().has(&DataKey::TokenIds));
+    });
+}
+
+#[test]
 fn test_get_all_metadata() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);

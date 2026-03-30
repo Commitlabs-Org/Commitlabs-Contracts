@@ -33,6 +33,12 @@ fn setup_test_token(e: &Env) -> Address {
     Address::generate(e)
 }
 
+fn setup_allowed_payment_token(e: &Env, client: &CommitmentMarketplaceClient<'_>) -> Address {
+    let payment_token = setup_test_token(e);
+    client.add_payment_token(&payment_token);
+    payment_token
+}
+
 // ============================================================================
 // Initialization Tests
 // ============================================================================
@@ -97,7 +103,7 @@ fn test_list_nft_zero_price_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.list_nft(&seller, &1, &0, &payment_token);
 }
@@ -111,7 +117,7 @@ fn test_list_nft_twice_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.list_nft(&seller, &1, &2000, &payment_token); // Should fail
@@ -125,7 +131,7 @@ fn test_cancel_listing() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
     client.list_nft(&seller, &token_id, &1000, &payment_token);
@@ -156,7 +162,8 @@ fn test_get_listing_after_cancel_panics() {
     let seller = Address::generate(&e);
     let token_id = 1u32;
 
-    client.list_nft(&seller, &token_id, &1000, &setup_test_token(&e));
+    let payment_token = setup_allowed_payment_token(&e, &client);
+    client.list_nft(&seller, &token_id, &1000, &payment_token);
     client.cancel_listing(&seller, &token_id);
 
     // This will panic as expected
@@ -185,7 +192,7 @@ fn test_cancel_listing_not_seller_fails() {
 
     let seller = Address::generate(&e);
     let not_seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.cancel_listing(&not_seller, &1); // Should fail
@@ -199,7 +206,7 @@ fn test_get_all_listings() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     // List 3 NFTs
     client.list_nft(&seller, &1, &1000, &payment_token);
@@ -223,7 +230,7 @@ fn test_buy_nft_flow() {
 
     let seller = Address::generate(&e);
     let _buyer = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
     let price = 1000_0000000i128;
 
@@ -255,7 +262,7 @@ fn test_buy_own_listing_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.buy_nft(&seller, &1); // Seller trying to buy their own listing
@@ -274,7 +281,7 @@ fn test_make_offer_zero_amount_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let offerer = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.make_offer(&offerer, &1, &0, &payment_token);
 }
@@ -288,7 +295,7 @@ fn test_make_duplicate_offer_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let offerer = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.make_offer(&offerer, &1, &500, &payment_token);
     client.make_offer(&offerer, &1, &600, &payment_token); // Should fail
@@ -303,7 +310,7 @@ fn test_multiple_offers_same_token() {
 
     let offerer1 = Address::generate(&e);
     let offerer2 = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
     client.make_offer(&offerer1, &token_id, &500, &payment_token);
@@ -321,7 +328,7 @@ fn test_cancel_offer() {
     let (_, _, client) = setup_marketplace(&e);
 
     let offerer = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
     client.make_offer(&offerer, &token_id, &500, &payment_token);
@@ -356,7 +363,7 @@ fn test_start_auction_zero_price_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.start_auction(&seller, &1, &0, &86400, &payment_token);
 }
@@ -370,7 +377,7 @@ fn test_start_auction_zero_duration_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.start_auction(&seller, &1, &1000, &0, &payment_token);
 }
@@ -384,7 +391,7 @@ fn test_place_bid() {
 
     let seller = Address::generate(&e);
     let _bidder = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
     let starting_price = 1000_0000000i128;
     let _bid_amount = 1200_0000000i128;
@@ -408,7 +415,7 @@ fn test_place_bid_too_low_fails() {
 
     let seller = Address::generate(&e);
     let bidder = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
     client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
@@ -425,7 +432,7 @@ fn test_place_bid_after_auction_ends_fails() {
 
     let seller = Address::generate(&e);
     let bidder = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
     let duration = 86400u64; // 1 day
 
@@ -448,7 +455,7 @@ fn test_end_auction_before_time_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
     client.end_auction(&1); // Try to end immediately
@@ -463,7 +470,7 @@ fn test_end_auction_twice_fails() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
 
@@ -483,7 +490,7 @@ fn test_get_all_auctions() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     // Start 3 auctions
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
@@ -506,7 +513,7 @@ fn test_list_then_start_auction_same_token() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
     // List NFT
@@ -546,7 +553,7 @@ fn test_gas_listing_operations() {
     let (_, _, client) = setup_marketplace(&e);
 
     let seller = Address::generate(&e);
-    let payment_token = setup_test_token(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
 
     // Measure operations for optimization
     let start = e.ledger().sequence();
@@ -560,4 +567,78 @@ fn test_gas_listing_operations() {
 
     // In production, you'd log or assert gas usage
     assert_eq!(client.get_all_listings().len(), 10);
+}
+
+#[test]
+fn test_add_and_remove_payment_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let payment_token = setup_test_token(&e);
+
+    assert!(!client.is_payment_token_allowed(&payment_token));
+
+    client.add_payment_token(&payment_token);
+    assert!(client.is_payment_token_allowed(&payment_token));
+    assert_eq!(client.get_allowed_payment_tokens().len(), 1);
+
+    client.remove_payment_token(&payment_token);
+    assert!(!client.is_payment_token_allowed(&payment_token));
+    assert_eq!(client.get_allowed_payment_tokens().len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #22)")] // PaymentTokenNotAllowed
+fn test_list_nft_with_unallowlisted_token_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    client.list_nft(&seller, &1, &1000, &payment_token);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #22)")] // PaymentTokenNotAllowed
+fn test_make_offer_with_unallowlisted_token_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    client.make_offer(&offerer, &1, &1000, &payment_token);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #22)")] // PaymentTokenNotAllowed
+fn test_start_auction_with_unallowlisted_token_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e);
+
+    client.start_auction(&seller, &1, &1000, &86400, &payment_token);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #22)")] // PaymentTokenNotAllowed
+fn test_buy_nft_after_payment_token_is_removed_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.list_nft(&seller, &1, &1000, &payment_token);
+    client.remove_payment_token(&payment_token);
+    client.buy_nft(&buyer, &1);
 }
