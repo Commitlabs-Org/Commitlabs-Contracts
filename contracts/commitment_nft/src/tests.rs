@@ -2904,3 +2904,74 @@ fn test_get_commitment_by_invalid_id_fails() {
     let invalid_id = String::from_str(&e, "COMMIT_999");
     let _ = client.get_commitment_by_id(&invalid_id);
 }
+
+// ============================================================================
+// Issue #214: Authorized Minter / Core-Only Mint Path
+// ============================================================================
+
+/// Verify that an address added via `add_authorized_contract` can successfully
+/// mint an NFT.  The authorized minter must provide a valid on-chain auth
+/// (`mock_all_auths` covers this in the test environment).
+#[test]
+fn test_mint_by_authorized_minter_succeeds() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let authorized_minter = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // Whitelist the minter
+    client.add_authorized_contract(&admin, &authorized_minter).unwrap();
+    assert!(client.is_authorized(&authorized_minter));
+
+    // Authorized minter calls mint — must succeed
+    let token_id = client.mint(
+        &authorized_minter,
+        &owner,
+        &String::from_str(&e, "ignored"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    assert_eq!(token_id, 0);
+    assert_eq!(client.total_supply(), 1);
+    assert_eq!(client.owner_of(&token_id), owner);
+}
+
+/// Verify that an address that is NOT the admin, core contract, or whitelisted
+/// minter is rejected with `NotAuthorized` (error #6) when calling `mint`.
+/// This test does NOT use `mock_all_auths` so the auth check is live.
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")] // NotAuthorized
+fn test_mint_by_unauthorized_address_fails() {
+    let e = Env::default();
+    e.mock_all_auths(); // still needed so initialize() works
+
+    let (admin, client) = setup_contract(&e);
+    let unauthorized = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+
+    // `unauthorized` is not admin, not core contract, not whitelisted
+    client.mint(
+        &unauthorized,
+        &owner,
+        &String::from_str(&e, "ignored"),
+        &30,
+        &10,
+        &String::from_str(&e, "balanced"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+}

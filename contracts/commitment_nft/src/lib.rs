@@ -3,7 +3,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
 };
-use shared_utils::{EmergencyControl, Pausable};
+use shared_utils::{math::SafeMath, EmergencyControl, Pausable};
 
 // Current storage version for migration checks.
 pub const CURRENT_VERSION: u32 = 1;
@@ -475,7 +475,39 @@ impl CommitmentNFTContract {
     // NFT Minting
     // ========================================================================
 
-    /// Mint a new Commitment NFT. Caller must be admin or an authorized minter (see add_authorized_contract).
+    /// Mint a new Commitment NFT.
+    ///
+    /// # Authorization
+    /// `caller` must be the admin, the registered core contract, or an address
+    /// previously whitelisted via [`add_authorized_contract`].  The call is
+    /// enforced on-chain with `caller.require_auth()` so that no other party
+    /// can trigger state changes for new NFTs.
+    ///
+    /// # Parameters
+    /// - `caller`            – The address authorizing this mint (must be admin,
+    ///                         core contract, or an authorized minter).
+    /// - `owner`             – The address that will own the newly minted NFT.
+    /// - `_commitment_id`    – Ignored; the contract auto-generates a unique ID.
+    /// - `duration_days`     – Commitment duration in days (must be > 0).
+    /// - `max_loss_percent`  – Maximum tolerated loss percentage (0–100).
+    /// - `commitment_type`   – One of `"safe"`, `"balanced"`, or `"aggressive"`.
+    /// - `initial_amount`    – Initial committed amount (must be > 0).
+    /// - `asset_address`     – The Stellar asset contract address.
+    /// - `early_exit_penalty`– Penalty percentage applied on early exit.
+    ///
+    /// # Returns
+    /// The newly assigned `token_id` on success.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`]      – Contract not yet initialized.
+    /// - [`ContractError::NotAuthorized`]       – Caller is not an authorized minter.
+    /// - [`ContractError::ReentrancyDetected`]  – Reentrant call detected.
+    /// - [`ContractError::InvalidDuration`]     – `duration_days` is zero.
+    /// - [`ContractError::InvalidMaxLoss`]      – `max_loss_percent` exceeds 100.
+    /// - [`ContractError::InvalidCommitmentType`] – Unrecognized commitment type.
+    /// - [`ContractError::InvalidAmount`]       – `initial_amount` is not positive.
+    /// - [`ContractError::ExpirationOverflow`]  – Timestamp arithmetic overflows.
+    /// - [`ContractError::TransferToZeroAddress`] – `owner` is the zero address.
     pub fn mint(
         e: Env,
         caller: Address,
@@ -510,14 +542,29 @@ impl CommitmentNFTContract {
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotInitialized);
         }
+
+        // --- Authorization: enforce on-chain signature from caller ---
         let admin: Address = e.storage().instance().get(&DataKey::Admin).unwrap();
         let core_contract: Option<Address> = e.storage().instance().get(&DataKey::CoreContract);
-        let is_authorized_minter = e.storage().instance().get(&DataKey::AuthorizedMinter(caller.clone())).unwrap_or(false);
-        let allowed = (caller == admin) || (core_contract.as_ref() == Some(&caller)) || is_authorized_minter;
+        let is_authorized_minter = e
+            .storage()
+            .instance()
+            .get(&DataKey::AuthorizedMinter(caller.clone()))
+            .unwrap_or(false);
+        let allowed = (caller == admin)
+            || (core_contract.as_ref() == Some(&caller))
+            || is_authorized_minter;
         if !allowed {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotAuthorized);
         }
+        // Require a valid on-chain authorization from the caller.
+        // This must come AFTER the allowlist check so that only whitelisted
+        // callers can even attempt to provide auth, preventing spurious auth
+        // consumption by arbitrary addresses.
+        caller.require_auth();
 
         // CHECKS: Reject zero address owner
         if is_zero_address(&e, &owner) {
@@ -574,13 +621,14 @@ impl CommitmentNFTContract {
         };
 
         // EFFECTS: Update state
-        // Generate unique token_id
+        // Generate unique token_id using SafeMath to prevent overflow
         let token_id: u32 = e
             .storage()
             .instance()
             .get(&DataKey::TokenCounter)
             .unwrap_or(0);
-        let next_token_id = token_id + 1;
+        let next_token_id =
+            SafeMath::add(token_id as i128, 1) as u32;
         e.storage()
             .instance()
             .set(&DataKey::TokenCounter, &next_token_id);
