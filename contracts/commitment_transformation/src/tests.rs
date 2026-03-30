@@ -2,13 +2,25 @@
 
 use super::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{vec, Address, Env, String, Vec};
+use soroban_sdk::{
+    token::{Client as TokenClient, StellarAssetClient},
+    vec, Address, Env, String, Vec,
+};
 
 fn setup(e: &Env) -> (Address, Address, Address) {
     let admin = Address::generate(e);
     let core = Address::generate(e);
     let user = Address::generate(e);
     (admin, core, user)
+}
+
+fn setup_fee_token(e: &Env) -> (Address, StellarAssetClient<'_>, TokenClient<'_>) {
+    let token_admin = Address::generate(e);
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset = token_contract.address();
+    let admin_client = StellarAssetClient::new(e, &asset);
+    let token_client = TokenClient::new(e, &asset);
+    (asset, admin_client, token_client)
 }
 
 #[test]
@@ -45,6 +57,39 @@ fn test_set_transformation_fee() {
     client.initialize(&admin, &core);
     client.set_transformation_fee(&admin, &100);
     assert_eq!(client.get_transformation_fee_bps(), 100);
+}
+
+#[test]
+fn test_set_transformation_fee_accepts_boundaries() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, _) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+
+    client.initialize(&admin, &core);
+    client.set_transformation_fee(&admin, &0);
+    assert_eq!(client.get_transformation_fee_bps(), 0);
+
+    client.set_transformation_fee(&admin, &10_000);
+    assert_eq!(client.get_transformation_fee_bps(), 10_000);
+}
+
+#[test]
+fn test_set_transformation_fee_rejects_above_max_and_preserves_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, _) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+
+    client.initialize(&admin, &core);
+    client.set_transformation_fee(&admin, &250);
+
+    let result = client.try_set_transformation_fee(&admin, &10_001);
+
+    assert!(result.is_err());
+    assert_eq!(client.get_transformation_fee_bps(), 250);
 }
 
 #[test]
@@ -303,4 +348,101 @@ fn test_fee_withdraw_requires_recipient() {
     client.initialize(&admin, &core);
     let asset = Address::generate(&e);
     client.withdraw_fees(&admin, &asset, &100i128);
+}
+
+#[test]
+#[should_panic(expected = "Insufficient collected fees to withdraw")]
+fn test_fee_withdraw_rejects_amount_above_collected_fees() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, _) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    let treasury = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+    client.set_fee_recipient(&admin, &treasury);
+
+    client.withdraw_fees(&admin, &asset, &1i128);
+}
+
+#[test]
+#[should_panic(expected = "Invalid amount: must be positive")]
+fn test_fee_withdraw_rejects_zero_amount() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, _) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    let treasury = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+    client.set_fee_recipient(&admin, &treasury);
+
+    client.withdraw_fees(&admin, &asset, &0i128);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized: caller not owner or authorized")]
+fn test_fee_withdraw_requires_admin() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    let treasury = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+    client.set_fee_recipient(&admin, &treasury);
+
+    client.withdraw_fees(&user, &asset, &1i128);
+}
+
+#[test]
+fn test_fee_withdraw_transfers_collected_fees_to_recipient() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    let treasury = Address::generate(&e);
+    let (fee_asset, token_admin_client, token_client) = setup_fee_token(&e);
+
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+    client.set_transformation_fee(&admin, &100);
+    client.set_fee_recipient(&admin, &treasury);
+
+    let total_value = 1_000_000i128;
+    let expected_fee = 10_000i128;
+    token_admin_client.mint(&user, &expected_fee);
+
+    let commitment_id = String::from_str(&e, "c_fee");
+    let tranche_share_bps: Vec<u32> = vec![&e, 10_000u32];
+    let risk_levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
+
+    let transformation_id = client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &tranche_share_bps,
+        &risk_levels,
+        &fee_asset,
+    );
+
+    let tranche_set = client.get_tranche_set(&transformation_id);
+    assert_eq!(tranche_set.fee_paid, expected_fee);
+    assert_eq!(client.get_collected_fees(&fee_asset), expected_fee);
+    assert_eq!(token_client.balance(&user), 0);
+    assert_eq!(token_client.balance(&contract_id), expected_fee);
+    assert_eq!(token_client.balance(&treasury), 0);
+
+    client.withdraw_fees(&admin, &fee_asset, &expected_fee);
+
+    assert_eq!(client.get_collected_fees(&fee_asset), 0);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert_eq!(token_client.balance(&treasury), expected_fee);
 }
