@@ -19,7 +19,7 @@ This document summarizes public entry points for each contract and their access 
 | get_violation_details(commitment_id) -> (bool, bool, bool, i128, u64) | Detailed violation info.                         | View.                                     | Calculates loss percent and time remaining.        |
 | settle(commitment_id)                                                 | Settle expired commitment and NFT.               | No require_auth.                          | Transfers assets and calls NFT settle.             |
 | early_exit(commitment_id, caller)                                     | Exit early with penalty.                         | Checks caller == owner (no require_auth). | Uses SafeMath to compute penalty.                  |
-| allocate(commitment_id, target_pool, amount)                          | Allocate assets to pool.                         | No require_auth.                          | Transfers assets to target pool.                   |
+| allocate(caller, commitment_id, target_pool, amount)                          | Allocate assets from commitment to pool.                         | Admin/authorized allocator only.                          | Validates amount > 0, sufficient balance, active commitment, and reentrancy guard. Transfers assets to target pool.                   |
 | set_rate_limit(caller, function, window, max_calls)                   | Configure rate limits.                           | Admin only.                               | Uses shared RateLimiter.                           |
 | set_rate_limit_exempt(caller, address, exempt)                        | Configure rate limit exemption.                  | Admin only.                               | Uses shared RateLimiter.                           |
 
