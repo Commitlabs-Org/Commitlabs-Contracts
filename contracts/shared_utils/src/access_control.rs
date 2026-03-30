@@ -152,4 +152,38 @@ mod tests {
             AccessControl::require_owner(&env, &owner, &owner);
         });
     }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: caller is not the owner")]
+    fn test_require_owner_wrong_owner_after_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let caller = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let owner = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            AccessControl::require_owner(&env, &caller, &owner);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: caller is not admin or authorized")]
+    fn test_require_admin_or_authorized_fails_for_non_authorized_user() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let caller = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let authorized_key: Symbol = soroban_sdk::symbol_short!("AUTHUSR");
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            Storage::set_initialized(&env);
+            Storage::set_admin(&env, &admin);
+
+            AccessControl::require_admin_or_authorized(&env, &caller, &authorized_key);
+        });
+    }
 }
