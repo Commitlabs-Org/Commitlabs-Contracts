@@ -107,9 +107,9 @@ CI drift tests compare its source-defined types and expected signatures against
 | register_pool(admin, pool_id, risk_level, apy, max_capacity) -> Result         | Register investment pool.               | Admin require_auth.  | Validates capacity and APY.               |
 | update_pool_status(admin, pool_id, active) -> Result                           | Activate/deactivate pool.               | Admin require_auth.  | Updates pool timestamps.                  |
 | update_pool_capacity(admin, pool_id, new_capacity) -> Result                   | Update pool capacity.                   | Admin require_auth.  | Ensures capacity >= liquidity.            |
-| allocate(caller, commitment_id, amount, strategy) -> Result<AllocationSummary> | Allocate funds across pools.            | caller.require_auth. | Uses rate limiting and reentrancy guard.  |
-| rebalance(caller, commitment_id) -> Result<AllocationSummary>                  | Reallocate using stored strategy.       | caller.require_auth. | Requires caller matches allocation owner. |
-| get_allocation(commitment_id) -> AllocationSummary                             | Fetch allocation summary.               | View.                | Returns empty summary if missing.         |
+| allocate(caller, commitment_id, amount, strategy) -> Result<AllocationSummary> | Allocate funds across pools.            | caller.require_auth. | Validates commitment against core; uses rate limiting. |
+| rebalance(caller, commitment_id) -> Result<AllocationSummary>                  | Reallocate using stored strategy.       | caller.require_auth. | Requires caller matches owner; validates core. |
+| get_allocation(commitment_id) -> AllocationSummary                             | Fetch allocation summary.               | View.                | String ID; returns empty summary if missing.         |
 | get_pool(pool_id) -> Result<Pool>                                              | Fetch pool info.                        | View.                | Returns PoolNotFound if missing.          |
 | get_all_pools() -> Vec<Pool>                                                   | Fetch all pools.                        | View.                | Iterates registry.                        |
 | is_initialized() -> bool                                                       | Check initialization flag.              | View.                | Returns false if uninitialized.           |
