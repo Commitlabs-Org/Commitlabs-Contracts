@@ -137,6 +137,24 @@ fn test_get_price_valid_not_found() {
 }
 
 #[test]
+fn test_get_price_valid_not_found_exact_error() {
+    let e = Env::default();
+    let admin = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+    });
+
+    assert_eq!(
+        client.try_get_price_valid(&asset, &None),
+        Err(Ok(OracleError::PriceNotFound))
+    );
+}
+
+#[test]
 #[should_panic]
 fn test_get_price_valid_stale() {
     let e = Env::default();
@@ -160,6 +178,32 @@ fn test_get_price_valid_stale() {
     });
 
     let _ = client.get_price_valid(&asset, &None);
+}
+
+#[test]
+fn test_get_price_valid_stale_exact_error() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    client.set_price(&oracle, &asset, &1000, &8);
+    e.ledger().with_mut(|li| {
+        li.timestamp += 4000;
+    });
+
+    assert_eq!(
+        client.try_get_price_valid(&asset, &None),
+        Err(Ok(OracleError::StalePrice))
+    );
 }
 
 #[test]
@@ -240,6 +284,70 @@ fn test_get_price_valid_rejects_future_dated_price() {
         client.try_get_price_valid(&asset, &None),
         Err(Ok(OracleError::StalePrice))
     );
+}
+
+#[test]
+fn test_zero_price_valid_and_negative_price_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset_zero = Address::generate(&e);
+    let asset_negative = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    // 0 is valid because only negative values are rejected in validation.
+    client.set_price(&oracle, &asset_zero, &0, &8);
+    let zero_data = client.get_price_valid(&asset_zero, &None);
+    assert_eq!(zero_data.price, 0);
+
+    // Simulate legacy/corrupt storage state with negative price to test read-path guard.
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(
+            &DataKey::Price(asset_negative.clone()),
+            &PriceData {
+                price: -1,
+                updated_at: e.ledger().timestamp(),
+                decimals: 8,
+            },
+        );
+    });
+
+    assert_eq!(
+        client.try_get_price_valid(&asset_negative, &None),
+        Err(Ok(OracleError::InvalidPrice))
+    );
+}
+
+#[test]
+fn test_multiple_updates_latest_wins() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    client.set_price(&oracle, &asset, &111, &8);
+    e.ledger().with_mut(|li| {
+        li.timestamp += 1;
+    });
+    client.set_price(&oracle, &asset, &222, &8);
+
+    let latest = client.get_price_valid(&asset, &None);
+    assert_eq!(latest.price, 222);
 }
 
 #[test]
