@@ -5,7 +5,6 @@
 //! give downstream callers and generated bindings a stable contract surface that
 //! mirrors the production `commitment_core` data model.
 
-extern crate alloc;
 
 pub mod error;
 pub mod types;
