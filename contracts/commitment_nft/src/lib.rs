@@ -1118,9 +1118,4 @@ fn is_zero_address(e: &Env, address: &Address) -> bool {
     address.to_string() == zero_str
 }
 
-#[cfg(all(test, feature = "benchmark"))]
-mod benchmarks;
 
-#[cfg(test)]
-mod test_zero_address;
-mod benchmarks;

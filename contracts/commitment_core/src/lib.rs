@@ -24,25 +24,45 @@ use soroban_sdk::{
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
+/// Standardized errors for commitment lifecycle operations.
 pub enum CommitmentError {
+    /// Duration must be greater than zero
     InvalidDuration = 1,
+    /// Max loss must be between 0 and 100
     InvalidMaxLossPercent = 2,
+    /// Commitment type must be 'safe', 'balanced', or 'aggressive'
     InvalidCommitmentType = 3,
+    /// Amount must be positive
     InvalidAmount = 4,
+    /// User balance too low for commitment amount
     InsufficientBalance = 5,
+    /// Underlying token transfer failed
     TransferFailed = 6,
+    /// NFT contract call failed
     MintingFailed = 7,
+    /// No commitment record found for the provided ID
     CommitmentNotFound = 8,
+    /// Caller lacks sufficient authority or role
     Unauthorized = 9,
+    /// Contract is already initialized
     AlreadyInitialized = 10,
+    /// Commitment already in a terminal state
     AlreadySettled = 11,
+    /// Reentrancy detected during cross-contract interaction
     ReentrancyDetected = 12,
+    /// Operation requires an 'active' commitment
     NotActive = 13,
+    /// Current commitment status prevents this transition
     InvalidStatus = 14,
+    /// Contract must be initialized before use
     NotInitialized = 15,
+    /// Settle called before maturity
     NotExpired = 16,
+    /// Value update violates rule constraints
     ValueUpdateViolation = 17,
+    /// Caller is not an authorized updater for this commitment
     NotAuthorizedUpdater = 18,
+    /// Zero address is not allowed as a parameter
     ZeroAddress = 19,
     /// Duration would cause expires_at to overflow u64
     ExpirationOverflow = 20,
@@ -129,16 +149,30 @@ pub struct CommitmentRules {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Canonical commitment record.
+///
+/// ### Storage Note:
+/// Stored in instance storage keyed by `DataKey::Commitment(id)`.
 pub struct Commitment {
+    /// Human-readable unique ID (e.g. "c_123")
     pub commitment_id: String,
+    /// Address allowed to settle or exit early
     pub owner: Address,
+    /// Token ID of the paired NFT in commitment_nft
     pub nft_token_id: u32,
+    /// Rule set applied at creation
     pub rules: CommitmentRules,
+    /// Initial locked amount (net of creation fees)
     pub amount: i128,
+    /// Underlying asset contract address
     pub asset_address: Address,
+    /// Ledger timestamp at creation
     pub created_at: u64,
+    /// Ledger timestamp at maturity
     pub expires_at: u64,
+    /// Current estimated value in underlying asset
     pub current_value: i128,
+    /// Lifecycle status: active, settled, early_exit, violated
     pub status: String, 
 }
 
@@ -187,9 +221,21 @@ fn transfer_assets(e: &Env, from: &Address, to: &Address, asset_address: &Addres
     token_client.transfer(from, to, &amount);
 }
 
-/// Helper function to call NFT contract mint function. Passes current contract as caller for access control.
 /// Call the NFT contract mint function.
-/// Helper function to call NFT contract mint function
+///
+/// # Arguments
+/// * `nft_contract` - Address of the commitment_nft contract
+/// * `owner` - Address to receive the NFT
+/// * `commitment_id` - ID of the commitment
+/// * `duration_days` - Duration of the commitment
+/// * `max_loss_percent` - Risk parameter
+/// * `commitment_type` - String identifier for rule set
+/// * `initial_amount` - Initial value locked
+/// * `asset_address` - Token address
+/// * `early_exit_penalty` - Penalty basis points
+///
+/// # Returns
+/// The u32 token ID of the minted NFT.
 fn call_nft_mint(
     e: &Env,
     nft_contract: &Address,
@@ -289,8 +335,11 @@ impl CommitmentCoreContract {
     fn validate_rules(e: &Env, rules: &CommitmentRules) {
         Validation::require_valid_duration(rules.duration_days);
         Validation::require_valid_percent(rules.max_loss_percent);
-        let valid_types = ["safe", "balanced", "aggressive"];
-        Validation::require_valid_commitment_type(e, &rules.commitment_type, &valid_types);
+        Validation::require_valid_commitment_type(
+            e,
+            &rules.commitment_type,
+            &["safe", "balanced", "aggressive"],
+        );
 
         // Enforce type-specific constraints
         if rules.commitment_type == String::from_str(e, "safe") {
@@ -330,8 +379,13 @@ impl CommitmentCoreContract {
 
     /// Initialize the core contract with its admin and linked NFT contract.
     ///
-    /// The provided `nft_contract` becomes the downstream dependency used by
-    /// `create_commitment`, `settle`, and `early_exit`.
+    /// # Arguments
+    /// * `admin` - Primary authority allowed to manage configuration and emergency modes
+    /// * `nft_contract` - Address of the `commitment_nft` contract used for mirroring state
+    ///
+    /// # Security
+    /// - One-time use: Reverts if already initialized
+    /// - Establishes trust boundary: Only the provided `nft_contract` is trusted for mint/settle
     pub fn initialize(e: Env, admin: Address, nft_contract: Address) {
         if e.storage().instance().has(&DataKey::Admin) {
             fail(&e, CommitmentError::AlreadyInitialized, "initialize");
@@ -354,14 +408,20 @@ impl CommitmentCoreContract {
 
     /// Create a new commitment, transfer assets into custody, and mint the paired NFT.
     ///
-    /// Call sequence:
-    /// 1. validate owner auth, rules, and balances
-    /// 2. persist commitment state and counters
-    /// 3. transfer tokens into this contract
-    /// 4. invoke `commitment_nft::mint`
+    /// # Arguments
+    /// * `owner` - Address that will own the commitment and NFT
+    /// * `amount` - Gross amount of tokens to commit (before creation fees)
+    /// * `asset_address` - Address of the token contract
+    /// * `rules` - Commitment rules (duration, risk, penalties)
     ///
-    /// Because Soroban reverts the entire invocation on panic, a downstream NFT mint
-    /// failure should roll back the earlier state writes and token transfer.
+    /// # Returns
+    /// The generated unique `commitment_id` (String).
+    ///
+    /// # Security
+    /// - Reentrancy: Uses reentrancy guard
+    /// - Auth: Requires `owner.require_auth()`
+    /// - Consistency: Atomic transfer and NFT minting. Reverts all on failure.
+    /// - Fees: Deducts protocol creation fee from `amount`
     pub fn create_commitment(
         e: Env,
         owner: Address,
@@ -484,23 +544,25 @@ impl CommitmentCoreContract {
 
     /// Return the canonical commitment record by id.
     ///
-    /// This is the read API consumed by `attestation_engine` for compliance checks,
-    /// health metrics, and commitment-existence validation. It intentionally does not
-    /// perform auth checks so downstream contracts can read commitment state.
+    /// # Arguments
+    /// * `commitment_id` - Unique ID of the commitment
+    ///
+    /// # Returns
+    /// The `Commitment` struct containing full state details.
+    ///
+    /// # Security
+    /// - View API: Permissionless read; consumed by `attestation_engine`.
     pub fn get_commitment(e: Env, commitment_id: String) -> Commitment {
         read_commitment(&e, &commitment_id)
             .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "get_commitment"))
     }
 
     /// List all commitment IDs owned by the given address.
-    ///
-    /// This is a convenience wrapper around `get_owner_commitments` with a
-    /// name optimized for off-chain indexers and UIs.
     pub fn list_commitments_by_owner(e: Env, owner: Address) -> Vec<String> {
         Self::get_owner_commitments(e, owner)
     }
 
-    /// Get all commitments for an owner
+    /// Get all commitment IDs for a specific owner.
     pub fn get_owner_commitments(e: Env, owner: Address) -> Vec<String> {
         e.storage()
             .instance()
@@ -508,7 +570,7 @@ impl CommitmentCoreContract {
             .unwrap_or(Vec::new(&e))
     }
 
-    /// Get total number of commitments
+    /// Get the monotonic counter for total commitments ever created.
     pub fn get_total_commitments(e: Env) -> u64 {
         e.storage()
             .instance()
@@ -516,7 +578,7 @@ impl CommitmentCoreContract {
             .unwrap_or(0)
     }
 
-    /// Get total value locked across all active commitments.
+    /// Get total value locked (current aggregate of all active commitments).
     pub fn get_total_value_locked(e: Env) -> i128 {
         e.storage()
             .instance()
@@ -524,8 +586,11 @@ impl CommitmentCoreContract {
             .unwrap_or(0)
     }
 
-    /// Get commitment IDs created between two timestamps (inclusive).
-    /// For analytics/dashboards. Gas cost is O(n) in total commitments; consider pagination for large n.
+    /// Filter commitment IDs created within a specific ledger timestamp range.
+    ///
+    /// # Arguments
+    /// * `from_ts` - Start timestamp (inclusive)
+    /// * `to_ts` - End timestamp (inclusive)
     pub fn get_commitments_created_between(e: Env, from_ts: u64, to_ts: u64) -> Vec<String> {
         let all_ids = e
             .storage()
@@ -543,7 +608,7 @@ impl CommitmentCoreContract {
         out
     }
 
-    /// Get admin address
+    /// Get the current administrative address.
     pub fn get_admin(e: Env) -> Address {
         e.storage()
             .instance()
@@ -551,7 +616,7 @@ impl CommitmentCoreContract {
             .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "get_admin"))
     }
 
-    /// Get NFT contract address
+    /// Get the linked NFT contract address.
     pub fn get_nft_contract(e: Env) -> Address {
         e.storage()
             .instance()
@@ -559,20 +624,33 @@ impl CommitmentCoreContract {
             .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "get_nft_contract"))
     }
 
+    /// Pause all state-changing operations (Create, Settle, Exit, Allocate).
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn pause(e: Env, caller: Address) {
         require_admin(&e, &caller);
         Pausable::pause(&e);
     }
 
+    /// Resume all state-changing operations.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn unpause(e: Env, caller: Address) {
         require_admin(&e, &caller);
         Pausable::unpause(&e);
     }
 
+    /// Check if the contract is currently paused.
     pub fn is_paused(e: Env) -> bool {
         Pausable::is_paused(&e)
     }
 
+    /// Authorize a contract (e.g. `allocation_logic`) to call `allocate`.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn add_authorized_contract(e: Env, caller: Address, contract_address: Address) {
         require_admin(&e, &caller);
         e.storage()
@@ -584,6 +662,10 @@ impl CommitmentCoreContract {
         );
     }
 
+    /// Revoke authorization for a contract.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn remove_authorized_contract(e: Env, caller: Address, contract_address: Address) {
         require_admin(&e, &caller);
         e.storage()
@@ -595,6 +677,7 @@ impl CommitmentCoreContract {
         );
     }
 
+    /// Check if an address is an authorized allocator (or the admin).
     pub fn is_authorized(e: Env, contract_address: Address) -> bool {
         let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
         if let Some(a) = admin {
@@ -608,6 +691,16 @@ impl CommitmentCoreContract {
             .unwrap_or(false)
     }
 
+    /// Update the estimated value of a commitment.
+    ///
+    /// # Arguments
+    /// * `commitment_id` - ID of the commitment
+    /// * `new_value` - New estimated value in underlying asset
+    ///
+    /// # Security
+    /// - Authenticated update: Only authorized updaters can call (enforced by RateLimiter check on contract)
+    /// - TVL impact: Adjusts protocol TVL by `new_value - old_value`
+    /// - Violation check: Marks status 'violated' if `new_value` exceeds `max_loss_percent`
     pub fn update_value(e: Env, commitment_id: String, new_value: i128) {
         let fn_symbol = symbol_short!("upd_val");
         let contract_address = e.current_contract_address();
@@ -652,6 +745,10 @@ impl CommitmentCoreContract {
         e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl - old_value + new_value));
     }
 
+    /// Evaluating loss or duration violations for a commitment.
+    ///
+    /// # Returns
+    /// True if commitment is violated (max loss exceeded or expired).
     pub fn check_violations(e: Env, commitment_id: String) -> bool {
         let commitment = read_commitment(&e, &commitment_id)
             .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "chk"));
@@ -677,6 +774,10 @@ impl CommitmentCoreContract {
         violated
     }
 
+    /// Get detailed breakdown of violation status.
+    ///
+    /// # Returns
+    /// Tuple: (has_violations, loss_violated, duration_violated, loss_percent, time_remaining)
     pub fn get_violation_details(e: Env, commitment_id: String) -> (bool, bool, bool, i128, u64) {
         let commitment = read_commitment(&e, &commitment_id)
             .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "get_violation_details"));
@@ -705,11 +806,16 @@ impl CommitmentCoreContract {
         )
     }
 
-    /// Settle an expired commitment, release assets to the owner, and mark the NFT settled.
+    /// Settle an expired commitment and return assets to the owner.
     ///
-    /// Cross-contract dependency: invokes `commitment_nft::settle` after the core state and
-    /// token transfer path have been prepared. This flow is guarded by the reentrancy flag and
-    /// relies on transaction rollback if the downstream NFT call fails.
+    /// # Arguments
+    /// * `commitment_id` - ID of the expired commitment
+    ///
+    /// # Security
+    /// - Expiry check: Reverts if `ledger.timestamp < expires_at`
+    /// - Reentrancy: Uses reentrancy guard
+    /// - NFT: Invokes `commitment_nft::settle`
+    /// - TVL: Decrements protocol TVL by the settled amount
     pub fn settle(e: Env, commitment_id: String) {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
@@ -783,10 +889,17 @@ impl CommitmentCoreContract {
         );
     }
 
-    /// Exit a commitment before maturity, apply the configured penalty, and mark the NFT inactive.
+    /// Force-exit an active commitment early, applying the configured penalty.
     ///
-    /// Cross-contract dependency: invokes `commitment_nft::mark_inactive` after updating the
-    /// commitment record and returning the post-penalty amount to the owner.
+    /// # Arguments
+    /// * `commitment_id` - ID of the commitment to exit
+    /// * `caller` - Must be the current owner. Uses `require_auth`
+    ///
+    /// # Security
+    /// - Reentrancy: Uses reentrancy guard
+    /// - Penalty: Calculates and retains penalty via SafeMath
+    /// - NFT: Invokes `commitment_nft::mark_inactive`
+    /// - TVL: Decrements protocol TVL by the full pre-penalty value
     pub fn early_exit(e: Env, commitment_id: String, caller: Address) {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
@@ -858,11 +971,32 @@ impl CommitmentCoreContract {
         e.events().publish((symbol_short!("EarlyExt"), commitment_id, caller), (penalty, returned, e.ledger().timestamp()));
     }
 
+    /// Add an authorized updater address.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn add_updater(e: Env, caller: Address, updater: Address) {
         require_admin(&e, &caller);
         add_authorized_updater(&e, &updater);
     }
 
+    /// Allocate assets from an active commitment to a target pool.
+    ///
+    /// # Arguments
+    /// * `caller` - Must be admin or authorized allocator. Uses `require_auth`
+    /// * `commitment_id` - ID of the source commitment
+    /// * `target_pool` - Destination address for assets
+    /// * `amount` - Amount to allocate
+    ///
+    /// # Security
+    /// - Reentrancy protection: Sets reentrancy guard before cross-contract transfer
+    /// - Auth: Requires `caller` auth and checks `is_authorized`
+    /// - Data integrity: Updates commitment `current_value` and protocol `TotalValueLocked`
+    ///
+    /// # Errors
+    /// - `CommitmentError::Unauthorized` if caller lacks permission
+    /// - `CommitmentError::NotActive` if commitment not active
+    /// - `CommitmentError::InsufficientBalance` if amount > current_value
     pub fn allocate(
         e: Env,
         caller: Address,
@@ -908,9 +1042,14 @@ impl CommitmentCoreContract {
             fail(&e, CommitmentError::InsufficientBalance, "allocate");
         }
 
+        let old_value = commitment.current_value;
         let mut updated_commitment = commitment;
-        updated_commitment.current_value = SafeMath::sub(updated_commitment.current_value, amount);
+        updated_commitment.current_value = SafeMath::sub(old_value, amount);
         set_commitment(&e, &updated_commitment);
+
+        // Update TVL: decrements by the amount moved out of contract custody
+        let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl - amount));
 
         let contract_address = e.current_contract_address();
         let token_client = token::Client::new(&e, &updated_commitment.asset_address);
@@ -923,16 +1062,25 @@ impl CommitmentCoreContract {
         );
     }
 
+    /// Revoke authorized updater permission.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn remove_updater(e: Env, caller: Address, updater: Address) {
         require_admin(&e, &caller);
         remove_authorized_updater(&e, &updater);
     }
 
+    /// Set the linked allocation logic contract.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn set_allocation_contract(e: Env, caller: Address, addr: Address) {
         require_admin(&e, &caller);
         e.storage().instance().set(&DataKey::AllocationContract, &addr);
     }
 
+    /// List all authorized updater addresses.
     pub fn get_authorized_updaters(e: Env) -> Vec<Address> {
         e.storage()
             .instance()
@@ -940,6 +1088,15 @@ impl CommitmentCoreContract {
             .unwrap_or(Vec::new(&e))
     }
 
+    /// Configure rate limits for a specific function.
+    ///
+    /// # Arguments
+    /// * `function` - Symbol of the function (e.g. `symbol_short!("create")`)
+    /// * `window_seconds` - Time window for the limit
+    /// * `max_calls` - Maximum allowed calls within the window
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn set_rate_limit(
         e: Env,
         caller: Address,
@@ -951,20 +1108,39 @@ impl CommitmentCoreContract {
         RateLimiter::set_limit(&e, &function, window_seconds, max_calls);
     }
 
+    /// Exempt or unexempt an address from rate limits.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn set_rate_limit_exempt(e: Env, caller: Address, address: Address, exempt: bool) {
         require_admin(&e, &caller);
         RateLimiter::set_exempt(&e, &address, exempt);
     }
 
+    /// Check if the contract is in emergency mode.
     pub fn is_emergency_mode(e: Env) -> bool {
         EmergencyControl::is_emergency_mode(&e)
     }
 
+    /// Enable or disable emergency mode.
+    ///
+    /// # Authorization
+    /// - Admin only
     pub fn set_emergency_mode(e: Env, caller: Address, enabled: bool) {
         require_admin(&e, &caller);
         EmergencyControl::set_emergency_mode(&e, enabled);
     }
 
+    /// Protocol-level emergency withdrawal for the admin.
+    ///
+    /// # Arguments
+    /// * `asset` - Token address to withdraw
+    /// * `to` - Recipient address
+    /// * `amount` - Amount to withdraw
+    ///
+    /// # Authorization
+    /// - Admin only
+    /// - Emergency mode MUST be enabled
     pub fn emergency_withdraw(e: Env, caller: Address, asset: Address, to: Address, amount: i128) {
         require_admin(&e, &caller);
         EmergencyControl::require_emergency(&e);

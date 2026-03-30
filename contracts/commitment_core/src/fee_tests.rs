@@ -11,13 +11,41 @@
 
 use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
-    token, Address, Env, IntoVal, String, Symbol,
+    contract, contractimpl,
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger as _},
+    token::{self, StellarAssetClient},
+    Address, Env, IntoVal, String, Symbol,
 };
 
-fn create_token_contract<'a>(e: &Env, admin: &Address) -> (Address, token::Client<'a>) {
-    let addr = e.register_stellar_asset_contract(admin.clone());
-    (addr.clone(), token::Client::new(e, &addr))
+#[contract]
+pub struct MockNftContract;
+
+#[contractimpl]
+impl MockNftContract {
+    pub fn mint(
+        _e: Env,
+        _caller: Address,
+        _owner: Address,
+        _commitment_id: String,
+        _duration_days: u32,
+        _max_loss_percent: u32,
+        _commitment_type: String,
+        _initial_amount: i128,
+        _asset_address: Address,
+        _early_exit_penalty: u32,
+    ) -> u32 {
+        0
+    }
+
+    pub fn settle(_e: Env, _caller: Address, _token_id: u32) {}
+
+    pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
+}
+
+fn create_token_contract<'a>(e: &Env, admin: &Address) -> (Address, token::Client<'a>, StellarAssetClient<'a>) {
+    let sac = e.register_stellar_asset_contract_v2(admin.clone());
+    let addr = sac.address();
+    (addr.clone(), token::Client::new(e, &addr), StellarAssetClient::new(e, &addr))
 }
 
 fn setup_test() -> (
@@ -33,12 +61,12 @@ fn setup_test() -> (
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let user = Address::generate(&e);
-    let (token_address, token_client) = create_token_contract(&e, &admin);
+    let (token_address, token_client, token_admin) = create_token_contract(&e, &admin);
 
     // Mint tokens to user
-    token_client.mint(&user, &10_000_000);
+    token_admin.mint(&user, &10_000_000);
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -210,6 +238,9 @@ fn test_multiple_commitments_accumulate_fees() {
 fn test_early_exit_penalty_retained_as_fee() {
     let (e, admin, _, user, token_address, token_client, client) = setup_test();
 
+    // Set fee recipient
+    client.set_fee_recipient(&admin, &admin);
+
     let amount = 1_000_000i128;
     let mut rules = default_rules(&e);
     rules.early_exit_penalty = 10; // 10% penalty
@@ -225,13 +256,16 @@ fn test_early_exit_penalty_retained_as_fee() {
     // Verify penalty was added to collected fees
     assert_eq!(client.get_collected_fees(&token_address), expected_penalty);
 
-    // Verify user received net amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // Verify user received net amount (Initial 10M - 100k penalty)
+    assert_eq!(token_client.balance(&user), 9_900_000);
 }
 
 #[test]
 fn test_early_exit_with_creation_fee_and_penalty() {
     let (e, admin, _, user, token_address, token_client, client) = setup_test();
+
+    // Set fee recipient
+    client.set_fee_recipient(&admin, &admin);
 
     // Set 1% creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -255,8 +289,8 @@ fn test_early_exit_with_creation_fee_and_penalty() {
     // Verify both fees were collected
     assert_eq!(client.get_collected_fees(&token_address), total_fees);
 
-    // Verify user received correct amount
-    assert_eq!(token_client.balance(&user), expected_returned);
+    // Verify user received correct amount (Initial 10M - 109k total loss)
+    assert_eq!(token_client.balance(&user), 9_891_000);
 }
 
 // ============================================================================
@@ -442,11 +476,11 @@ fn test_get_collected_fees_multiple_assets() {
     let (e, admin, _, user, _, _, client) = setup_test();
 
     // Create two different tokens
-    let (token1, token1_client) = create_token_contract(&e, &admin);
-    let (token2, token2_client) = create_token_contract(&e, &admin);
+    let (token1, _, token1_admin) = create_token_contract(&e, &admin);
+    let (token2, _, token2_admin) = create_token_contract(&e, &admin);
 
-    token1_client.mint(&user, &10_000_000);
-    token2_client.mint(&user, &10_000_000);
+    token1_admin.mint(&user, &10_000_000);
+    token2_admin.mint(&user, &10_000_000);
 
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -470,6 +504,9 @@ fn test_get_collected_fees_multiple_assets() {
 fn test_fee_collection_with_settle() {
     let (e, admin, _, user, token_address, token_client, client) = setup_test();
 
+    // Set fee recipient
+    client.set_fee_recipient(&admin, &admin);
+
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
 
@@ -478,19 +515,19 @@ fn test_fee_collection_with_settle() {
     let net_amount = amount - creation_fee;
 
     let mut rules = default_rules(&e);
-    rules.duration_days = 0; // Expires immediately
+    rules.duration_days = 1; // Expires tomorrow
 
     let commitment_id = client.create_commitment(&user, &amount, &token_address, &rules);
 
     // Settle commitment
-    e.ledger().with_mut(|li| li.timestamp = li.timestamp + 1);
+    e.ledger().with_mut(|li| li.timestamp = li.timestamp + 86400 * 2);
     client.settle(&commitment_id);
 
     // Verify creation fee still collected
     assert_eq!(client.get_collected_fees(&token_address), creation_fee);
 
-    // Verify user got back net amount
-    assert_eq!(token_client.balance(&user), net_amount);
+    // Verify user got back correct amount (Initial 10M - 10k creation fee)
+    assert_eq!(token_client.balance(&user), 9_990_000);
 }
 
 #[test]
@@ -514,7 +551,6 @@ fn test_complete_fee_lifecycle() {
     // 3. Early exit with penalty
     client.early_exit(&commitment_id, &user);
 
-    let net_amount = amount - creation_fee;
     let exit_penalty = 99_000i128; // 10% of 990,000
     let total_fees = creation_fee + exit_penalty;
 
