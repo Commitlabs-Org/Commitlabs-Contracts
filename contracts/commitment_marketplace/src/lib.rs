@@ -434,31 +434,80 @@ impl CommitmentMarketplace {
     /// * `buyer` - The buyer's address
     /// * `token_id` - The NFT token ID to buy
     ///
+    /// # Returns
+    /// * `Result<(), MarketplaceError>` - Ok(()) on successful purchase, Err on failure
+    ///
     /// # Errors
     /// * `ListingNotFound` - If no listing exists for this token_id
     /// * `CannotBuyOwnListing` - If buyer is the same as seller
     /// * `InsufficientPayment` - If buyer cannot afford the NFT
     /// * `NotInitialized` - If marketplace is not initialized
     /// * `ReentrancyDetected` - If reentrancy is detected
+    /// * `TransferFailed` - If token or NFT transfer fails
+    /// * `NFTContractError` - If NFT contract operation fails
     ///
     /// # Security Notes
     /// * Critical - handles token transfers. Protected with reentrancy guard.
-    /// * Uses checks-effects-interactions pattern
+    /// * Uses checks-effects-interactions pattern to prevent reentrancy attacks
     /// * Removes listing before external calls to prevent reentrancy
     /// * Calculates and deducts marketplace fee automatically
+    /// * Validates all inputs before state changes
+    /// * Propagates external contract errors transparently
     ///
-    /// # Fees
+    /// # Fee Calculation
     /// Marketplace fee is calculated as: (price * fee_basis_points) / 10000
     /// Fee is transferred to fee_recipient, remainder to seller
+    /// 
+    /// # Failure Handling
+    /// * Payment token transfer failures are propagated as `TransferFailed`
+    /// * NFT transfer failures are propagated as `NFTContractError`
+    /// * Partial failures may require manual intervention due to checks-effects-interactions pattern
+    /// * All external contract errors are propagated for transparency
+    ///
+    /// # Token Flow
+    /// 1. Payment transferred from buyer to seller (minus fee)
+    /// 2. Fee transferred from buyer to fee_recipient (if applicable)
+    /// 3. NFT transferred from seller to buyer
     ///
     /// # Events
     /// Emits `NFTSold` event with (token_id, seller, buyer, price)
     ///
     /// # Examples
     /// ```
-    /// // Buy NFT
-    /// marketplace.buy_nft(&buyer, &1);
+    /// // Buy NFT for 1000 tokens
+    /// marketplace.buy_nft(
+    ///     &buyer,
+    ///     &1,
+    /// );
     /// ```
+    ///
+    /// # Edge Cases Handled
+    /// * Zero or negative prices (rejected at listing time)
+    /// * Buyer equals seller (rejected with CannotBuyOwnListing)
+    /// * Non-existent listings (rejected with ListingNotFound)
+    /// * Insufficient token balance (handled by token contract)
+    /// * NFT not owned by seller (handled by NFT contract)
+    /// * Fee calculation overflows (prevented by i128 bounds)
+    /// * Reentrancy attacks (prevented by reentrancy guard)
+    ///
+    /// # Gas Considerations
+    /// * Function requires sufficient gas for:
+    ///   - Storage operations (listing removal)
+    ///   - Token transfers (2 transfers if fee > 0)
+    ///   - NFT transfer
+    ///   - Event emission
+    /// * Out of gas errors are propagated from external contracts
+    ///
+    /// # Reentrancy Protection
+    /// * Sets reentrancy guard at function start
+    /// * Clears guard at function end
+    /// * Prevents recursive calls to critical functions
+    ///
+    /// # State Changes
+    /// * Removes listing from persistent storage
+    /// * Removes token from active listings list
+    /// * Does NOT modify NFT ownership (handled by NFT contract)
+    /// * Emits event for off-chain indexing
     pub fn buy_nft(e: Env, buyer: Address, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
