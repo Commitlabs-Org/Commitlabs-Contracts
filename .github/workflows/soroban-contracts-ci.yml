@@ -63,7 +63,7 @@ jobs:
       # -----------------------------
       - name: Verify Stellar CLI installation
         run: |
-          if command -v stellar &> /dev/null; then
+          if command -v stellar &> /dev/null && stellar --version &> /dev/null; then
             echo "✓ Stellar CLI found"
             stellar --version
           elif command -v soroban &> /dev/null; then
