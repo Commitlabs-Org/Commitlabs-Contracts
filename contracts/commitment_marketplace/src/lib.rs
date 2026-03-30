@@ -447,8 +447,10 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        // Calculate fee and seller proceeds safely
-        let marketplace_fee = SafeMath::percent(listing.price, fee_basis_points);
+        // Calculate fee and seller proceeds safely using basis points (bps)
+        let fee_basis_points_i128: i128 = fee_basis_points as i128;
+        let marketplace_fee =
+            SafeMath::div(SafeMath::mul(listing.price, fee_basis_points_i128), 10_000_i128);
         let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
 
         // EFFECTS
