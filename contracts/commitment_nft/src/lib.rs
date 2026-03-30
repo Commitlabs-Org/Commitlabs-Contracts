@@ -69,7 +69,22 @@ pub enum ContractError {
 // Data Types
 // ============================================================================
 
-/// Metadata associated with a commitment NFT
+/// Metadata associated with a commitment NFT.
+///
+/// All fields mirror the parameters passed by `commitment_core::create_commitment`
+/// through `call_nft_mint`. `early_exit_penalty` is stored here (in addition to
+/// the top-level `CommitmentNFT` field) so that integrators reading only the
+/// metadata struct have the full picture without needing to inspect the parent.
+///
+/// # Field alignment with `commitment_core`
+/// | `CommitmentMetadata` field | `CommitmentRules` / `create_commitment` param |
+/// |----------------------------|-----------------------------------------------|
+/// | `duration_days`            | `CommitmentRules::duration_days`              |
+/// | `max_loss_percent`         | `CommitmentRules::max_loss_percent`           |
+/// | `commitment_type`          | `CommitmentRules::commitment_type`            |
+/// | `initial_amount`           | `amount` (net, after fee deduction)           |
+/// | `asset_address`            | `asset_address`                               |
+/// | `early_exit_penalty`       | `CommitmentRules::early_exit_penalty`         |
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitmentMetadata {
@@ -81,9 +96,16 @@ pub struct CommitmentMetadata {
     pub expires_at: u64,
     pub initial_amount: i128,
     pub asset_address: Address,
+    /// Early-exit penalty in percent (0-100). Mirrors `CommitmentRules::early_exit_penalty`
+    /// from `commitment_core`. Stored here for single-struct readability by integrators.
+    pub early_exit_penalty: u32,
 }
 
-/// The Commitment NFT structure
+/// The Commitment NFT structure.
+///
+/// `early_exit_penalty` appears both here (top-level, for quick access) and inside
+/// `metadata` (for integrators reading the metadata struct in isolation).
+/// Both fields are always written with the same value during `mint`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitmentNFT {
@@ -91,6 +113,9 @@ pub struct CommitmentNFT {
     pub token_id: u32,
     pub metadata: CommitmentMetadata,
     pub is_active: bool,
+    /// Early-exit penalty in percent (0-100). Mirrors `CommitmentRules::early_exit_penalty`
+    /// from `commitment_core`. Also stored in `metadata.early_exit_penalty` for
+    /// single-struct readability.
     pub early_exit_penalty: u32,
 }
 
@@ -475,7 +500,49 @@ impl CommitmentNFTContract {
     // NFT Minting
     // ========================================================================
 
-    /// Mint a new Commitment NFT. Caller must be admin or an authorized minter (see add_authorized_contract).
+    /// Mint a new Commitment NFT.
+    ///
+    /// Called exclusively by `commitment_core` during `create_commitment`. The
+    /// `caller` argument must be the admin, the registered core contract, or an
+    /// address added via `add_authorized_contract`.
+    ///
+    /// # Argument alignment with `commitment_core::call_nft_mint`
+    /// The argument order here **must** match the `push_back` order in
+    /// `commitment_core::call_nft_mint`:
+    /// ```text
+    /// caller, owner, commitment_id, duration_days, max_loss_percent,
+    /// commitment_type, initial_amount, asset_address, early_exit_penalty
+    /// ```
+    /// `early_exit_penalty` is intentionally the **last** positional argument so
+    /// that adding future optional fields does not shift existing positions.
+    ///
+    /// # Parameters
+    /// * `caller` — authorized minter (admin, core contract, or whitelist entry)
+    /// * `owner` — wallet that will own the NFT; must not be the zero address
+    /// * `_commitment_id` — ignored; the contract auto-generates a canonical ID
+    /// * `duration_days` — commitment duration; must be > 0
+    /// * `max_loss_percent` — max tolerated loss; must be 0-100
+    /// * `commitment_type` — one of `"safe"`, `"balanced"`, `"aggressive"`
+    /// * `initial_amount` — net token amount locked; must be > 0
+    /// * `asset_address` — token contract address
+    /// * `early_exit_penalty` — penalty percent on early exit (0-100); stored in
+    ///   both `CommitmentNFT::early_exit_penalty` and `CommitmentMetadata::early_exit_penalty`
+    ///
+    /// # Errors
+    /// * `NotInitialized` — contract not initialized
+    /// * `NotAuthorized` — caller is not admin, core contract, or whitelisted
+    /// * `TransferToZeroAddress` — owner is the zero address
+    /// * `InvalidDuration` — `duration_days == 0`
+    /// * `InvalidMaxLoss` — `max_loss_percent > 100`
+    /// * `InvalidCommitmentType` — not one of the three valid types
+    /// * `InvalidAmount` — `initial_amount <= 0`
+    /// * `ExpirationOverflow` — timestamp arithmetic would overflow u64
+    /// * `ReentrancyDetected` — reentrant call detected
+    ///
+    /// # Security
+    /// - Reentrancy guard is set on entry and cleared on all exit paths.
+    /// - Auth is checked via the whitelist; no `require_auth` on `owner` here
+    ///   because `commitment_core` already called `owner.require_auth()`.
     pub fn mint(
         e: Env,
         caller: Address,
@@ -604,6 +671,7 @@ impl CommitmentNFTContract {
             expires_at,
             initial_amount,
             asset_address,
+            early_exit_penalty,
         };
 
         // Create CommitmentNFT
@@ -1123,4 +1191,9 @@ mod benchmarks;
 
 #[cfg(test)]
 mod test_zero_address;
-mod benchmarks;
+
+/// Signature alignment tests for issue #216.
+/// Verifies that `early_exit_penalty` is stored consistently and that the
+/// argument order matches `commitment_core::call_nft_mint`.
+#[cfg(test)]
+mod mint_signature_tests;
