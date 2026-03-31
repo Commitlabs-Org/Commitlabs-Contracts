@@ -1,3 +1,41 @@
+//! # Commitment NFT Contract
+//!
+//! Mints and manages Soroban NFTs that represent user commitments. Each NFT
+//! records commitment parameters (duration, max loss, type, amount) and tracks
+//! whether the underlying commitment is still active.
+//!
+//! ## Auth Model and Single Deployer Assumption
+//!
+//! `initialize` must be called exactly once, immediately after deployment,
+//! by the entity that holds the private key of the `admin` address it
+//! registers. This is the **single deployer assumption**: the transaction that
+//! deploys the contract should also invoke `initialize` in the same
+//! transaction or atomically thereafter, so no third party can front-run it
+//! with a different admin. `admin.require_auth()` is called inside
+//! `initialize` to enforce this — the transaction must be signed by the admin
+//! key.
+//!
+//! Subsequent admin operations (pausing, whitelisting minters, upgrading)
+//! require the same `admin.require_auth()` check via the `require_admin`
+//! helper.
+//!
+//! ## Trust Boundaries
+//!
+//! | Caller role | What they can do |
+//! |-------------|-----------------|
+//! | Admin | Initialize, pause/unpause, set core contract, manage minter whitelist, upgrade, migrate, emergency mode |
+//! | Core contract (`set_core_contract`) | Call `mint` as an authorized minter |
+//! | Whitelisted minter (`add_authorized_contract`) | Call `mint` |
+//! | NFT owner | `transfer` (inactive NFTs only) |
+//! | Anyone | All view functions (`get_metadata`, `owner_of`, etc.) |
+//!
+//! ## Reentrancy
+//!
+//! All state-mutating functions use a flag-based reentrancy guard
+//! (`DataKey::ReentrancyGuard`). The guard is set on entry and cleared before
+//! every return path (including errors), so nested calls from the same
+//! contract invocation are rejected with `ReentrancyDetected`.
+
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
@@ -144,24 +182,57 @@ pub struct CommitmentNFTContract;
 
 #[contractimpl]
 impl CommitmentNFTContract {
-    /// Initialize the NFT contract
+    /// Initialize the commitment NFT contract.
+    ///
+    /// # Single Deployer Assumption
+    ///
+    /// This function enforces the single deployer assumption: the caller must
+    /// control the `admin` address being registered. `admin.require_auth()` is
+    /// called before any state is written, ensuring the transaction must be
+    /// signed by the admin key. This prevents front-running attacks where a
+    /// third party deploys the contract and calls `initialize` with a different
+    /// admin before the legitimate deployer acts.
+    ///
+    /// The recommended deployment pattern is to invoke `initialize` in the same
+    /// transaction as the contract upload, leaving no window for front-running.
+    ///
+    /// This function may only be called once. Any subsequent call returns
+    /// [`ContractError::AlreadyInitialized`].
+    ///
+    /// # Parameters
+    ///
+    /// - `admin`: Address that will hold admin authority over the contract.
+    ///   Must authorize this transaction via `require_auth`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::AlreadyInitialized`] — contract has already been
+    ///   initialized.
+    ///
+    /// # Security Notes
+    ///
+    /// - `admin.require_auth()` is invoked after the `AlreadyInitialized`
+    ///   guard, so a second caller cannot learn whether the contract is already
+    ///   initialized without paying for auth on a no-op.
+    /// - Emergency mode and pausable state are **not** checked here because
+    ///   those controls are meaningless before initialization completes.
+    /// - Storage keys written: `Admin`, `TokenCounter` (0), `TokenIds` ([]),
+    ///   and the `paused` key (`false`).
     pub fn initialize(e: Env, admin: Address) -> Result<(), ContractError> {
-        // Check if already initialized
+        // Guard: must be called at most once.
         if e.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
 
-        // Store admin address
+        // Enforce single deployer assumption: the admin key must sign this
+        // transaction. Placed after the AlreadyInitialized check so that a
+        // retry attempt incurs no auth cost.
+        admin.require_auth();
+
         e.storage().instance().set(&DataKey::Admin, &admin);
-
-        // Initialize token counter to 0
         e.storage().instance().set(&DataKey::TokenCounter, &0u32);
-
-        // Initialize empty token IDs vector
         let token_ids: Vec<u32> = Vec::new(&e);
         e.storage().instance().set(&DataKey::TokenIds, &token_ids);
-
-        // Initialize paused state (default: not paused)
         e.storage()
             .instance()
             .set(&Pausable::paused_key(&e), &false);
@@ -1123,4 +1194,3 @@ mod benchmarks;
 
 #[cfg(test)]
 mod test_zero_address;
-mod benchmarks;

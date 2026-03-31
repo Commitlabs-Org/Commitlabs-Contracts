@@ -51,11 +51,11 @@ CI drift tests compare its source-defined types and expected signatures against
 
 | Function                                                                                                                                       | Summary                            | Access control      | Notes                                       |
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------- | ------------------------------------------- |
-| initialize(admin) -> Result                                                                                                                    | Set admin and token counters.      | None (single-use).  | Returns AlreadyInitialized on repeat.       |
-| set_core_contract(core_contract) -> Result                                                                                                     | Set authorized core contract.      | Admin require_auth. | Emits CoreContractSet event.                |
-| get_core_contract() -> Result<Address>                                                                                                         | Fetch core contract address.       | View.               | Fails if not initialized.                   |
-| get_admin() -> Result<Address>                                                                                                                 | Fetch admin address.               | View.               | Fails if not initialized.                   |
-| mint(owner, commitment_id, duration_days, max_loss_percent, commitment_type, initial_amount, asset_address, early_exit_penalty) -> Result<u32> | Mint NFT for a commitment.         | No require_auth.    | Validates inputs and uses reentrancy guard. |
+| initialize(admin) -> Result                                                                                                                           | Set admin and token counters.      | admin require_auth (single-use). | Returns AlreadyInitialized on repeat. admin must sign the transaction; prevents front-running. |
+| set_core_contract(core_contract) -> Result                                                                                                            | Set authorized core contract.      | Admin require_auth.              | Emits CoreContractSet event.                |
+| get_core_contract() -> Result<Address>                                                                                                                | Fetch core contract address.       | View.                            | Fails if not initialized.                   |
+| get_admin() -> Result<Address>                                                                                                                        | Fetch admin address.               | View.                            | Fails if not initialized.                   |
+| mint(caller, owner, commitment_id, duration_days, max_loss_percent, commitment_type, initial_amount, asset_address, early_exit_penalty) -> Result<u32> | Mint NFT for a commitment.         | caller must be admin, core contract, or whitelisted minter. | Validates inputs and uses reentrancy guard. |
 | get_metadata(token_id) -> Result<CommitmentNFT>                                                                                                | Fetch NFT metadata.                | View.               | Fails if token missing.                     |
 | owner_of(token_id) -> Result<Address>                                                                                                          | Fetch NFT owner.                   | View.               | Fails if token missing.                     |
 | transfer(from, to, token_id) -> Result                                                                                                         | Transfer NFT ownership.            | from.require_auth.  | Updates owner balances and token lists.     |
@@ -67,6 +67,22 @@ CI drift tests compare its source-defined types and expected signatures against
 | settle(token_id) -> Result                                                                                                                     | Mark NFT settled after expiry.     | No require_auth.    | Uses reentrancy guard.                      |
 | is_expired(token_id) -> Result<bool>                                                                                                           | Check expiry based on ledger time. | View.               | Requires token exists.                      |
 | token_exists(token_id) -> bool                                                                                                                 | Check if token exists.             | View.               | Uses persistent storage.                    |
+
+### commitment_nft deployment checklist
+
+The following steps must be executed in order when deploying or upgrading `commitment_nft`. Each step is a prerequisite for the next; skipping any step leaves the contract in a broken or insecure state.
+
+1. **Upload WASM** — submit the compiled WASM to Stellar and record the hash.
+2. **Deploy contract** — instantiate the contract from the uploaded WASM hash.
+3. **Call `initialize(admin)`** — in the same transaction as deployment (or immediately after, before any other transaction). The `admin` key must sign this transaction. This is the single deployer assumption: the window between `deploy` and `initialize` must be zero or negligible to prevent front-running.
+4. **Verify initialization** — call `get_admin()` and confirm it returns the expected admin address.
+5. **Call `set_core_contract(core_contract)`** — register the `commitment_core` contract address so `mint` can be called from core. Must be signed by admin.
+6. **Optionally call `add_authorized_contract(admin, minter)`** — if additional minter addresses are needed beyond core.
+7. **Smoke-test** — call `total_supply()` (expect 0) and `is_paused()` (expect false) to confirm initial state is clean.
+
+**Single deployer assumption**: `initialize` calls `admin.require_auth()`, so only a transaction signed by the `admin` key can succeed. Any unsigned or differently-signed `initialize` call will be rejected. Deploy and initialize must be atomic (same transaction or XDR envelope) to eliminate the front-run window.
+
+**Admin key rotation**: use `set_admin(caller, new_admin)` after initialization. `caller` must be the current admin.
 
 ## attestation_engine
 
