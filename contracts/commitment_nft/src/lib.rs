@@ -418,7 +418,21 @@ impl CommitmentNFTContract {
             .ok_or(ContractError::NotInitialized)
     }
 
-    /// Add an authorized contract that may call mint() (admin-only).
+    /// Add an authorized minter contract address (admin-only).
+    ///
+    /// Summary:
+    /// - Whitelists `contract_address` so it may call `mint`.
+    ///
+    /// Params:
+    /// - `caller`: must be the admin and will be required to `require_auth`.
+    /// - `contract_address`: address to add to the authorized minter list.
+    ///
+    /// Errors:
+    /// - `NotInitialized` if contract not initialized
+    /// - `NotAuthorized` if `caller` is not admin
+    ///
+    /// Security:
+    /// - Mutates access control state; only admin may call.
     pub fn add_authorized_contract(
         e: Env,
         caller: Address,
@@ -761,7 +775,9 @@ impl CommitmentNFTContract {
     // NFT Query Functions
     // ========================================================================
 
-    /// Get NFT metadata by token_id
+    /// Get full `CommitmentNFT` metadata by `token_id`.
+    ///
+    /// Returns the stored `CommitmentNFT` or `TokenNotFound` if missing.
     pub fn get_metadata(e: Env, token_id: u32) -> Result<CommitmentNFT, ContractError> {
         e.storage()
             .persistent()
@@ -769,8 +785,10 @@ impl CommitmentNFTContract {
             .ok_or(ContractError::TokenNotFound)
     }
 
-    /// Get commitment NFT by commitment_id
-    /// Returns the full CommitmentNFT including all metadata
+    /// Lookup a `CommitmentNFT` by its auto-generated `commitment_id`.
+    ///
+    /// This performs a reverse lookup from `commitment_id` -> `token_id` and
+    /// returns the associated `CommitmentNFT` or `TokenNotFound`.
     pub fn get_commitment_by_id(
         e: Env,
         commitment_id: String,
