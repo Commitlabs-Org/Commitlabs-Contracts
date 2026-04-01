@@ -125,7 +125,7 @@ impl RateLimiter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use soroban_sdk::{
@@ -141,6 +141,11 @@ mod tests {
     impl TestRateLimitContract {
         pub fn limited_call(e: Env, caller: Address) {
             let fn_symbol = symbol_short!("limited");
+            RateLimiter::check(&e, &caller, &fn_symbol);
+        }
+
+        pub fn limited_call_alt(e: Env, caller: Address) {
+            let fn_symbol = symbol_short!("altcall");
             RateLimiter::check(&e, &caller, &fn_symbol);
         }
 
@@ -227,6 +232,146 @@ mod tests {
         // Multiple calls should succeed
         client.limited_call(&caller);
         client.limited_call(&caller);
+        client.limited_call(&caller);
+    }
+
+    #[test]
+    fn test_rate_limit_allows_at_exact_window_boundary() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestRateLimitContract);
+        let client = TestRateLimitContractClient::new(&env, &contract_id);
+
+        let caller = <Address as TestAddress>::generate(&env);
+
+        client.configure_limit(&symbol_short!("limited"), &60u64, &1u32);
+
+        env.ledger().with_mut(|l| {
+            l.timestamp = 100;
+        });
+        client.limited_call(&caller);
+
+        // Exactly at 60s elapsed should start a new fixed window.
+        env.ledger().with_mut(|l| {
+            l.timestamp = 160;
+        });
+        client.limited_call(&caller);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rate limit exceeded")]
+    fn test_rate_limit_blocks_just_before_window_boundary() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestRateLimitContract);
+        let client = TestRateLimitContractClient::new(&env, &contract_id);
+
+        let caller = <Address as TestAddress>::generate(&env);
+
+        client.configure_limit(&symbol_short!("limited"), &60u64, &1u32);
+
+        env.ledger().with_mut(|l| {
+            l.timestamp = 100;
+        });
+        client.limited_call(&caller);
+
+        // 59s elapsed is still within the original window.
+        env.ledger().with_mut(|l| {
+            l.timestamp = 159;
+        });
+        client.limited_call(&caller);
+    }
+
+    #[test]
+    fn test_rate_limit_allows_up_to_max_calls() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestRateLimitContract);
+        let client = TestRateLimitContractClient::new(&env, &contract_id);
+
+        let caller = <Address as TestAddress>::generate(&env);
+
+        client.configure_limit(&symbol_short!("limited"), &60u64, &3u32);
+
+        client.limited_call(&caller);
+        client.limited_call(&caller);
+        client.limited_call(&caller);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rate limit exceeded")]
+    fn test_rate_limit_blocks_above_max_calls() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestRateLimitContract);
+        let client = TestRateLimitContractClient::new(&env, &contract_id);
+
+        let caller = <Address as TestAddress>::generate(&env);
+
+        client.configure_limit(&symbol_short!("limited"), &60u64, &3u32);
+
+        client.limited_call(&caller);
+        client.limited_call(&caller);
+        client.limited_call(&caller);
+        client.limited_call(&caller);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rate limit exceeded")]
+    fn test_exemption_removed_restores_enforcement() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestRateLimitContract);
+        let client = TestRateLimitContractClient::new(&env, &contract_id);
+
+        let caller = <Address as TestAddress>::generate(&env);
+
+        client.configure_limit(&symbol_short!("limited"), &60u64, &1u32);
+        client.set_exempt(&caller, &true);
+
+        // Exempt calls do not consume allowance.
+        client.limited_call(&caller);
+        client.limited_call(&caller);
+
+        // Once exemption is removed, rate limiting is enforced again.
+        client.set_exempt(&caller, &false);
+        client.limited_call(&caller);
+        client.limited_call(&caller);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rate limit exceeded")]
+    fn test_exemption_is_scoped_per_address() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestRateLimitContract);
+        let client = TestRateLimitContractClient::new(&env, &contract_id);
+
+        let exempt_caller = <Address as TestAddress>::generate(&env);
+        let regular_caller = <Address as TestAddress>::generate(&env);
+
+        client.configure_limit(&symbol_short!("limited"), &60u64, &1u32);
+        client.set_exempt(&exempt_caller, &true);
+
+        client.limited_call(&exempt_caller);
+        client.limited_call(&exempt_caller);
+        client.limited_call(&exempt_caller);
+
+        client.limited_call(&regular_caller);
+        client.limited_call(&regular_caller);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rate limit exceeded")]
+    fn test_rate_limit_state_is_scoped_per_function() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TestRateLimitContract);
+        let client = TestRateLimitContractClient::new(&env, &contract_id);
+
+        let caller = <Address as TestAddress>::generate(&env);
+
+        client.configure_limit(&symbol_short!("limited"), &60u64, &1u32);
+        client.configure_limit(&symbol_short!("altcall"), &60u64, &2u32);
+
+        client.limited_call(&caller);
+        client.limited_call_alt(&caller);
+        client.limited_call_alt(&caller);
+
+        // "limited" and "altcall" counters must be isolated.
         client.limited_call(&caller);
     }
 }

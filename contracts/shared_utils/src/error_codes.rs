@@ -99,7 +99,7 @@ pub fn emit_error_event(e: &Env, error_code: u32, context: &str) {
     );
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 
