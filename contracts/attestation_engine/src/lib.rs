@@ -24,7 +24,7 @@ pub enum AttestationError {
     Unauthorized = 3,
     /// Invalid commitment ID
     InvalidCommitmentId = 4,
-    /// Invalid attestation type (must be health_check, violation, fee_generation, or drawdown)
+    /// Invalid attestation type. Allowed types: "health_check", "violation", "fee_generation", "drawdown".
     InvalidAttestationType = 5,
     /// Invalid attestation data for the given type
     InvalidAttestationData = 6,
@@ -198,11 +198,22 @@ impl AttestationEngineContract {
     // Verifier Whitelist Management
     // ========================================================================
 
-    /// Add a verifier to the whitelist
+    /// Add a verifier to the allowlist.
     ///
     /// # Arguments
     /// * `caller` - Must be admin
     /// * `verifier` - Address to add as authorized verifier
+    ///
+    /// # Errors
+    /// * `NotInitialized` – contract not initialized
+    /// * `Unauthorized` – caller is not admin
+    ///
+    /// # Security Notes
+    /// - Rate-limited per caller via `RateLimiter` (configurable via `set_rate_limit`
+    ///   using function symbol `"add_verif"`).
+    /// - Duplicate adds are idempotent: emits `VerifAddAbuse` audit event and returns
+    ///   `Ok(())` without modifying state, so call patterns are visible on-chain
+    ///   without disrupting operation.
     pub fn add_verifier(
         e: Env,
         caller: Address,
@@ -221,23 +232,53 @@ impl AttestationEngineContract {
             return Err(AttestationError::Unauthorized);
         }
 
-        // Add verifier to whitelist
+        // Rate-limit allowlist mutations per caller (panics if limit exceeded)
+        let fn_symbol = Symbol::new(&e, "add_verif");
+        RateLimiter::check(&e, &caller, &fn_symbol);
+
+        // Abuse case: duplicate add — emit audit event and return idempotently
+        let already_listed: bool = e
+            .storage()
+            .instance()
+            .get(&DataKey::Verifier(verifier.clone()))
+            .unwrap_or(false);
+        if already_listed {
+            e.events().publish(
+                (Symbol::new(&e, "VerifAddAbuse"),),
+                (caller, verifier, e.ledger().timestamp()),
+            );
+            return Ok(());
+        }
+
+        // Add verifier to allowlist
         e.storage()
             .instance()
             .set(&DataKey::Verifier(verifier.clone()), &true);
 
-        // Emit event
-        e.events()
-            .publish((Symbol::new(&e, "VerifierAdded"),), (verifier,));
+        // Emit audit event with caller and timestamp
+        e.events().publish(
+            (Symbol::new(&e, "VerifierAdded"),),
+            (caller, verifier, e.ledger().timestamp()),
+        );
 
         Ok(())
     }
 
-    /// Remove a verifier from the whitelist
+    /// Remove a verifier from the allowlist.
     ///
     /// # Arguments
     /// * `caller` - Must be admin
     /// * `verifier` - Address to remove from authorized verifiers
+    ///
+    /// # Errors
+    /// * `NotInitialized` – contract not initialized
+    /// * `Unauthorized` – caller is not admin
+    ///
+    /// # Security Notes
+    /// - Rate-limited per caller via `RateLimiter` (configurable via `set_rate_limit`
+    ///   using function symbol `"rm_verif"`).
+    /// - Removing an address not in the allowlist is idempotent: emits `VerifRmAbuse`
+    ///   audit event and returns `Ok(())` without modifying state.
     pub fn remove_verifier(
         e: Env,
         caller: Address,
@@ -256,14 +297,34 @@ impl AttestationEngineContract {
             return Err(AttestationError::Unauthorized);
         }
 
-        // Remove verifier from whitelist
+        // Rate-limit allowlist mutations per caller (panics if limit exceeded)
+        let fn_symbol = Symbol::new(&e, "rm_verif");
+        RateLimiter::check(&e, &caller, &fn_symbol);
+
+        // Abuse case: remove of non-existent verifier — emit audit event and return idempotently
+        let is_listed: bool = e
+            .storage()
+            .instance()
+            .get(&DataKey::Verifier(verifier.clone()))
+            .unwrap_or(false);
+        if !is_listed {
+            e.events().publish(
+                (Symbol::new(&e, "VerifRmAbuse"),),
+                (caller, verifier, e.ledger().timestamp()),
+            );
+            return Ok(());
+        }
+
+        // Remove verifier from allowlist
         e.storage()
             .instance()
             .remove(&DataKey::Verifier(verifier.clone()));
 
-        // Emit event
-        e.events()
-            .publish((Symbol::new(&e, "VerifierRemoved"),), (verifier,));
+        // Emit audit event with caller and timestamp
+        e.events().publish(
+            (Symbol::new(&e, "VerifierRemoved"),),
+            (caller, verifier, e.ledger().timestamp()),
+        );
 
         Ok(())
     }
@@ -669,6 +730,30 @@ impl AttestationEngineContract {
         data: Map<String, String>,
         is_compliant: bool,
     ) -> Result<(), AttestationError> {
+        // 1. Authorization check
+        caller.require_auth();
+
+        // 2. Internal logic
+        Self::_attest_internal(
+            e,
+            caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+        )
+    }
+
+    /// Internal implementation of attest without require_auth check.
+    /// Used by public attest(), record_fees(), and record_drawdown().
+    fn _attest_internal(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
         // 1. Reentrancy protection
         if e.storage().instance().has(&DataKey::ReentrancyGuard) {
             panic!("Reentrancy detected");
@@ -677,9 +762,6 @@ impl AttestationEngineContract {
 
         // Check if contract is paused
         Pausable::require_not_paused(&e);
-
-        // 2. Verify caller signed the transaction
-        caller.require_auth();
 
         // 3. Check caller is authorized verifier
         if !Self::is_authorized_verifier(&e, &caller) {
@@ -691,27 +773,48 @@ impl AttestationEngineContract {
         let fn_symbol = Symbol::new(&e, "attest");
         RateLimiter::check(&e, &caller, &fn_symbol);
 
+        let result = Self::write_attestation(
+            &e,
+            &caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+        );
+
+        // Clear reentrancy guard regardless of outcome
+        e.storage().instance().remove(&DataKey::ReentrancyGuard);
+
+        result
+    }
+
+    /// Internal helper: persist an attestation record, update counters, and emit event.
+    /// Callers are responsible for auth and reentrancy guard management.
+    fn write_attestation(
+        e: &Env,
+        caller: &Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
         // 4. Validate commitment_id is not empty
         if commitment_id.len() == 0 {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
             return Err(AttestationError::InvalidCommitmentId);
         }
 
         // 5. Validate commitment exists in core contract
-        if !Self::commitment_exists(&e, &commitment_id) {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+        if !Self::commitment_exists(e, &commitment_id) {
             return Err(AttestationError::CommitmentNotFound);
         }
 
         // 6. Validate attestation type
-        if !Self::is_valid_attestation_type(&e, &attestation_type) {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+        if !Self::is_valid_attestation_type(e, &attestation_type) {
             return Err(AttestationError::InvalidAttestationType);
         }
 
         // 7. Validate data format for the attestation type
-        if !Self::validate_attestation_data(&e, &attestation_type, &data) {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+        if !Self::validate_attestation_data(e, &attestation_type, &data) {
             return Err(AttestationError::InvalidAttestationData);
         }
 
@@ -728,8 +831,8 @@ impl AttestationEngineContract {
                 .get::<DataKey, Address>(&DataKey::AttestationFeeAsset)
             {
                 let contract_address = e.current_contract_address();
-                let token_client = token::Client::new(&e, &fee_asset);
-                token_client.transfer(&caller, &contract_address, &fee_amount);
+                let token_client = token::Client::new(e, &fee_asset);
+                token_client.transfer(caller, &contract_address, &fee_amount);
                 let key = DataKey::CollectedFees(fee_asset.clone());
                 let current: i128 = e.storage().instance().get(&key).unwrap_or(0);
                 e.storage().instance().set(&key, &(current + fee_amount));
@@ -753,72 +856,61 @@ impl AttestationEngineContract {
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| Vec::new(&e));
+            .unwrap_or_else(|| Vec::new(e));
 
-        // Add new attestation
         attestations.push_back(attestation.clone());
-
-        // Store updated list
         e.storage().persistent().set(&key, &attestations);
 
         // 10. Update health metrics
-        Self::update_health_metrics(&e, &commitment_id, &attestation);
+        Self::update_health_metrics(e, &commitment_id, &attestation);
 
         // 11. Increment attestation counter
         let counter_key = DataKey::AttestationCounter(commitment_id.clone());
         let counter: u64 = e.storage().persistent().get(&counter_key).unwrap_or(0);
         e.storage().persistent().set(&counter_key, &(counter + 1));
 
-        // 11b. OPTIMIZATION: Batch update all analytics counters
-        let (total_attestations, total_violations, verifier_count) = {
-            let total_att = e
-                .storage()
-                .instance()
-                .get(&DataKey::TotalAttestations)
-                .unwrap_or(0u64);
-            let total_viol = e
-                .storage()
-                .instance()
-                .get(&DataKey::TotalViolations)
-                .unwrap_or(0u64);
-            let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
-            let ver_count = e.storage().instance().get(&verifier_key).unwrap_or(0u64);
-            (total_att, total_viol, ver_count)
-        };
+        // 11b. Batch update analytics counters
+        let total_att: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalAttestations)
+            .unwrap_or(0u64);
+        let total_viol: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalViolations)
+            .unwrap_or(0u64);
+        let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
+        let ver_count: u64 = e.storage().instance().get(&verifier_key).unwrap_or(0u64);
 
         e.storage()
             .instance()
-            .set(&DataKey::TotalAttestations, &(total_attestations + 1));
+            .set(&DataKey::TotalAttestations, &(total_att + 1));
 
-        // Track violations (explicit or non-compliant)
-        let violation_type = String::from_str(&e, "violation");
+        let violation_type = String::from_str(e, "violation");
         if attestation.attestation_type == violation_type || !attestation.is_compliant {
             e.storage()
                 .instance()
-                .set(&DataKey::TotalViolations, &(total_violations + 1));
+                .set(&DataKey::TotalViolations, &(total_viol + 1));
         }
 
-        // Track per-verifier attestation count
-        let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
         e.storage()
             .instance()
-            .set(&verifier_key, &(verifier_count + 1));
+            .set(&verifier_key, &(ver_count + 1));
 
-        // 12. Emit enhanced AttestationRecorded event
+        // 12. Emit event
         e.events().publish(
             (
-                Symbol::new(&e, "AttestationRecorded"),
+                Symbol::new(e, "AttestationRecorded"),
                 commitment_id,
-                caller,
+                caller.clone(),
             ),
             (attestation_type, is_compliant, timestamp),
         );
 
-        // 13. Clear reentrancy guard
-        e.storage().instance().remove(&DataKey::ReentrancyGuard);
-
         Ok(())
     }
+
 
     /// Get all attestations for a commitment
     pub fn get_attestations(e: Env, commitment_id: String) -> Vec<Attestation> {
@@ -885,7 +977,19 @@ impl AttestationEngineContract {
         e.storage().persistent().get(&key).unwrap_or(0)
     }
 
-    /// Get current health metrics for a commitment
+    /// Get current health metrics for a commitment.
+    ///
+    /// Summary:
+    /// - Cross-reads the canonical commitment record from `commitment_core`.
+    /// - Aggregates fee and attestation timestamps from local attestation storage.
+    ///
+    /// Security:
+    /// - Read-only entrypoint; no state is mutated.
+    /// - Trust boundary is the configured `commitment_core` contract address stored at initialization.
+    ///
+    /// Panics:
+    /// - If the contract is not initialized.
+    /// - If `commitment_core` does not return a decodable `Commitment`.
     pub fn get_health_metrics(e: Env, commitment_id: String) -> HealthMetrics {
         let commitment_core: Address = e
             .storage()
@@ -1005,6 +1109,9 @@ impl AttestationEngineContract {
         commitment_id: String,
         fee_amount: i128,
     ) -> Result<(), AttestationError> {
+        // Authorization check
+        caller.require_auth();
+
         // Validate fee amount must be non-negative
         if fee_amount < 0 {
             return Err(AttestationError::InvalidFeeAmount);
@@ -1016,7 +1123,7 @@ impl AttestationEngineContract {
             Self::i128_to_string(&e, fee_amount),
         );
 
-        Self::attest(
+        Self::_attest_internal(
             e.clone(),
             caller,
             commitment_id.clone(),
@@ -1039,11 +1146,29 @@ impl AttestationEngineContract {
         commitment_id: String,
         drawdown_percent: i128,
     ) -> Result<(), AttestationError> {
+        // Reentrancy protection
+        if e.storage().instance().has(&DataKey::ReentrancyGuard) {
+            panic!("Reentrancy detected");
+        }
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+
+        Pausable::require_not_paused(&e);
+
+        // Auth: caller must sign and be an authorized verifier
+        caller.require_auth();
+        if !Self::is_authorized_verifier(&e, &caller) {
+            e.storage().instance().remove(&DataKey::ReentrancyGuard);
+            return Err(AttestationError::Unauthorized);
+        }
+
         let commitment_core: Address = e
             .storage()
             .instance()
             .get(&DataKey::CoreContract)
-            .ok_or(AttestationError::NotInitialized)?;
+            .ok_or_else(|| {
+                e.storage().instance().remove(&DataKey::ReentrancyGuard);
+                AttestationError::NotInitialized
+            })?;
 
         let mut args = Vec::new(&e);
         args.push_back(commitment_id.clone().into_val(&e));
@@ -1061,9 +1186,10 @@ impl AttestationEngineContract {
             Self::i128_to_string(&e, drawdown_percent),
         );
 
-        Self::attest(
-            e.clone(),
-            caller.clone(),
+        // Use write_attestation (no auth) for both calls to avoid double require_auth
+        Self::write_attestation(
+            &e,
+            &caller,
             commitment_id.clone(),
             String::from_str(&e, "drawdown"),
             data,
@@ -1081,9 +1207,9 @@ impl AttestationEngineContract {
                 String::from_str(&e, "high"),
             );
 
-            Self::attest(
-                e.clone(),
-                caller,
+            Self::write_attestation(
+                &e,
+                &caller,
                 commitment_id.clone(),
                 String::from_str(&e, "violation"),
                 violation_data,
@@ -1100,8 +1226,11 @@ impl AttestationEngineContract {
             (Symbol::new(&e, "DrawdownRecorded"), commitment_id),
             (drawdown_percent, is_compliant, e.ledger().timestamp()),
         );
+
+        e.storage().instance().remove(&DataKey::ReentrancyGuard);
         Ok(())
     }
+
 
     /// Convert i128 to String (helper function)
     fn i128_to_string(e: &Env, value: i128) -> String {
