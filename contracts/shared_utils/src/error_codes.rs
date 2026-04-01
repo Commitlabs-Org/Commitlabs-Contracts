@@ -304,9 +304,7 @@ pub fn emit_error_event(e: &Env, error_code: u32, context: &str) {
     );
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use soroban_sdk::Env;

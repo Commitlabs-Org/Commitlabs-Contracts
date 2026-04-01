@@ -8,7 +8,7 @@ pub struct AccessControl;
 
 impl AccessControl {
     /// Require that the caller is the admin
-    ///
+    /// 
     /// # Arguments
     /// * `e` - The environment
     /// * `caller` - The caller address
@@ -102,7 +102,7 @@ impl AccessControl {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::super::storage::Storage;
     use super::*;
@@ -150,6 +150,40 @@ mod tests {
             // simulation, so `require_auth` will cause an auth error panic.
             // We assert that this auth check is actually happening.
             AccessControl::require_owner(&env, &owner, &owner);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: caller is not the owner")]
+    fn test_require_owner_wrong_owner_after_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let caller = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let owner = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            AccessControl::require_owner(&env, &caller, &owner);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: caller is not admin or authorized")]
+    fn test_require_admin_or_authorized_fails_for_non_authorized_user() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let caller = <soroban_sdk::Address as TestAddress>::generate(&env);
+        let authorized_key: Symbol = soroban_sdk::symbol_short!("AUTHUSR");
+        let contract_id = env.register_contract(None, TestContract);
+
+        env.as_contract(&contract_id, || {
+            Storage::set_initialized(&env);
+            Storage::set_admin(&env, &admin);
+
+            AccessControl::require_admin_or_authorized(&env, &caller, &authorized_key);
         });
     }
 }

@@ -33,3 +33,4 @@
 - [ ] Add security-focused tests for missing auth checks.
 - [ ] Add fuzz/property tests for arithmetic and validation.
 - [ ] Assess feasibility of formal verification for core invariants.
+- [ ] Keep [COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md](/home/olowo/Desktop/Nathan/Commitlabs-Contracts/docs/COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md) aligned with live `commitment_core` auth, reentrancy, and arithmetic invariants.
