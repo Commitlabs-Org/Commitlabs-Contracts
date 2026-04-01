@@ -1910,7 +1910,7 @@ fn test_add_remove_is_authorized_allocator() {
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized")]
+#[should_panic(expected = "Unauthorized: caller not allowed")]
 fn test_allocate_unauthorized_caller_fails() {
     let e = Env::default();
     e.mock_all_auths();
@@ -2064,6 +2064,96 @@ fn test_allocate_when_active_succeeds() {
     let updated = client.get_commitment(&String::from_str(&e, commitment_id));
     assert_eq!(updated.current_value, 750);
     assert_eq!(updated.status, String::from_str(&e, "active"));
+}
+
+#[test]
+fn test_allocate_updates_tvl() {
+    let (e, admin, _, user, token_address, token_client, client) = setup_test_context();
+
+    let rules = CommitmentRules {
+        duration_days: 30,
+        max_loss_percent: 10,
+        commitment_type: String::from_str(&e, "safe"),
+        early_exit_penalty: 15,
+        min_fee_threshold: 100,
+        grace_period_days: 0,
+    };
+
+    let id = client.create_commitment(&user, &1000, &token_address, &rules);
+    assert_eq!(client.get_total_value_locked(), 1000);
+
+    let target_pool = Address::generate(&e);
+    client.allocate(&admin, &id, &target_pool, &400);
+    assert_eq!(client.get_total_value_locked(), 600);
+    assert_eq!(token_client.balance(&target_pool), 400);
+}
+
+#[test]
+fn test_tvl_consistency_sequence() {
+    let (e, admin, nft_contract, user, token_address, token_client, client) = setup_test_context();
+
+    let amount = 1000i128;
+    let rules = CommitmentRules {
+        duration_days: 30,
+        max_loss_percent: 20,
+        commitment_type: String::from_str(&e, "balanced"),
+        early_exit_penalty: 10,
+        min_fee_threshold: 0,
+        grace_period_days: 0,
+    };
+
+    // 1. Create -> TVL increases
+    let id = client.create_commitment(&user, &amount, &token_address, &rules);
+    assert_eq!(client.get_total_value_locked(), 1000);
+
+    // 2. Update Value -> TVL adjusts
+    client.update_value(&id, &1200);
+    assert_eq!(client.get_total_value_locked(), 1200);
+
+    // 3. Allocate -> TVL decreases
+    let target = Address::generate(&e);
+    client.allocate(&admin, &id, &target, &200);
+    assert_eq!(client.get_total_value_locked(), 1000);
+
+    // 4. Early Exit -> TVL decreases to 0 (for this commitment)
+    // Transfer 200 back to contract so it has enough balance for payout (1200)
+    // In real scenario, the allocator/pool would return funds.
+    let token_admin_client = StellarAssetClient::new(&e, &token_address);
+    token_admin_client.mint(&client.address, &200);
+
+    client.early_exit(&id, &user);
+    assert_eq!(client.get_total_value_locked(), 0);
+}
+
+fn setup_test_context() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    Address,
+    TokenClient<'static>,
+    CommitmentCoreContractClient<'static>,
+) {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let admin = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let user = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let token_address = token_contract.address();
+    let token_client = TokenClient::new(&e, &token_address);
+    let token_admin_client = StellarAssetClient::new(&e, &token_address);
+    token_admin_client.mint(&user, &10_000);
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    client.initialize(&admin, &nft_contract);
+    client.set_fee_recipient(&admin, &admin);
+
+    (e, admin, nft_contract, user, token_address, token_client, client)
 }
 
 /// Helper function to create a test commitment with custom penalty
