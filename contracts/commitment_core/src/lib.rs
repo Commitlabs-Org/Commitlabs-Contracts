@@ -361,10 +361,10 @@ impl CommitmentCoreContract {
             if rules.early_exit_penalty < 10 {
                 panic!("Balanced type: early_exit_penalty must be >= 10");
             }
-        } else if rules.commitment_type == String::from_str(e, "aggressive") {
-            if rules.early_exit_penalty < 5 {
-                panic!("Aggressive type: early_exit_penalty must be >= 5");
-            }
+        } else if rules.commitment_type == String::from_str(e, "aggressive")
+            && rules.early_exit_penalty < 5
+        {
+            panic!("Aggressive type: early_exit_penalty must be >= 5");
         }
     }
 
@@ -449,7 +449,6 @@ impl CommitmentCoreContract {
         RateLimiter::check(&e, &owner, &symbol_short!("create"));
         Validation::require_positive(amount);
         Self::validate_rules(&e, &rules);
-        check_sufficient_balance(&e, &owner, &asset_address, amount);
 
         let creation_fee_bps: u32 = e
             .storage()
@@ -485,9 +484,21 @@ impl CommitmentCoreContract {
         };
         let net_amount = amount - creation_fee;
 
-        let current_total = e.storage().instance().get::<_, u64>(&DataKey::TotalCommitments).unwrap_or(0);
-        let nft_contract = e.storage().instance().get::<_, Address>(&DataKey::NftContract)
-            .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::NotInitialized, "create") });
+        check_sufficient_balance(&e, &owner, &asset_address, amount);
+
+        let current_total = e
+            .storage()
+            .instance()
+            .get::<_, u64>(&DataKey::TotalCommitments)
+            .unwrap_or(0);
+        let nft_contract = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::NftContract)
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::NotInitialized, "create")
+            });
 
         // Calculate creation fee if configured
         let creation_fee_bps: u32 = e
@@ -937,11 +948,7 @@ impl CommitmentCoreContract {
         let loss_violated = loss_percent > commitment.rules.max_loss_percent as i128;
         let duration_violated = now >= commitment.expires_at;
         let has_violations = loss_violated || duration_violated;
-        let time_remaining = if now >= commitment.expires_at {
-            0
-        } else {
-            commitment.expires_at - now
-        };
+        let time_remaining = commitment.expires_at.saturating_sub(now);
 
         (
             has_violations,

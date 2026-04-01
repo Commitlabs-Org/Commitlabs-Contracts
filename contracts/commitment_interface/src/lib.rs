@@ -48,13 +48,11 @@ pub use crate::types::{
 /// =======================
 /// Interface Metadata
 /// =======================
-
 pub const INTERFACE_VERSION: u32 = 2;
 
 /// =======================
 /// Events
 /// =======================
-
 pub const COMMITMENT_CREATED: Symbol = symbol_short!("created");
 pub const COMMITMENT_SETTLED: Symbol = symbol_short!("settled");
 pub const COMMITMENT_EXITED: Symbol = symbol_short!("exited");

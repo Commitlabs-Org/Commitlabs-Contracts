@@ -14,6 +14,7 @@ struct MockNftContract;
 
 #[contractimpl]
 impl MockNftContract {
+    #[allow(clippy::too_many_arguments)]
     pub fn mint(
         _e: Env,
         _caller: Address,
@@ -46,6 +47,7 @@ mod instrumented_nft {
                 .set(&symbol_short!("failmint"), &should_fail);
         }
 
+        #[allow(clippy::too_many_arguments)]
         pub fn mint(
             e: Env,
             caller: Address,
@@ -237,7 +239,7 @@ fn test_early_exit_and_settle_large_amounts() {
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let _asset_address = Address::generate(&e);
     let commitment_id = String::from_str(&e, "large_amount");
 
     e.as_contract(&contract_id, || {
@@ -260,9 +262,10 @@ fn test_early_exit_and_settle_large_amounts() {
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
     // Early exit and settle should compile and run without overflow
-    let _ = client.early_exit(&commitment_id, &owner);
-    let _ = client.settle(&commitment_id);
+    client.early_exit(&commitment_id, &owner);
+    client.settle(&commitment_id);
 }
+#[allow(clippy::too_many_arguments)]
 fn create_test_commitment(
     e: &Env,
     commitment_id: &str,
@@ -387,6 +390,7 @@ fn test_create_commitment_rolls_back_when_nft_mint_fails() {
 }
 
 // Helper to setup a mock token contract
+#[allow(dead_code)]
 fn setup_token_contract(e: &Env) -> Address {
     Address::generate(e)
 }
@@ -709,8 +713,8 @@ fn test_create_commitment_valid_rules() {
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
-    let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let _owner = Address::generate(&e);
+    let _asset_address = Address::generate(&e);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin, nft_contract);
@@ -1486,13 +1490,13 @@ fn test_create_commitment_event() {
     let e = Env::default();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    let owner = Address::generate(&e);
+    let _owner = Address::generate(&e);
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
 
     client.initialize(&admin, &nft_contract);
 
-    let rules = CommitmentRules {
+    let _rules = CommitmentRules {
         duration_days: 30,
         max_loss_percent: 10,
         commitment_type: String::from_str(&e, "safe"),
@@ -1525,7 +1529,7 @@ fn test_update_value_event() {
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
     let owner = Address::generate(&e);
-    let updater = Address::generate(&e);
+    let _updater = Address::generate(&e);
     let commitment_id = String::from_str(&e, "test_id");
 
     e.as_contract(&contract_id, || {
@@ -1592,7 +1596,7 @@ fn test_update_value_rate_limit_enforced() {
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
     let owner = Address::generate(&e);
-    let updater = Address::generate(&e);
+    let _updater = Address::generate(&e);
     let commitment_id = String::from_str(&e, "rl_test");
 
     e.as_contract(&contract_id, || {
@@ -1912,6 +1916,7 @@ fn test_allocate_when_active_succeeds() {
 }
 
 /// Helper function to create a test commitment with custom penalty
+#[allow(clippy::too_many_arguments)]
 fn create_test_commitment_with_penalty(
     e: &Env,
     commitment_id: &str,
@@ -2179,14 +2184,14 @@ fn test_early_exit_penalty_zero_current_value() {
 
 #[test]
 fn test_early_exit_penalty_with_loss() {
-    let e = Env::default();
+    let _e = Env::default();
 
     // Simulate commitment that has lost value
     // Initial: 1000, Current: 800 (20% loss)
     // Penalty on current: 800 * 10% = 80
     // Returned: 800 - 80 = 720
 
-    let initial_amount = 1000i128;
+    let _initial_amount = 1000i128;
     let current_value = 800i128;
     let penalty_percent = 10u32;
 
@@ -2200,7 +2205,7 @@ fn test_early_exit_penalty_with_loss() {
 
 #[test]
 fn test_early_exit_penalty_small_amounts() {
-    let e = Env::default();
+    let _e = Env::default();
 
     // Test with small amounts where rounding might occur
     let current_value = 10i128;
@@ -2243,11 +2248,11 @@ fn test_early_exit_event_emission() {
 
 #[test]
 fn test_early_exit_after_value_reduction() {
-    let e = Env::default();
+    let _e = Env::default();
 
     // Simulate a commitment where current_value has been reduced
     // (e.g., through allocation or loss)
-    let initial_amount = 1000i128;
+    let _initial_amount = 1000i128;
     let current_value = 700i128; // Reduced from 1000
     let penalty_percent = 10u32;
 
@@ -2337,7 +2342,7 @@ fn test_early_exit_high_penalty() {
 
 #[test]
 fn test_early_exit_conservation_invariant() {
-    let e = Env::default();
+    let _e = Env::default();
 
     // Test that penalty + returned always equals current_value (token conservation)
     let test_values = [
@@ -2437,7 +2442,7 @@ fn test_update_value_no_violation() {
     let val_upd_symbol = symbol_short!("ValUpd").into_val(&e);
     let has_val_upd = events.iter().any(|ev| {
         ev.1.first()
-            .map_or(false, |t| t.shallow_eq(&val_upd_symbol))
+            .is_some_and(|t| t.shallow_eq(&val_upd_symbol))
     });
     assert!(has_val_upd, "ValueUpdated event should be emitted");
 }
@@ -2472,7 +2477,7 @@ fn test_update_value_triggers_violation() {
     let violated_symbol = symbol_short!("Violated").into_val(&e);
     let has_violation = events.iter().any(|ev| {
         ev.1.first()
-            .map_or(false, |t| t.shallow_eq(&violated_symbol))
+            .is_some_and(|t| t.shallow_eq(&violated_symbol))
     });
     assert!(has_violation, "ViolationDetected event should be emitted");
 }
@@ -2614,9 +2619,9 @@ fn test_owner_multiple_commitments_settle_one() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
 
         // Create 3 commitments with 1-day duration
-        let mut c1 = create_test_commitment(&e, "commit_001", &owner, 1000, 1000, 10, 1, 1000);
+        let c1 = create_test_commitment(&e, "commit_001", &owner, 1000, 1000, 10, 1, 1000);
         let mut c2 = create_test_commitment(&e, "commit_002", &owner, 2000, 2000, 10, 1, 1000);
-        let mut c3 = create_test_commitment(&e, "commit_003", &owner, 3000, 3000, 10, 1, 1000);
+        let c3 = create_test_commitment(&e, "commit_003", &owner, 3000, 3000, 10, 1, 1000);
 
         set_commitment(&e, &c1);
         set_commitment(&e, &c2);

@@ -595,10 +595,7 @@ impl AttestationEngineContract {
             args,
         );
 
-        match result {
-            Ok(Ok(_)) => true,
-            _ => false,
-        }
+        matches!(result, Ok(Ok(_)))
     }
 
     // ========================================================================
@@ -779,9 +776,9 @@ impl AttestationEngineContract {
         }
 
         // OPTIMIZATION: Single pass parsing with early exit on invalid char
-        for i in start_idx..len as usize {
-            let b = buf[i];
-            if b < b'0' || b > b'9' {
+        for b in buf.iter().take(len as usize).skip(start_idx) {
+            let b = *b;
+            if !b.is_ascii_digit() {
                 return None; // Invalid character - early exit
             }
             result = result.checked_mul(10)?;
@@ -1443,7 +1440,7 @@ impl AttestationEngineContract {
 
         if expires_at > created_at {
             let total_duration = expires_at.checked_sub(created_at).unwrap_or(1);
-            let elapsed = current_time.checked_sub(created_at).unwrap_or(0);
+            let elapsed = current_time.saturating_sub(created_at);
 
             // Check if we're on track (not too far behind or ahead)
             // Simplified: if elapsed is within reasonable bounds of expected progress
@@ -1460,11 +1457,7 @@ impl AttestationEngineContract {
         }
 
         // Clamp between 0 and 100
-        if score < 0 {
-            score = 0;
-        } else if score > 100 {
-            score = 100;
-        }
+        score = score.clamp(0, 100);
 
         // Emit compliance score update event
         e.events().publish(
@@ -1612,7 +1605,7 @@ impl AttestationEngineContract {
             let params = params_list.get(i).unwrap();
 
             // Validate commitment_id
-            if params.commitment_id.len() == 0 {
+            if params.commitment_id.is_empty() {
                 if mode == BatchMode::Atomic {
                     e.storage().instance().remove(&DataKey::ReentrancyGuard);
                     errors.push_back(BatchError {

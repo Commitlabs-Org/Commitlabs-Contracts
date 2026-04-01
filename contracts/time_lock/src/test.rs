@@ -59,8 +59,8 @@ fn test_queue_action_success() {
     assert_eq!(action.action_type, ActionType::ParameterChange);
     assert_eq!(action.target, target);
     assert_eq!(action.data, data);
-    assert_eq!(action.executed, false);
-    assert_eq!(action.cancelled, false);
+    assert!(!action.executed);
+    assert!(!action.cancelled);
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn test_execute_action_success() {
     client.execute_action(&action_id);
 
     let action = client.get_action(&action_id);
-    assert_eq!(action.executed, true);
+    assert!(action.executed);
 }
 
 #[test]
@@ -268,7 +268,7 @@ fn test_cancel_action_success() {
     client.cancel_action(&action_id);
 
     let action = client.get_action(&action_id);
-    assert_eq!(action.cancelled, true);
+    assert!(action.cancelled);
 }
 
 #[test]
@@ -368,8 +368,8 @@ fn test_get_pending_actions() {
 
     let pending = client.get_pending_actions();
     assert_eq!(pending.len(), 2);
-    assert!(pending.contains(&id1));
-    assert!(pending.contains(&id3));
+    assert!(pending.contains(id1));
+    assert!(pending.contains(id3));
 
     // Execute one
     env.ledger().with_mut(|li| {
@@ -379,7 +379,7 @@ fn test_get_pending_actions() {
 
     let pending = client.get_pending_actions();
     assert_eq!(pending.len(), 1);
-    assert!(pending.contains(&id3));
+    assert!(pending.contains(id3));
 }
 
 #[test]
@@ -409,7 +409,7 @@ fn test_get_executable_actions() {
 
     let executable = client.get_executable_actions();
     assert_eq!(executable.len(), 1);
-    assert!(executable.contains(&id1));
+    assert!(executable.contains(id1));
 
     // Fast forward to 2 days + 1 second total
     env.ledger().with_mut(|li| {
@@ -418,8 +418,8 @@ fn test_get_executable_actions() {
 
     let executable = client.get_executable_actions();
     assert_eq!(executable.len(), 2);
-    assert!(executable.contains(&id1));
-    assert!(executable.contains(&id2));
+    assert!(executable.contains(id1));
+    assert!(executable.contains(id2));
 
     // Fast forward to 3 days + 1 second total
     env.ledger().with_mut(|li| {
@@ -428,9 +428,9 @@ fn test_get_executable_actions() {
 
     let executable = client.get_executable_actions();
     assert_eq!(executable.len(), 3);
-    assert!(executable.contains(&id1));
-    assert!(executable.contains(&id2));
-    assert!(executable.contains(&id3));
+    assert!(executable.contains(id1));
+    assert!(executable.contains(id2));
+    assert!(executable.contains(id3));
 }
 
 #[test]
@@ -542,7 +542,7 @@ fn test_edge_case_exact_delay_time() {
 
     // Fast forward to exactly the delay time (not past it)
     env.ledger().with_mut(|li| {
-        li.timestamp = li.timestamp + delay;
+        li.timestamp += delay;
     });
 
     // Should be executable at exactly the delay time
