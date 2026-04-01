@@ -159,6 +159,20 @@ fn test_initialize_twice_fails() {
     client.initialize(&admin); // Should panic
 }
 
+#[test]
+#[should_panic(expected = "Error(Auth, #1)")] // Unauthenticated
+fn test_initialize_requires_auth() {
+    // Intentionally DO NOT mock auths — proves admin.require_auth() is enforced.
+    // A third party cannot front-run deployment and hijack the admin role.
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentNFTContract);
+    let client = CommitmentNFTContractClient::new(&e, &contract_id);
+    let admin = SdkAddress::generate(&e);
+
+    // Must fail because the admin has not authorized this call
+    client.initialize(&admin);
+}
+
 // ============================================
 // Access control: whitelist and unauthorized mint
 // ============================================
