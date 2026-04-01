@@ -20,6 +20,7 @@ struct MockNftContract;
 impl MockNftContract {
     pub fn mint(
         _e: Env,
+        _caller: Address,
         _owner: Address,
         _commitment_id: String,
         _duration_days: u32,
@@ -611,14 +612,14 @@ fn test_create_commitment_expiration_overflow() {
     let rules = CommitmentRules {
         duration_days: 1,
         max_loss_percent: 10,
-        commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 15,
+        commitment_type: String::from_str(&e, "balanced"),
+        early_exit_penalty: 10,
         min_fee_threshold: 100,
         grace_period_days: 0,
     };
 
     e.as_contract(&contract_id, || {
-        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, asset_address, rules);
+        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, token_address, rules);
     });
 }
 

@@ -30,7 +30,7 @@ fn test_create_commitment_zero_owner_fails() {
 
     let zero_owner = generate_zero_address(&env);
     let amount: i128 = 100_000_000;
-    let asset_address = Address::generate(&env);
+    let asset_address = Address::from_string(&String::from_str(&env, "GBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCR"));
 
     let rules = CommitmentRules {
         duration_days: 30,
