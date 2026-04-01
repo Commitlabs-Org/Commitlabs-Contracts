@@ -4,13 +4,9 @@ use super::*;
 use shared_utils::TimeUtils;
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
-    testutils::{ Address as _, Events, Ledger },
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    vec,
-    Address,
-    Env,
-    IntoVal,
-    String,
+    vec, Address, Env, IntoVal, String,
 };
 
 #[contract]
@@ -20,6 +16,7 @@ struct MockNftContract;
 impl MockNftContract {
     pub fn mint(
         _e: Env,
+        _caller: Address,
         _owner: Address,
         _commitment_id: String,
         _duration_days: u32,
@@ -69,7 +66,9 @@ mod instrumented_nft {
             if should_fail {
                 panic!("mock nft mint failure");
             }
-            e.storage().instance().set(&symbol_short!("caller"), &caller);
+            e.storage()
+                .instance()
+                .set(&symbol_short!("caller"), &caller);
             7
         }
 
@@ -102,9 +101,14 @@ fn test_create_commitment_i128_max() {
     e.mock_all_auths();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &1000);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
@@ -130,7 +134,7 @@ fn test_create_commitment_i128_max() {
             owner.clone(),
             amount,
             asset_address.clone(),
-rules.clone(),
+            rules.clone(),
         );
     });
 }
@@ -166,7 +170,7 @@ fn test_create_commitment_amount_one() {
             owner.clone(),
             amount,
             asset_address.clone(),
-rules.clone(),
+            rules.clone(),
         );
     });
 }
@@ -267,10 +271,10 @@ fn create_test_commitment(
     current_value: i128,
     max_loss_percent: u32,
     duration_days: u32,
-    created_at: u64
+    created_at: u64,
 ) -> Commitment {
     let expires_at = created_at + (duration_days as u64) * 86400; // days to seconds
-    let expires_at = created_at + (duration_days as u64 * 86400); 
+    let expires_at = created_at + (duration_days as u64 * 86400);
 
     Commitment {
         commitment_id: String::from_str(e, commitment_id),
@@ -336,7 +340,10 @@ fn test_create_commitment_passes_core_contract_as_nft_caller() {
         CommitmentCoreContract::get_commitment(e.clone(), commitment_id.clone())
     });
     let recorded_caller: Address = e.as_contract(&nft_contract, || {
-        e.storage().instance().get(&symbol_short!("caller")).unwrap()
+        e.storage()
+            .instance()
+            .get(&symbol_short!("caller"))
+            .unwrap()
     });
 
     assert_eq!(commitment.nft_token_id, 7);
@@ -563,7 +570,10 @@ fn test_create_commitment_zero_address_fails() {
     client.initialize(&admin, &nft_contract);
 
     // RESOLVED CONFLICT: Correct 1-argument native Address creation
-    let zero_str = String::from_str(&e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero_str = String::from_str(
+        &e,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
     let zero_address = Address::from_string(&zero_str);
 
     let rules = CommitmentRules {
@@ -587,30 +597,33 @@ fn test_create_commitment_expiration_overflow() {
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &1000);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
     });
 
-    // Set ledger timestamp so created_at + duration_days * 86400 overflows u64
-    e.ledger().with_mut(|l| {
-        l.timestamp = u64::MAX - 50_000;
-    });
+    // Advance the ledger so created_at + duration_days * 86400 overflows u64.
+    // duration_days = 1 → adds 86400 seconds.  u64::MAX - 86399 is the tipping point.
+    e.ledger().set_timestamp(u64::MAX - 86_399);
 
     let rules = CommitmentRules {
         duration_days: 1,
         max_loss_percent: 10,
-        commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 15,
+        commitment_type: String::from_str(&e, "balanced"),
+        early_exit_penalty: 10,
         min_fee_threshold: 100,
         grace_period_days: 0,
     };
 
     e.as_contract(&contract_id, || {
-        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, asset_address, rules);
+        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, token_address, rules);
     });
 }
 
@@ -1120,9 +1133,9 @@ fn test_check_violations_no_violations() {
         &owner,
         1000,
         950, // 5% loss
-        10, // max 10% loss allowed
-        30, // 30 days duration
-        created_at
+        10,  // max 10% loss allowed
+        30,  // 30 days duration
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1155,9 +1168,9 @@ fn test_check_violations_loss_limit_exceeded() {
         &owner,
         1000,
         850, // 15% loss - exceeds 10% limit
-        10, // max 10% loss allowed
+        10,  // max 10% loss allowed
         30,
-        created_at
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1189,9 +1202,9 @@ fn test_check_violations_duration_expired() {
         &owner,
         1000,
         980, // 2% loss - within limit
-        10, // max 10% loss allowed
-        30, // 30 days duration
-        created_at
+        10,  // max 10% loss allowed
+        30,  // 30 days duration
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1223,9 +1236,9 @@ fn test_check_violations_both_violations() {
         &owner,
         1000,
         800, // 20% loss - exceeds limit
-        10, // max 10% loss allowed
+        10,  // max 10% loss allowed
         30,
-        created_at
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1256,9 +1269,9 @@ fn test_get_violation_details_no_violations() {
         &owner,
         1000,
         950, // 5% loss
-        10, // max 10% loss
+        10,  // max 10% loss
         30,
-        created_at
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1268,11 +1281,11 @@ fn test_get_violation_details_no_violations() {
         l.timestamp = created_at + 15 * 86400;
     });
 
-    let (has_violations, loss_violated, duration_violated, loss_percent, time_remaining) =
-        e.as_contract(&contract_id, || {
+    let (has_violations, loss_violated, duration_violated, loss_percent, time_remaining) = e
+        .as_contract(&contract_id, || {
             CommitmentCoreContract::get_violation_details(
                 e.clone(),
-                String::from_str(&e, commitment_id)
+                String::from_str(&e, commitment_id),
             )
         });
 
@@ -1299,7 +1312,7 @@ fn test_get_violation_details_loss_violation() {
         850, // 15% loss - exceeds 10%
         10,
         30,
-        created_at
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1309,8 +1322,8 @@ fn test_get_violation_details_loss_violation() {
     });
 
     let commitment_id_str = String::from_str(&e, commitment_id);
-    let (has_violations, loss_violated, duration_violated, loss_percent, _time_remaining) =
-        e.as_contract(&contract_id, || {
+    let (has_violations, loss_violated, duration_violated, loss_percent, _time_remaining) = e
+        .as_contract(&contract_id, || {
             CommitmentCoreContract::get_violation_details(e.clone(), commitment_id_str.clone())
         });
 
@@ -1336,7 +1349,7 @@ fn test_get_violation_details_duration_violation() {
         980, // 2% loss - within limit
         10,
         30,
-        created_at
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1346,11 +1359,11 @@ fn test_get_violation_details_duration_violation() {
         l.timestamp = created_at + 31 * 86400;
     });
 
-    let (has_violations, loss_violated, duration_violated, _loss_percent, time_remaining) =
-        e.as_contract(&contract_id, || {
+    let (has_violations, loss_violated, duration_violated, _loss_percent, time_remaining) = e
+        .as_contract(&contract_id, || {
             CommitmentCoreContract::get_violation_details(
                 e.clone(),
-                String::from_str(&e, commitment_id)
+                String::from_str(&e, commitment_id),
             )
         });
 
@@ -1387,9 +1400,9 @@ fn test_check_violations_edge_case_exact_loss_limit() {
         &owner,
         1000,
         900, // Exactly 10% loss
-        10, // max 10% loss
+        10,  // max 10% loss
         30,
-        created_at
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1414,16 +1427,8 @@ fn test_check_violations_edge_case_exact_expiry() {
     let commitment_id = "test_commitment_9";
 
     let created_at = 1000u64;
-    let commitment = create_test_commitment(
-        &e,
-        commitment_id,
-        &owner,
-        1000,
-        950,
-        10,
-        30,
-        created_at
-    );
+    let commitment =
+        create_test_commitment(&e, commitment_id, &owner, 1000, 950, 10, 30, created_at);
 
     store_commitment(&e, &contract_id, &commitment);
 
@@ -1457,7 +1462,7 @@ fn test_check_violations_zero_amount() {
         0, // zero value
         10,
         30,
-        created_at
+        created_at,
     );
 
     store_commitment(&e, &contract_id, &commitment);
@@ -1533,10 +1538,12 @@ fn test_update_value_event() {
             1000,
             10,
             30,
-            e.ledger().timestamp()
+            e.ledger().timestamp(),
         );
         set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &1000i128);
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -1595,7 +1602,7 @@ fn test_update_value_rate_limit_enforced() {
             admin.clone(),
             symbol_short!("upd_val"),
             60,
-            1
+            1,
         );
         let commitment = create_test_commitment(
             &e,
@@ -1605,10 +1612,12 @@ fn test_update_value_rate_limit_enforced() {
             1000,
             10,
             30,
-            e.ledger().timestamp()
+            e.ledger().timestamp(),
         );
         set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &1000i128);
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -1658,7 +1667,7 @@ fn test_settle_rejects_when_not_expired() {
         1000,
         10,
         duration_days,
-        created_at
+        created_at,
     );
     store_commitment(&e, &contract_id, &commitment);
 
@@ -1694,7 +1703,7 @@ fn test_early_exit_by_admin_not_owner_fails() {
         CommitmentCoreContract::early_exit(
             e.clone(),
             String::from_str(&e, commitment_id),
-            admin.clone()
+            admin.clone(),
         );
     });
 }
@@ -1889,6 +1898,7 @@ fn test_allocate_when_active_succeeds() {
     commitment.asset_address = asset_address;
     store_commitment(&e, &contract_id, &commitment);
 
+    // admin is authorized (is the admin address stored in the contract)
     client.allocate(
         &admin,
         &String::from_str(&e, commitment_id),
@@ -1911,7 +1921,7 @@ fn create_test_commitment_with_penalty(
     max_loss_percent: u32,
     duration_days: u32,
     created_at: u64,
-    early_exit_penalty: u32
+    early_exit_penalty: u32,
 ) -> Commitment {
     let expires_at = created_at + (duration_days as u64) * 86400; // days to seconds
 
@@ -1959,7 +1969,7 @@ fn test_early_exit_commitment_not_found() {
         CommitmentCoreContract::early_exit(
             e.clone(),
             String::from_str(&e, "nonexistent_commitment"),
-            owner.clone()
+            owner.clone(),
         );
     });
 }
@@ -1990,7 +2000,7 @@ fn test_early_exit_unauthorized_caller() {
         CommitmentCoreContract::early_exit(
             e.clone(),
             String::from_str(&e, commitment_id),
-            unauthorized_caller.clone()
+            unauthorized_caller.clone(),
         );
     });
 }
@@ -2011,16 +2021,8 @@ fn test_early_exit_already_settled() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
     });
 
-    let mut commitment = create_test_commitment(
-        &e,
-        commitment_id,
-        &owner,
-        1000,
-        1000,
-        10,
-        30,
-        1000
-    );
+    let mut commitment =
+        create_test_commitment(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000);
 
     // Mark as settled
     commitment.status = String::from_str(&e, "settled");
@@ -2031,7 +2033,7 @@ fn test_early_exit_already_settled() {
         CommitmentCoreContract::early_exit(
             e.clone(),
             String::from_str(&e, commitment_id),
-            owner.clone()
+            owner.clone(),
         );
     });
 }
@@ -2052,16 +2054,8 @@ fn test_early_exit_already_violated() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
     });
 
-    let mut commitment = create_test_commitment(
-        &e,
-        commitment_id,
-        &owner,
-        1000,
-        1000,
-        10,
-        30,
-        1000
-    );
+    let mut commitment =
+        create_test_commitment(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000);
 
     // Mark as violated
     commitment.status = String::from_str(&e, "violated");
@@ -2072,7 +2066,7 @@ fn test_early_exit_already_violated() {
         CommitmentCoreContract::early_exit(
             e.clone(),
             String::from_str(&e, commitment_id),
-            owner.clone()
+            owner.clone(),
         );
     });
 }
@@ -2093,16 +2087,8 @@ fn test_early_exit_already_exited() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
     });
 
-    let mut commitment = create_test_commitment(
-        &e,
-        commitment_id,
-        &owner,
-        1000,
-        1000,
-        10,
-        30,
-        1000
-    );
+    let mut commitment =
+        create_test_commitment(&e, commitment_id, &owner, 1000, 1000, 10, 30, 1000);
 
     // Mark as early_exit
     commitment.status = String::from_str(&e, "early_exit");
@@ -2113,7 +2099,7 @@ fn test_early_exit_already_exited() {
         CommitmentCoreContract::early_exit(
             e.clone(),
             String::from_str(&e, commitment_id),
-            owner.clone()
+            owner.clone(),
         );
     });
 }
@@ -2155,8 +2141,8 @@ fn test_early_exit_state_update() {
 fn test_early_exit_penalty_values() {
     // Test penalty calculation logic with boundary and representative values
     let test_cases = [
-        (1000i128, 10u32, 100i128, 900i128), // 10% of 1000
-        (1000i128, 5u32, 50i128, 950i128), // 5% of 1000
+        (1000i128, 10u32, 100i128, 900i128),  // 10% of 1000
+        (1000i128, 5u32, 50i128, 950i128),    // 5% of 1000
         (2000i128, 15u32, 300i128, 1700i128), // 15% of 2000
         (500i128, 20u32, 100i128, 400i128),   // 20% of 500
         (1000i128, 0u32, 0i128, 1000i128),    // 0% penalty
@@ -2285,16 +2271,8 @@ fn test_early_exit_different_commitment_types() {
     let types = ["safe", "balanced", "aggressive"];
 
     for commitment_type in types.iter() {
-        let mut commitment = create_test_commitment(
-            &e,
-            "test_id",
-            &owner,
-            1000,
-            1000,
-            10,
-            30,
-            1000
-        );
+        let mut commitment =
+            create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, 1000);
 
         commitment.rules.commitment_type = String::from_str(&e, commitment_type);
 
@@ -2323,7 +2301,7 @@ fn test_early_exit_zero_penalty() {
         10,
         30,
         1000,
-        0 // 0% penalty
+        0, // 0% penalty
     );
 
     let penalty = (commitment.current_value * (commitment.rules.early_exit_penalty as i128)) / 100;
@@ -2347,7 +2325,7 @@ fn test_early_exit_high_penalty() {
         10,
         30,
         1000,
-        50 // 50% penalty
+        50, // 50% penalty
     );
 
     let penalty = (commitment.current_value * (commitment.rules.early_exit_penalty as i128)) / 100;
@@ -2442,7 +2420,9 @@ fn test_update_value_no_violation() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
         let commitment = create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, 1000);
         set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &1000i128);
     });
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
     client.update_value(&admin, &String::from_str(&e, "test_id"), &950);
@@ -2474,7 +2454,9 @@ fn test_update_value_triggers_violation() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
         let commitment = create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, 1000);
         set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &1000i128);
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -2649,7 +2631,10 @@ fn test_owner_multiple_commitments_settle_one() {
             &DataKey::OwnerCommitments(owner.clone()),
             &owner_commitments,
         );
-        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
+        e.storage().instance().set(
+            &DataKey::OwnerCommitments(owner.clone()),
+            &owner_commitments,
+        );
 
         // Manually settle one commitment (simulating what settle() would do)
         c2.status = String::from_str(&e, "settled");
