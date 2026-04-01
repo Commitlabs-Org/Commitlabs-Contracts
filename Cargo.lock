@@ -170,6 +170,7 @@ dependencies = [
 name = "commitment_core"
 version = "0.1.0"
 dependencies = [
+ "commitment_nft",
  "shared_utils",
  "soroban-sdk",
 ]
@@ -178,6 +179,7 @@ dependencies = [
 name = "commitment_interface"
 version = "0.1.0"
 dependencies = [
+ "shared_utils",
  "soroban-sdk",
 ]
 
@@ -185,6 +187,7 @@ dependencies = [
 name = "commitment_nft"
 version = "0.1.0"
 dependencies = [
+ "commitment_core",
  "shared_utils",
  "soroban-sdk",
 ]

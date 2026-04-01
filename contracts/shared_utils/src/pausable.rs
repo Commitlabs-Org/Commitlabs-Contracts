@@ -23,7 +23,6 @@ impl Pausable {
     /// # Returns
     /// `true` if paused, `false` otherwise
     pub fn is_paused(e: &Env) -> bool {
-        let paused_key = symbol_short!("paused");
         e.storage()
             .instance()
             .get::<_, bool>(&Self::paused_key(e))

@@ -70,10 +70,22 @@ impl SafeMath {
     /// * `current` - The current value
     ///
     /// # Returns
-    /// The loss percentage as i128 (can be negative if current > initial)
+    /// The loss percentage as i128.
+    ///
+    /// # Security
+    /// Assumes `initial` represents a positive principal amount.
+    /// Saturates at `0` when `current >= initial` and at `100` when `current <= 0`
+    /// so downstream loss-limit checks cannot observe impossible negative or >100%
+    /// loss values.
     pub fn loss_percent(initial: i128, current: i128) -> i128 {
         if initial == 0 {
             panic!("Math: cannot calculate loss percent from zero initial value");
+        }
+        if current >= initial {
+            return 0;
+        }
+        if current <= 0 {
+            return 100;
         }
         let loss = Self::sub(initial, current);
         Self::percent_from(loss, initial)
@@ -86,10 +98,18 @@ impl SafeMath {
     /// * `current` - The current value
     ///
     /// # Returns
-    /// The gain percentage as i128 (can be negative if current < initial)
+    /// The gain percentage as i128.
+    ///
+    /// # Security
+    /// Assumes `initial` represents a positive principal amount.
+    /// Saturates at `0` when `current <= initial` so downstream performance
+    /// checks do not treat drawdowns as negative gains.
     pub fn gain_percent(initial: i128, current: i128) -> i128 {
         if initial == 0 {
             panic!("Math: cannot calculate gain percent from zero initial value");
+        }
+        if current <= initial {
+            return 0;
         }
         let gain = Self::sub(current, initial);
         Self::percent_from(gain, initial)
@@ -129,24 +149,28 @@ mod tests {
     fn test_safe_add() {
         assert_eq!(SafeMath::add(100, 50), 150);
         assert_eq!(SafeMath::add(-100, 50), -50);
+        assert_eq!(SafeMath::add(i128::MAX - 1, 1), i128::MAX);
     }
 
     #[test]
     fn test_safe_sub() {
         assert_eq!(SafeMath::sub(100, 50), 50);
         assert_eq!(SafeMath::sub(50, 100), -50);
+        assert_eq!(SafeMath::sub(i128::MIN + 1, 1), i128::MIN);
     }
 
     #[test]
     fn test_safe_mul() {
         assert_eq!(SafeMath::mul(10, 5), 50);
         assert_eq!(SafeMath::mul(-10, 5), -50);
+        assert_eq!(SafeMath::mul(i128::MAX / 2, 2), i128::MAX - 1);
     }
 
     #[test]
     fn test_safe_div() {
         assert_eq!(SafeMath::div(100, 5), 20);
         assert_eq!(SafeMath::div(100, -5), -20);
+        assert_eq!(SafeMath::div(i128::MIN, 1), i128::MIN);
     }
 
     #[test]
@@ -156,10 +180,42 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "addition overflow")]
+    fn test_safe_add_overflow() {
+        SafeMath::add(i128::MAX, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "subtraction underflow")]
+    fn test_safe_sub_underflow() {
+        SafeMath::sub(i128::MIN, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "multiplication overflow")]
+    fn test_safe_mul_overflow() {
+        SafeMath::mul(i128::MAX, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "division overflow")]
+    fn test_safe_div_overflow() {
+        SafeMath::div(i128::MIN, -1);
+    }
+
+    #[test]
     fn test_percent() {
         assert_eq!(SafeMath::percent(1000, 10), 100);
         assert_eq!(SafeMath::percent(1000, 50), 500);
         assert_eq!(SafeMath::percent(1000, 100), 1000);
+        assert_eq!(SafeMath::percent(999, 33), 329);
+        assert_eq!(SafeMath::percent(-1000, 25), -250);
+    }
+
+    #[test]
+    #[should_panic(expected = "percent must be <= 100")]
+    fn test_percent_rejects_above_hundred() {
+        SafeMath::percent(1000, 101);
     }
 
     #[test]
@@ -174,6 +230,9 @@ mod tests {
         assert_eq!(SafeMath::loss_percent(1000, 900), 10);
         assert_eq!(SafeMath::loss_percent(1000, 800), 20);
         assert_eq!(SafeMath::loss_percent(1000, 1000), 0);
+        assert_eq!(SafeMath::loss_percent(1000, 1100), 0);
+        assert_eq!(SafeMath::loss_percent(1000, 0), 100);
+        assert_eq!(SafeMath::loss_percent(1000, -100), 100);
     }
 
     #[test]
@@ -181,6 +240,9 @@ mod tests {
         assert_eq!(SafeMath::gain_percent(1000, 1100), 10);
         assert_eq!(SafeMath::gain_percent(1000, 1200), 20);
         assert_eq!(SafeMath::gain_percent(1000, 1000), 0);
+        assert_eq!(SafeMath::gain_percent(1000, 900), 0);
+        assert_eq!(SafeMath::gain_percent(1000, -100), 0);
+        assert_eq!(SafeMath::gain_percent(1000, 3500), 250);
     }
 
     #[test]
