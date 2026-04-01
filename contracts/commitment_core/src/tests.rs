@@ -1782,6 +1782,124 @@ fn test_update_value_rate_limit_enforced() {
     client.update_value(&admin, &commitment_id, &200);
 }
 
+// Rate limiting tests for create_commitment
+// Ensure the per-address rate limit on `create` is enforced and that the
+// admin-controlled exemption flag bypasses the limit for an exempted address.
+#[test]
+#[should_panic(expected = "Rate limit exceeded")]
+fn test_create_commitment_rate_limit_enforced() {
+    let e = Env::default();
+    // Allow contract-to-contract calls and non-root auths for token ops
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, instrumented_nft::InstrumentedNftContract);
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let amount = 1_000i128;
+
+    // Setup a test token and mint enough for two creates
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &(amount * 2));
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        // Configure rate limit: 1 create per 60s
+        CommitmentCoreContract::set_rate_limit(
+            e.clone(),
+            admin.clone(),
+            symbol_short!("create"),
+            60,
+            1,
+        );
+    });
+
+    let rules = test_rules(&e);
+
+    // First create — allowed
+    let _c1 = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::create_commitment(
+            e.clone(),
+            owner.clone(),
+            amount,
+            asset_address.clone(),
+            rules.clone(),
+        )
+    });
+
+    // Second create within same window — should panic with rate-limit
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::create_commitment(
+            e.clone(),
+            owner.clone(),
+            amount,
+            asset_address.clone(),
+            rules.clone(),
+        )
+    });
+}
+
+#[test]
+fn test_create_commitment_rate_limit_exempt_owner() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, instrumented_nft::InstrumentedNftContract);
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let amount = 1_000i128;
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &(amount * 2));
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        // Configure rate limit: 1 create per 60s
+        CommitmentCoreContract::set_rate_limit(
+            e.clone(),
+            admin.clone(),
+            symbol_short!("create"),
+            60,
+            1,
+        );
+        // Exempt the owner from rate limits
+        CommitmentCoreContract::set_rate_limit_exempt(e.clone(), admin.clone(), owner.clone(), true);
+    });
+
+    let rules = test_rules(&e);
+
+    // Two creates should both succeed because owner is exempt
+    let _c1 = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::create_commitment(
+            e.clone(),
+            owner.clone(),
+            amount,
+            asset_address.clone(),
+            rules.clone(),
+        )
+    });
+
+    let _c2 = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::create_commitment(
+            e.clone(),
+            owner.clone(),
+            amount,
+            asset_address.clone(),
+            rules.clone(),
+        )
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    assert_eq!(client.get_total_commitments(), 2);
+}
+
 #[test]
 #[should_panic(expected = "Commitment not found")]
 fn test_settle_event() {
