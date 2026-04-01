@@ -12,20 +12,18 @@
 use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger},
-    token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, IntoVal, String, Symbol,
+    testutils::{Address as _, Ledger},
+    token, Address, Env, String,
 };
 
-// ── Minimal mock NFT that satisfies the `mint` cross-contract call ──────────
 #[contract]
-struct FeeTestMockNft;
+struct FeeMockNftContract;
 
 #[contractimpl]
-impl FeeTestMockNft {
+impl FeeMockNftContract {
     pub fn mint(
         _e: Env,
-        _caller: Address,   // commitment_core passes itself as first arg
+        _caller: Address,
         _owner: Address,
         _commitment_id: String,
         _duration_days: u32,
@@ -37,13 +35,23 @@ impl FeeTestMockNft {
     ) -> u32 {
         1
     }
+
     pub fn settle(_e: Env, _caller: Address, _token_id: u32) {}
+
     pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
 }
 
-fn create_token_contract(e: &Env, admin: &Address) -> Address {
-    let contract = e.register_stellar_asset_contract_v2(admin.clone());
-    contract.address()
+fn create_token_contract<'a>(
+    e: &Env,
+    admin: &Address,
+) -> (Address, token::Client<'a>, token::StellarAssetClient<'a>) {
+    let token_contract = e.register_stellar_asset_contract_v2(admin.clone());
+    let addr = token_contract.address();
+    (
+        addr.clone(),
+        token::Client::new(e, &addr),
+        token::StellarAssetClient::new(e, &addr),
+    )
 }
 
 /// Returns `(env, admin, contract_id, user, token_address, contract_client)`.
@@ -66,13 +74,12 @@ fn setup_test() -> (
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    // Register a real mock NFT so that cross-contract `mint` calls succeed.
-    let nft_contract = e.register_contract(None, FeeTestMockNft);
+    let nft_contract = e.register_contract(None, FeeMockNftContract);
     let user = Address::generate(&e);
-    let token_address = create_token_contract(&e, &admin);
+    let (token_address, token_client, token_admin_client) = create_token_contract(&e, &admin);
 
-    // Mint tokens to user via the stellar-asset admin interface
-    StellarAssetClient::new(&e, &token_address).mint(&user, &10_000_000);
+    // Mint tokens to user
+    token_admin_client.mint(&user, &10_000_000);
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -298,14 +305,13 @@ fn test_early_exit_penalty_retained_as_fee() {
 
     let expected_penalty = 100_000i128; // 10% of 1,000,000
     let expected_returned = amount - expected_penalty;
-    // User started with 10_000_000, deposited `amount`, then received `expected_returned` back.
-    let expected_balance = 10_000_000 - amount + expected_returned;
+    let expected_user_balance = 10_000_000i128 - amount + expected_returned;
 
     // Verify penalty was added to collected fees
     assert_eq!(client.get_collected_fees(&token_address), expected_penalty);
 
-    // Verify user received net amount back
-    assert_eq!(token_client.balance(&user), expected_balance);
+    // Verify user received net amount
+    assert_eq!(token_client.balance(&user), expected_user_balance);
 }
 
 #[test]
@@ -331,14 +337,13 @@ fn test_early_exit_with_creation_fee_and_penalty() {
     let exit_penalty = 99_000i128; // 10% of 990,000
     let returned_to_user = net_amount - exit_penalty;
     let total_fees = creation_fee + exit_penalty;
-    // User started with 10_000_000, deposited `amount`, then received `returned_to_user` back.
-    let expected_balance = 10_000_000 - amount + returned_to_user;
+    let expected_user_balance = 10_000_000i128 - amount + expected_returned;
 
     // Verify both fees were collected
     assert_eq!(client.get_collected_fees(&token_address), total_fees);
 
     // Verify user received correct amount
-    assert_eq!(token_client.balance(&user), expected_balance);
+    assert_eq!(token_client.balance(&user), expected_user_balance);
 }
 
 // ============================================================================
@@ -529,11 +534,11 @@ fn test_get_collected_fees_multiple_assets() {
     let (e, admin, contract_id, user, _, client) = setup_test();
 
     // Create two different tokens
-    let token1 = create_token_contract(&e, &admin);
-    let token2 = create_token_contract(&e, &admin);
+    let (token1, _token1_client, token1_admin_client) = create_token_contract(&e, &admin);
+    let (token2, _token2_client, token2_admin_client) = create_token_contract(&e, &admin);
 
-    StellarAssetClient::new(&e, &token1).mint(&user, &10_000_000);
-    StellarAssetClient::new(&e, &token2).mint(&user, &10_000_000);
+    token1_admin_client.mint(&user, &10_000_000);
+    token2_admin_client.mint(&user, &10_000_000);
 
     // Set creation fee
     client.set_creation_fee_bps(&admin, &100);
@@ -564,22 +569,22 @@ fn test_fee_collection_with_settle() {
     let amount = 1_000_000i128;
     let creation_fee = 10_000i128;
     let net_amount = amount - creation_fee;
+    let expected_user_balance = 10_000_000i128 - amount + net_amount;
 
-    let mut rules = default_rules(&e);
-    rules.duration_days = 1; // Minimum valid duration
+    let rules = default_rules(&e);
 
     let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
-    // Advance past the 1-day expiry (duration_days * seconds_per_day)
-    e.ledger().set_timestamp(e.ledger().timestamp() + 86_401);
-    settle_direct(&e, &contract_id, &commitment_id);
+    // Settle commitment
+    e.ledger()
+        .with_mut(|li| li.timestamp = li.timestamp + (rules.duration_days as u64 * 86_400) + 1);
+    client.settle(&commitment_id);
 
     // Verify creation fee still collected
     assert_eq!(client.get_collected_fees(&token_address), creation_fee);
 
-    // User started with 10_000_000, deposited `amount`, received `net_amount` back.
-    let expected_balance = 10_000_000 - amount + net_amount;
-    assert_eq!(token_client.balance(&user), expected_balance);
+    // Verify user got back net amount
+    assert_eq!(token_client.balance(&user), expected_user_balance);
 }
 
 #[test]

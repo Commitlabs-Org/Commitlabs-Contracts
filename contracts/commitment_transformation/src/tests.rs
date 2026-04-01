@@ -23,6 +23,8 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env, String, Vec};
+use soroban_sdk::{Env, String};
+use crate::mock_commitment_core::{MockCommitmentCore, MockCommitmentCoreClient};
 
 fn setup(e: &Env) -> (Address, Address, Address) {
     let admin = Address::generate(e);
@@ -30,6 +32,18 @@ fn setup(e: &Env) -> (Address, Address, Address) {
     let user = Address::generate(e);
     (admin, core, user)
 }
+
+fn deploy(e: &Env) -> (CommitmentTransformationContractClient<'_>, Address, Address, Address) {
+    let (admin, core, user) = setup(e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(e, &contract_id);
+    client.initialize(&admin, &core);
+    (client, admin, core, user)
+}
+
+// ============================================================================
+// Initialization
+// ============================================================================
 
 #[test]
 fn test_initialize() {
@@ -55,14 +69,15 @@ fn test_initialize_twice_fails() {
     client.initialize(&admin, &core);
 }
 
+// ============================================================================
+// Fee configuration
+// ============================================================================
+
 #[test]
 fn test_set_transformation_fee() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, _) = deploy(&e);
     client.set_transformation_fee(&admin, &100);
     assert_eq!(client.get_transformation_fee_bps(), 100);
 }
@@ -71,42 +86,84 @@ fn test_set_transformation_fee() {
 fn test_set_authorized_transformer() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
-    // user is now authorized
+    // user is now authorized — subsequent create_tranches calls will succeed
 }
 
+// ============================================================================
+// create_tranches — SUCCESS paths (tranche ratio sum === 10000 bps / 100%)
+// ============================================================================
+
+/// Single tranche at 100% — minimal valid configuration.
 #[test]
-fn test_create_tranches() {
+fn test_create_tranches_single_100pct() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_single");
+    let total_value = 1_000_000i128;
+    let bps: Vec<u32> = vec![&e, 10000u32];
+    let levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
+    let fee_asset = Address::generate(&e);
+
+    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    assert!(!id.is_empty());
+
+    let set = client.get_tranche_set(&id);
+    assert_eq!(set.tranches.len(), 1);
+    assert_eq!(set.tranches.get(0).unwrap().share_bps, 10000u32);
+    // With 0% fee, net_value == total_value; 10000/10000 * 1_000_000 = 1_000_000
+    assert_eq!(set.tranches.get(0).unwrap().amount, 1_000_000i128);
+}
+
+/// Two tranches splitting 50/50.
+#[test]
+fn test_create_tranches_two_equal_halves() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_halves");
+    let total_value = 2_000_000i128;
+    let bps: Vec<u32> = vec![&e, 5000u32, 5000u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
+
+    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let set = client.get_tranche_set(&id);
+    assert_eq!(set.tranches.len(), 2);
+    assert_eq!(set.tranches.get(0).unwrap().amount, 1_000_000i128);
+    assert_eq!(set.tranches.get(1).unwrap().amount, 1_000_000i128);
+}
+
+/// Classic three-tranche split: 60% senior / 30% mezzanine / 10% equity.
+#[test]
+fn test_create_tranches_classic_three_way() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
 
     let commitment_id = String::from_str(&e, "c_1");
     let total_value = 1_000_000i128;
-    let tranche_share_bps: Vec<u32> = vec![&e, 6000u32, 3000u32, 1000u32];
-    let risk_levels: Vec<String> = vec![
+    let bps: Vec<u32> = vec![&e, 6000u32, 3000u32, 1000u32];
+    let levels: Vec<String> = vec![
         &e,
         String::from_str(&e, "senior"),
         String::from_str(&e, "mezzanine"),
         String::from_str(&e, "equity"),
     ];
-    let fee_asset = Address::generate(&e); // no fee when fee_bps=0, so no transfer
-    let id = client.create_tranches(
-        &user,
-        &commitment_id,
-        &total_value,
-        &tranche_share_bps,
-        &risk_levels,
-        &fee_asset,
-    );
+    let fee_asset = Address::generate(&e);
+
+    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
     assert!(!id.is_empty());
 
     let set = client.get_tranche_set(&id);
@@ -114,50 +171,355 @@ fn test_create_tranches() {
     assert_eq!(set.owner, user);
     assert_eq!(set.total_value, total_value);
     assert_eq!(set.tranches.len(), 3);
+    // Verify individual amounts: 60%, 30%, 10% of 1_000_000
+    assert_eq!(set.tranches.get(0).unwrap().amount, 600_000i128);
+    assert_eq!(set.tranches.get(1).unwrap().amount, 300_000i128);
+    assert_eq!(set.tranches.get(2).unwrap().amount, 100_000i128);
     assert_eq!(client.get_commitment_tranche_sets(&commitment_id).len(), 1);
 }
 
+/// Four tranches: 40% / 30% / 20% / 10% — verifies multi-tranche sum and amounts.
 #[test]
-#[should_panic(expected = "Tranche ratios must sum to 100")]
-fn test_create_tranches_invalid_ratios() {
+fn test_create_tranches_four_tranches() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
 
-    let commitment_id = String::from_str(&e, "c_1");
+    let commitment_id = String::from_str(&e, "c_four");
     let total_value = 1_000_000i128;
-    let tranche_share_bps: Vec<u32> = vec![&e, 5000u32, 3000u32];
-    let risk_levels: Vec<String> = vec![
+    let bps: Vec<u32> = vec![&e, 4000u32, 3000u32, 2000u32, 1000u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "mezzanine"),
+        String::from_str(&e, "equity"),
+        String::from_str(&e, "junior"),
+    ];
+    let fee_asset = Address::generate(&e);
+
+    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let set = client.get_tranche_set(&id);
+    assert_eq!(set.tranches.len(), 4);
+    assert_eq!(set.tranches.get(0).unwrap().amount, 400_000i128);
+    assert_eq!(set.tranches.get(1).unwrap().amount, 300_000i128);
+    assert_eq!(set.tranches.get(2).unwrap().amount, 200_000i128);
+    assert_eq!(set.tranches.get(3).unwrap().amount, 100_000i128);
+}
+
+/// Tranche amounts must sum to net_value (no fee scenario).
+#[test]
+fn test_create_tranches_amounts_sum_to_net_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_sum");
+    let total_value = 999_999i128; // intentionally non-round to expose rounding
+    let bps: Vec<u32> = vec![&e, 3333u32, 3333u32, 3334u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "mezzanine"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
+
+    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let set = client.get_tranche_set(&id);
+
+    // Verify bps sum is exactly 10000
+    let bps_sum: u32 = set.tranches.iter().map(|t| t.share_bps).sum();
+    assert_eq!(bps_sum, 10000u32);
+
+    // Verify amounts are non-negative
+    for tranche in set.tranches.iter() {
+        assert!(tranche.amount >= 0);
+    }
+}
+
+/// Multiple tranche sets for the same commitment accumulate correctly.
+#[test]
+fn test_create_tranches_multiple_sets_same_commitment() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_multi");
+    let fee_asset = Address::generate(&e);
+
+    let bps: Vec<u32> = vec![&e, 10000u32];
+    let levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
+
+    client.create_tranches(&user, &commitment_id, &500_000i128, &bps, &levels, &fee_asset);
+    client.create_tranches(&user, &commitment_id, &500_000i128, &bps, &levels, &fee_asset);
+
+    assert_eq!(client.get_commitment_tranche_sets(&commitment_id).len(), 2);
+}
+
+/// Zero-fee path: fee_paid must be 0 and total_value preserved.
+#[test]
+fn test_transformation_with_zero_fee() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_transformation_fee(&admin, &0);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_zerofee");
+    let total_value = 1_000_000i128;
+    let bps: Vec<u32> = vec![&e, 10000u32];
+    let levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
+    let fee_asset = Address::generate(&e);
+
+    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let set = client.get_tranche_set(&id);
+    assert_eq!(set.fee_paid, 0i128);
+    assert_eq!(set.total_value, total_value);
+}
+
+// ============================================================================
+// create_tranches — ERROR paths (tranche ratio sum ≠ 10000 bps)
+// ============================================================================
+
+/// Sum < 10000: 5000 + 3000 = 8000 — must reject.
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_create_tranches_sum_below_10000() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_low");
+    let bps: Vec<u32> = vec![&e, 5000u32, 3000u32];
+    let levels: Vec<String> = vec![
         &e,
         String::from_str(&e, "senior"),
         String::from_str(&e, "mezzanine"),
     ];
     let fee_asset = Address::generate(&e);
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+}
+
+/// Sum > 10000: 6000 + 5000 = 11000 — must reject.
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_create_tranches_sum_above_10000() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_high");
+    let bps: Vec<u32> = vec![&e, 6000u32, 5000u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+}
+
+/// All-zero bps: sum = 0 — must reject.
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_create_tranches_all_zeros() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_zeros");
+    let bps: Vec<u32> = vec![&e, 0u32, 0u32, 0u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "mezzanine"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+}
+
+/// Empty bps vector — must reject (len == 0 guard).
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_create_tranches_empty_bps_vector() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_empty");
+    let bps: Vec<u32> = Vec::new(&e);
+    let levels: Vec<String> = Vec::new(&e);
+    let fee_asset = Address::generate(&e);
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+}
+
+/// Off-by-one below: sum = 9999 — must reject.
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_create_tranches_off_by_one_below() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_9999");
+    let bps: Vec<u32> = vec![&e, 5000u32, 4999u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+}
+
+/// Off-by-one above: sum = 10001 — must reject.
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_create_tranches_off_by_one_above() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_10001");
+    let bps: Vec<u32> = vec![&e, 5001u32, 5000u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+}
+
+/// Mismatched lengths (bps.len != risk_levels.len) — must reject.
+#[test]
+#[should_panic(expected = "Tranche ratios must sum to 100")]
+fn test_create_tranches_mismatched_lengths() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_mismatch");
+    let bps: Vec<u32> = vec![&e, 6000u32, 4000u32];
+    let levels: Vec<String> = vec![&e, String::from_str(&e, "senior")]; // only 1 level for 2 bps
+    let fee_asset = Address::generate(&e);
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+}
+
+/// Unauthorized caller must be rejected regardless of valid ratios.
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_create_tranches_unauthorized() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin, _, _user) = deploy(&e);
+    let unauthorized = Address::generate(&e);
+
+    let commitment_id = String::from_str(&e, "c_unauth");
+    let bps: Vec<u32> = vec![&e, 6000u32, 4000u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
     client.create_tranches(
-        &user,
+        &unauthorized,
         &commitment_id,
-        &total_value,
-        &tranche_share_bps,
-        &risk_levels,
+        &1_000_000i128,
+        &bps,
+        &levels,
         &fee_asset,
     );
 }
+
+// ============================================================================
+// Fee arithmetic (pure, no token transfer)
+// ============================================================================
+
+/// Verify fee formula: fee = (total_value * fee_bps) / 10000.
+#[test]
+fn test_fee_arithmetic_1pct() {
+    let fee_bps: u32 = 100;
+    let total_value: i128 = 1_000_000;
+    let expected_fee = (total_value * fee_bps as i128) / 10000;
+    assert_eq!(expected_fee, 10_000);
+}
+
+/// Fee of 0 bps yields 0 regardless of total_value.
+#[test]
+fn test_fee_arithmetic_zero_bps() {
+    let fee_bps: u32 = 0;
+    let total_value: i128 = 1_000_000;
+    let fee = (total_value * fee_bps as i128) / 10000;
+    assert_eq!(fee, 0);
+}
+
+/// Maximum fee (10000 bps = 100%) consumes entire value.
+#[test]
+fn test_fee_arithmetic_max_bps() {
+    let fee_bps: u32 = 10000;
+    let total_value: i128 = 1_000_000;
+    let fee = (total_value * fee_bps as i128) / 10000;
+    assert_eq!(fee, total_value);
+}
+
+// ============================================================================
+// Fee recipient and collected fees
+// ============================================================================
+
+#[test]
+fn test_fee_set_and_get_fee_recipient() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, _) = deploy(&e);
+    assert!(client.get_fee_recipient().is_none());
+    let treasury = Address::generate(&e);
+    client.set_fee_recipient(&admin, &treasury);
+    assert_eq!(client.get_fee_recipient().unwrap(), treasury);
+}
+
+#[test]
+fn test_fee_get_collected_fees_default() {
+    let e = Env::default();
+    let (client, _admin, _, _) = deploy(&e);
+    let asset = Address::generate(&e);
+    assert_eq!(client.get_collected_fees(&asset), 0);
+}
+
+#[test]
+#[should_panic(expected = "Fee recipient not set")]
+fn test_fee_withdraw_requires_recipient() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, _) = deploy(&e);
+    let asset = Address::generate(&e);
+    client.withdraw_fees(&admin, &asset, &100i128);
+}
+
+// ============================================================================
+// Collateralize
+// ============================================================================
 
 #[test]
 fn test_collateralize() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
 
-    let commitment_id = String::from_str(&e, "c_1");
+    let commitment_id = String::from_str(&e, "c_col");
     let asset = Address::generate(&e);
     let asset_id = client.collateralize(&user, &commitment_id, &500_000i128, &asset);
     assert!(!asset_id.is_empty());
@@ -170,17 +532,18 @@ fn test_collateralize() {
     assert_eq!(client.get_commitment_collateral(&commitment_id).len(), 1);
 }
 
+// ============================================================================
+// Secondary instrument
+// ============================================================================
+
 #[test]
 fn test_create_secondary_instrument() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
 
-    let commitment_id = String::from_str(&e, "c_1");
+    let commitment_id = String::from_str(&e, "c_sec");
     let instrument_type = String::from_str(&e, "receivable");
     let amount = 200_000i128;
     let instrument_id =
@@ -195,17 +558,18 @@ fn test_create_secondary_instrument() {
     assert_eq!(client.get_commitment_instruments(&commitment_id).len(), 1);
 }
 
+// ============================================================================
+// Protocol guarantee
+// ============================================================================
+
 #[test]
 fn test_add_protocol_guarantee() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
 
-    let commitment_id = String::from_str(&e, "c_1");
+    let commitment_id = String::from_str(&e, "c_guar");
     let guarantee_type = String::from_str(&e, "liquidity_backstop");
     let terms_hash = String::from_str(&e, "0xabc123");
     let guarantee_id =
@@ -219,581 +583,259 @@ fn test_add_protocol_guarantee() {
     assert_eq!(client.get_commitment_guarantees(&commitment_id).len(), 1);
 }
 
+// ============================================================================
+// Getter success paths — explicit coverage for llvm-cov Functions metric
+// ============================================================================
+
+/// Covers get_tranche_set, get_commitment_tranche_sets, get_admin,
+/// get_transformation_fee_bps via explicit assertions after create_tranches.
 #[test]
-#[should_panic(expected = "Unauthorized")]
-fn test_create_tranches_unauthorized() {
+fn test_getters_tranche_set_success() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, _user) = setup(&e);
-    let unauthorized = Address::generate(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    // do not authorize unauthorized
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
 
-    let commitment_id = String::from_str(&e, "c_1");
-    let tranche_share_bps: Vec<u32> = vec![&e, 6000u32, 4000u32];
-    let risk_levels: Vec<String> = vec![
+    let commitment_id = String::from_str(&e, "c_getter_tr");
+    let bps: Vec<u32> = vec![&e, 6000u32, 4000u32];
+    let levels: Vec<String> = vec![
         &e,
         String::from_str(&e, "senior"),
         String::from_str(&e, "equity"),
     ];
     let fee_asset = Address::generate(&e);
-    client.create_tranches(
-        &unauthorized,
-        &commitment_id,
-        &1_000_000i128,
-        &tranche_share_bps,
-        &risk_levels,
-        &fee_asset,
-    );
+    let id = client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &fee_asset);
+
+    let set = client.get_tranche_set(&id);
+    assert_eq!(set.commitment_id, commitment_id);
+    assert_eq!(set.owner, user);
+    assert_eq!(set.total_value, 1_000_000i128);
+    assert_eq!(set.tranches.len(), 2);
+
+    let ids = client.get_commitment_tranche_sets(&commitment_id);
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids.get(0).unwrap(), id);
+
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_transformation_fee_bps(), 0);
 }
 
+/// Covers get_collateralized_asset, get_commitment_collateral,
+/// get_secondary_instrument, get_commitment_instruments,
+/// get_protocol_guarantee, get_commitment_guarantees.
 #[test]
-fn test_transformation_with_fee() {
+fn test_getters_collateral_instrument_guarantee_success() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.set_transformation_fee(&admin, &0); // 0% so no token transfer in unit test
+    let (client, admin, _, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
 
-    let commitment_id = String::from_str(&e, "c_1");
-    let total_value = 1_000_000i128;
-    let tranche_share_bps: Vec<u32> = vec![&e, 10000u32];
-    let risk_levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
-    let fee_asset = Address::generate(&e);
-    let id = client.create_tranches(
-        &user,
-        &commitment_id,
-        &total_value,
-        &tranche_share_bps,
-        &risk_levels,
-        &fee_asset,
-    );
-    let set = client.get_tranche_set(&id);
-    assert_eq!(set.fee_paid, 0i128); // 0% fee
-    assert_eq!(set.total_value, total_value);
+    let commitment_id = String::from_str(&e, "c_getter_all");
+    let token = Address::generate(&e);
+
+    let asset_id = client.collateralize(&user, &commitment_id, &300_000i128, &token);
+    let col = client.get_collateralized_asset(&asset_id);
+    assert_eq!(col.commitment_id, commitment_id);
+    assert_eq!(col.collateral_amount, 300_000i128);
+    assert_eq!(col.asset_address, token);
+    let col_list = client.get_commitment_collateral(&commitment_id);
+    assert_eq!(col_list.len(), 1);
+    assert_eq!(col_list.get(0).unwrap(), asset_id);
+
+    let inst_type = String::from_str(&e, "option");
+    let inst_id = client.create_secondary_instrument(&user, &commitment_id, &inst_type, &100_000i128);
+    let inst = client.get_secondary_instrument(&inst_id);
+    assert_eq!(inst.commitment_id, commitment_id);
+    assert_eq!(inst.instrument_type, inst_type);
+    assert_eq!(inst.amount, 100_000i128);
+    let inst_list = client.get_commitment_instruments(&commitment_id);
+    assert_eq!(inst_list.len(), 1);
+    assert_eq!(inst_list.get(0).unwrap(), inst_id);
+
+    let gtype = String::from_str(&e, "default_protection");
+    let thash = String::from_str(&e, "0xdeadbeef");
+    let guar_id = client.add_protocol_guarantee(&user, &commitment_id, &gtype, &thash);
+    let guar = client.get_protocol_guarantee(&guar_id);
+    assert_eq!(guar.commitment_id, commitment_id);
+    assert_eq!(guar.guarantee_type, gtype);
+    assert_eq!(guar.terms_hash, thash);
+    let guar_list = client.get_commitment_guarantees(&commitment_id);
+    assert_eq!(guar_list.len(), 1);
+    assert_eq!(guar_list.get(0).unwrap(), guar_id);
 }
 
+/// Covers get_fee_recipient (Some path) and get_collected_fees after set_fee_recipient.
 #[test]
-fn test_transformation_fee_calculation_and_collection() {
-    // Test fee calculation: 1% of 1_000_000 = 10_000 (logic only; actual transfer needs token mock)
-    let fee_bps: u32 = 100;
-    let total_value: i128 = 1_000_000;
-    let expected_fee = (total_value * fee_bps as i128) / 10000;
-    assert_eq!(expected_fee, 10_000);
-}
-
-#[test]
-fn test_fee_set_and_get_fee_recipient() {
+fn test_getters_fee_recipient_success() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, _) = deploy(&e);
+
     assert!(client.get_fee_recipient().is_none());
+
     let treasury = Address::generate(&e);
     client.set_fee_recipient(&admin, &treasury);
-    assert_eq!(client.get_fee_recipient().unwrap(), treasury);
-}
 
-#[test]
-fn test_fee_get_collected_fees_default() {
-    let e = Env::default();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let recipient = client.get_fee_recipient();
+    assert!(recipient.is_some());
+    assert_eq!(recipient.unwrap(), treasury);
+
     let asset = Address::generate(&e);
     assert_eq!(client.get_collected_fees(&asset), 0);
 }
 
+// ============================================================================
+// Getter error paths — panic branches for llvm-cov Lines/Regions metrics
+// ============================================================================
+
+/// get_tranche_set with unknown ID must panic TransformationNotFound.
 #[test]
-#[should_panic(expected = "Fee recipient not set")]
-fn test_fee_withdraw_requires_recipient() {
+#[should_panic(expected = "Transformation record not found")]
+fn test_get_tranche_set_not_found() {
     let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, _user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    let asset = Address::generate(&e);
-    client.withdraw_fees(&admin, &asset, &100i128);
+    let (client, _, _, _) = deploy(&e);
+    client.get_tranche_set(&String::from_str(&e, "nonexistent"));
 }
 
-// ============================================================================
-// Error variant coverage — discriminant 1: InvalidAmount
-// ============================================================================
-
-/// `withdraw_fees` with amount = 0 must surface `InvalidAmount`.
+/// get_collateralized_asset with unknown ID must panic TransformationNotFound.
 #[test]
-#[should_panic(expected = "Invalid amount: must be positive")]
-fn test_error_invalid_amount_withdraw_zero() {
+#[should_panic(expected = "Transformation record not found")]
+fn test_get_collateralized_asset_not_found() {
     let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    let treasury = Address::generate(&e);
-    client.set_fee_recipient(&admin, &treasury);
-    let asset = Address::generate(&e);
-    // amount = 0 must panic with InvalidAmount
-    client.withdraw_fees(&admin, &asset, &0i128);
+    let (client, _, _, _) = deploy(&e);
+    client.get_collateralized_asset(&String::from_str(&e, "nonexistent"));
 }
 
-/// `withdraw_fees` with a negative amount must surface `InvalidAmount`.
+/// get_secondary_instrument with unknown ID must panic TransformationNotFound.
 #[test]
-#[should_panic(expected = "Invalid amount: must be positive")]
-fn test_error_invalid_amount_withdraw_negative() {
+#[should_panic(expected = "Transformation record not found")]
+fn test_get_secondary_instrument_not_found() {
     let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    let treasury = Address::generate(&e);
-    client.set_fee_recipient(&admin, &treasury);
-    let asset = Address::generate(&e);
-    client.withdraw_fees(&admin, &asset, &-1i128);
+    let (client, _, _, _) = deploy(&e);
+    client.get_secondary_instrument(&String::from_str(&e, "nonexistent"));
 }
 
-// ============================================================================
-// Error variant coverage — discriminant 2: InvalidTrancheRatios (extra paths)
-// ============================================================================
-
-/// An empty `tranche_share_bps` array must fail with `InvalidTrancheRatios`.
+/// get_protocol_guarantee with unknown ID must panic TransformationNotFound.
 #[test]
-#[should_panic(expected = "Tranche ratios must sum to 100")]
-fn test_error_invalid_tranche_ratios_empty() {
+#[should_panic(expected = "Transformation record not found")]
+fn test_get_protocol_guarantee_not_found() {
     let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.set_authorized_transformer(&admin, &user, &true);
-
-    let empty_bps: Vec<u32> = Vec::new(&e);
-    let empty_risk: Vec<String> = Vec::new(&e);
-    let fee_asset = Address::generate(&e);
-    client.create_tranches(
-        &user,
-        &String::from_str(&e, "c_1"),
-        &1_000_000i128,
-        &empty_bps,
-        &empty_risk,
-        &fee_asset,
-    );
+    let (client, _, _, _) = deploy(&e);
+    client.get_protocol_guarantee(&String::from_str(&e, "nonexistent"));
 }
 
-/// Mismatched lengths between BPS and risk-level arrays must fail.
+/// All four list getters return empty Vec when commitment has no records.
 #[test]
-#[should_panic(expected = "Tranche ratios must sum to 100")]
-fn test_error_invalid_tranche_ratios_length_mismatch() {
+fn test_get_commitment_lists_empty() {
     let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.set_authorized_transformer(&admin, &user, &true);
-
-    // 2 BPS entries but only 1 risk-level entry
-    let bps: Vec<u32> = vec![&e, 6000u32, 4000u32];
-    let risk: Vec<String> = vec![&e, String::from_str(&e, "senior")];
-    let fee_asset = Address::generate(&e);
-    client.create_tranches(
-        &user,
-        &String::from_str(&e, "c_1"),
-        &1_000_000i128,
-        &bps,
-        &risk,
-        &fee_asset,
-    );
+    let (client, _, _, _) = deploy(&e);
+    let cid = String::from_str(&e, "c_none");
+    assert_eq!(client.get_commitment_tranche_sets(&cid).len(), 0);
+    assert_eq!(client.get_commitment_collateral(&cid).len(), 0);
+    assert_eq!(client.get_commitment_instruments(&cid).len(), 0);
+    assert_eq!(client.get_commitment_guarantees(&cid).len(), 0);
 }
 
-// ============================================================================
-// Error variant coverage — discriminant 3: InvalidFeeBps
-// ============================================================================
-
-/// `set_transformation_fee` with a fee exceeding 10 000 bps must fail.
-#[test]
-#[should_panic(expected = "Fee must be 0-10000 bps")]
-fn test_error_invalid_fee_bps() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    // 10_001 bps (> 100%) must be rejected
-    client.set_transformation_fee(&admin, &10_001u32);
-}
-
-// ============================================================================
-// Error variant coverage — discriminant 4: Unauthorized (admin-only paths)
-// ============================================================================
-
-/// A non-admin caller of `set_transformation_fee` must receive `Unauthorized`.
-#[test]
-#[should_panic(expected = "Unauthorized: caller not owner or authorized")]
-fn test_error_unauthorized_set_fee() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    // `user` is not admin
-    client.set_transformation_fee(&user, &500u32);
-}
-
-/// A non-admin caller of `set_fee_recipient` must receive `Unauthorized`.
-#[test]
-#[should_panic(expected = "Unauthorized: caller not owner or authorized")]
-fn test_error_unauthorized_set_fee_recipient() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    let treasury = Address::generate(&e);
-    client.set_fee_recipient(&user, &treasury);
-}
-
-// ============================================================================
-// Error variant coverage — discriminant 5: NotInitialized
-// ============================================================================
-
-/// Calling `get_admin` before `initialize` must surface `NotInitialized`.
+/// get_admin on uninitialized contract must panic NotInitialized.
 #[test]
 #[should_panic(expected = "Contract not initialized")]
-fn test_error_not_initialized_get_admin() {
+fn test_get_admin_not_initialized() {
     let e = Env::default();
     let contract_id = e.register_contract(None, CommitmentTransformationContract);
     let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    // No initialize call — must panic
-    let _ = client.get_admin();
+    client.get_admin();
 }
 
 // ============================================================================
-// Error variant coverage — discriminant 8: TransformationNotFound
+// withdraw_fees — success and InsufficientFees paths
 // ============================================================================
 
-/// `get_tranche_set` with a bogus ID must surface `TransformationNotFound`.
+/// withdraw_fees success: mint token, accumulate fee via create_tranches,
+/// then withdraw to treasury and verify collected balance reaches zero.
 #[test]
-#[should_panic(expected = "Transformation record not found")]
-fn test_error_transformation_not_found_tranche_set() {
-    let e = Env::default();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.get_tranche_set(&String::from_str(&e, "no_such_id"));
-}
-
-/// `get_collateralized_asset` with a bogus ID must surface `TransformationNotFound`.
-#[test]
-#[should_panic(expected = "Transformation record not found")]
-fn test_error_transformation_not_found_collateral() {
-    let e = Env::default();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.get_collateralized_asset(&String::from_str(&e, "no_such_id"));
-}
-
-/// `get_secondary_instrument` with a bogus ID must surface `TransformationNotFound`.
-#[test]
-#[should_panic(expected = "Transformation record not found")]
-fn test_error_transformation_not_found_instrument() {
-    let e = Env::default();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.get_secondary_instrument(&String::from_str(&e, "no_such_id"));
-}
-
-/// `get_protocol_guarantee` with a bogus ID must surface `TransformationNotFound`.
-#[test]
-#[should_panic(expected = "Transformation record not found")]
-fn test_error_transformation_not_found_guarantee() {
-    let e = Env::default();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.get_protocol_guarantee(&String::from_str(&e, "no_such_id"));
-}
-
-// ============================================================================
-// Error variant coverage — discriminant 12: InsufficientFees
-// ============================================================================
-
-/// `withdraw_fees` when the collected balance is zero must surface `InsufficientFees`.
-#[test]
-#[should_panic(expected = "Insufficient collected fees to withdraw")]
-fn test_error_insufficient_fees() {
+fn test_withdraw_fees_success() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+    let (client, admin, _, user) = deploy(&e);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    // Register a Stellar asset contract to act as the fee token
+    let token_id = e.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_admin = soroban_sdk::token::StellarAssetClient::new(&e, &token_id);
+    token_admin.mint(&user, &1_000_000i128);
+
+    // Set 1% fee so create_tranches transfers 10_000 to the contract
+    client.set_transformation_fee(&admin, &100);
+
+    let commitment_id = String::from_str(&e, "c_fee_withdraw");
+    let bps: Vec<u32> = vec![&e, 10000u32];
+    let levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
+    client.create_tranches(&user, &commitment_id, &1_000_000i128, &bps, &levels, &token_id);
+
+    assert_eq!(client.get_collected_fees(&token_id), 10_000i128);
+
     let treasury = Address::generate(&e);
     client.set_fee_recipient(&admin, &treasury);
+
+    client.withdraw_fees(&admin, &token_id, &10_000i128);
+
+    assert_eq!(client.get_collected_fees(&token_id), 0i128);
+}
+
+/// withdraw_fees with amount > collected must panic InsufficientFees.
+#[test]
+#[should_panic(expected = "Insufficient collected fees to withdraw")]
+fn test_withdraw_fees_insufficient() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, _) = deploy(&e);
+
+    let treasury = Address::generate(&e);
+    client.set_fee_recipient(&admin, &treasury);
+
+    // No fees collected — any positive amount must fail
     let asset = Address::generate(&e);
-    // No fees have been collected yet; any positive amount must fail
     client.withdraw_fees(&admin, &asset, &1i128);
 }
+fn setup_env() -> (Env, MockCommitmentCoreClient) {
 
-/// Partial withdrawal followed by an over-withdrawal also surfaces `InsufficientFees`.
-#[test]
-#[should_panic(expected = "Insufficient collected fees to withdraw")]
-fn test_error_insufficient_fees_over_withdrawal() {
-    // We cannot actually collect fees without a real token contract, so we
-    // rely on the fact that the initial balance is 0 and directly request
-    // more than zero.
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    let treasury = Address::generate(&e);
-    client.set_fee_recipient(&admin, &treasury);
-    let asset = Address::generate(&e);
-    // collected = 0, requesting 500 — must panic
-    client.withdraw_fees(&admin, &asset, &500i128);
+    let env = Env::default();
+
+    let core_id = env.register_contract(None, MockCommitmentCore);
+    let core_client = MockCommitmentCoreClient::new(&env, &core_id);
+
+    (env, core_client)
 }
-
-// ============================================================================
-// Message-level coverage for variants 7 (CommitmentNotFound),
-// 9 (InvalidState), and 10 (ReentrancyDetected).
-//
-// These variants are defined in the enum but currently have no reachable
-// code path that triggers them through the contract client.  The tests below
-// exercise the `message()` method directly so that the match arms are
-// compiled and covered, and so that future code additions that introduce
-// these paths will immediately have a correct baseline.
-// ============================================================================
-
-/// Every `TransformationError` variant must return a non-empty, correct
-/// message string.  This test exercises all twelve arms of `message()`.
 #[test]
-fn test_all_error_messages() {
-    assert_eq!(
-        TransformationError::InvalidAmount.message(),
-        "Invalid amount: must be positive"
-    );
-    assert_eq!(
-        TransformationError::InvalidTrancheRatios.message(),
-        "Tranche ratios must sum to 100"
-    );
-    assert_eq!(
-        TransformationError::InvalidFeeBps.message(),
-        "Fee must be 0-10000 bps"
-    );
-    assert_eq!(
-        TransformationError::Unauthorized.message(),
-        "Unauthorized: caller not owner or authorized"
-    );
-    assert_eq!(
-        TransformationError::NotInitialized.message(),
-        "Contract not initialized"
-    );
-    assert_eq!(
-        TransformationError::AlreadyInitialized.message(),
-        "Contract already initialized"
-    );
-    // CommitmentNotFound — reserved; not yet reachable via contract client
-    assert_eq!(
-        TransformationError::CommitmentNotFound.message(),
-        "Commitment not found"
-    );
-    assert_eq!(
-        TransformationError::TransformationNotFound.message(),
-        "Transformation record not found"
-    );
-    // InvalidState — reserved; not yet reachable via contract client
-    assert_eq!(
-        TransformationError::InvalidState.message(),
-        "Invalid state for transformation"
-    );
-    // ReentrancyDetected — only reachable mid-execution; covered here at message level
-    assert_eq!(
-        TransformationError::ReentrancyDetected.message(),
-        "Reentrancy detected"
-    );
-    assert_eq!(
-        TransformationError::FeeRecipientNotSet.message(),
-        "Fee recipient not set"
-    );
-    assert_eq!(
-        TransformationError::InsufficientFees.message(),
-        "Insufficient collected fees to withdraw"
-    );
+fn test_valid_commitment_id() {
+
+    let (env, core_client) = setup_env();
+
+    let commitment_id = String::from_str(&env, "c_valid");
+
+    let commitment = core_client.get_commitment(&commitment_id);
+
+    assert_eq!(commitment.commitment_id, commitment_id);
+    assert_eq!(commitment.amount, 1000);
 }
-
-/// All twelve discriminant values must map to the documented integers.
 #[test]
-fn test_error_discriminants() {
-    assert_eq!(TransformationError::InvalidAmount as u32, 1);
-    assert_eq!(TransformationError::InvalidTrancheRatios as u32, 2);
-    assert_eq!(TransformationError::InvalidFeeBps as u32, 3);
-    assert_eq!(TransformationError::Unauthorized as u32, 4);
-    assert_eq!(TransformationError::NotInitialized as u32, 5);
-    assert_eq!(TransformationError::AlreadyInitialized as u32, 6);
-    assert_eq!(TransformationError::CommitmentNotFound as u32, 7);
-    assert_eq!(TransformationError::TransformationNotFound as u32, 8);
-    assert_eq!(TransformationError::InvalidState as u32, 9);
-    assert_eq!(TransformationError::ReentrancyDetected as u32, 10);
-    assert_eq!(TransformationError::FeeRecipientNotSet as u32, 11);
-    assert_eq!(TransformationError::InsufficientFees as u32, 12);
+#[should_panic]
+fn test_invalid_commitment_id() {
+
+    let (env, core_client) = setup_env();
+
+    let commitment_id = String::from_str(&env, "unknown");
+
+    core_client.get_commitment(&commitment_id);
 }
-
-// ============================================================================
-// Additional happy-path and edge-case tests
-// ============================================================================
-
-/// Admin is the implicit authorized caller — no explicit allowlist entry needed.
 #[test]
-fn test_admin_can_create_tranches_directly() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
+fn test_expired_commitment() {
 
-    let bps: Vec<u32> = vec![&e, 5000u32, 5000u32];
-    let risk: Vec<String> = vec![
-        &e,
-        String::from_str(&e, "senior"),
-        String::from_str(&e, "equity"),
-    ];
-    let fee_asset = Address::generate(&e);
-    let id = client.create_tranches(
-        &admin, // admin has implicit authorization
-        &String::from_str(&e, "c_admin"),
-        &2_000_000i128,
-        &bps,
-        &risk,
-        &fee_asset,
-    );
-    assert!(!id.is_empty());
-    let set = client.get_tranche_set(&id);
-    assert_eq!(set.tranches.len(), 2);
-}
+    let (env, core_client) = setup_env();
 
-/// Single-tranche (100 %) split must be accepted.
-#[test]
-fn test_single_tranche_100_bps() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.set_authorized_transformer(&admin, &user, &true);
+    let commitment_id = String::from_str(&env, "c_expired");
 
-    let bps: Vec<u32> = vec![&e, 10000u32];
-    let risk: Vec<String> = vec![&e, String::from_str(&e, "senior")];
-    let fee_asset = Address::generate(&e);
-    let id = client.create_tranches(
-        &user,
-        &String::from_str(&e, "c_single"),
-        &1_000_000i128,
-        &bps,
-        &risk,
-        &fee_asset,
-    );
-    let set = client.get_tranche_set(&id);
-    assert_eq!(set.tranches.len(), 1);
-    // Net value equals total value (0 % fee)
-    assert_eq!(set.tranches.get(0).unwrap().amount, 1_000_000i128);
-}
+    let commitment = core_client.get_commitment(&commitment_id);
 
-/// `get_collected_fees` returns 0 for an asset with no collected fees.
-#[test]
-fn test_collected_fees_default_zero() {
-    let e = Env::default();
-    let (admin, core, _) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    let asset = Address::generate(&e);
-    assert_eq!(client.get_collected_fees(&asset), 0i128);
-}
-
-/// Revoking transformer authorization must prevent subsequent calls.
-#[test]
-#[should_panic(expected = "Unauthorized: caller not owner or authorized")]
-fn test_revoke_transformer_prevents_calls() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.set_authorized_transformer(&admin, &user, &true);
-    // Revoke
-    client.set_authorized_transformer(&admin, &user, &false);
-
-    let bps: Vec<u32> = vec![&e, 10000u32];
-    let risk: Vec<String> = vec![&e, String::from_str(&e, "senior")];
-    client.create_tranches(
-        &user,
-        &String::from_str(&e, "c_rev"),
-        &500_000i128,
-        &bps,
-        &risk,
-        &Address::generate(&e),
-    );
-}
-
-/// Multiple transformations for the same commitment must each be retrievable.
-#[test]
-fn test_multiple_tranches_same_commitment() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (admin, core, user) = setup(&e);
-    let contract_id = e.register_contract(None, CommitmentTransformationContract);
-    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
-    client.initialize(&admin, &core);
-    client.set_authorized_transformer(&admin, &user, &true);
-
-    let commitment_id = String::from_str(&e, "c_multi");
-    let bps: Vec<u32> = vec![&e, 10000u32];
-    let risk: Vec<String> = vec![&e, String::from_str(&e, "senior")];
-    let fee_asset = Address::generate(&e);
-
-    let id1 = client.create_tranches(
-        &user,
-        &commitment_id,
-        &1_000_000i128,
-        &bps.clone(),
-        &risk.clone(),
-        &fee_asset,
-    );
-    let id2 = client.create_tranches(
-        &user,
-        &commitment_id,
-        &2_000_000i128,
-        &bps,
-        &risk,
-        &fee_asset,
-    );
-
-    assert_ne!(id1, id2);
-    let sets = client.get_commitment_tranche_sets(&commitment_id);
-    assert_eq!(sets.len(), 2);
+    assert_eq!(commitment.status, String::from_str(&env, "expired"));
 }

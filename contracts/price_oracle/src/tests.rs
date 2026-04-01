@@ -1,4 +1,68 @@
-#![cfg(test)]
+#[test]
+fn test_admin_only_add_remove_oracle() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let not_admin = Address::generate(&e);
+    let oracle1 = Address::generate(&e);
+    let oracle2 = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+    });
+
+    // Only admin can add
+    assert_eq!(client.try_add_oracle(&not_admin, &oracle1), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_add_oracle(&admin, &oracle1), Ok(Ok(())));
+    assert!(client.is_oracle_whitelisted(&oracle1));
+
+    // Only admin can remove
+    assert_eq!(client.try_remove_oracle(&not_admin, &oracle1), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_remove_oracle(&admin, &oracle1), Ok(Ok(())));
+    assert!(!client.is_oracle_whitelisted(&oracle1));
+
+    // Oracle rotation: remove old, add new
+    assert_eq!(client.try_add_oracle(&admin, &oracle1), Ok(Ok(())));
+    assert_eq!(client.try_add_oracle(&admin, &oracle2), Ok(Ok(())));
+    assert!(client.is_oracle_whitelisted(&oracle1));
+    assert!(client.is_oracle_whitelisted(&oracle2));
+    assert_eq!(client.try_remove_oracle(&admin, &oracle1), Ok(Ok(())));
+    assert!(!client.is_oracle_whitelisted(&oracle1));
+    assert!(client.is_oracle_whitelisted(&oracle2));
+}
+
+#[test]
+fn test_admin_transfer_and_oracle_control() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin1 = Address::generate(&e);
+    let admin2 = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin1.clone()).unwrap();
+    });
+
+    // Only admin1 can add
+    assert_eq!(client.try_add_oracle(&admin2, &oracle), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_add_oracle(&admin1, &oracle), Ok(Ok(())));
+    assert!(client.is_oracle_whitelisted(&oracle));
+
+    // Transfer admin
+    assert_eq!(client.try_set_admin(&admin2, &admin2), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_set_admin(&admin1, &admin2), Ok(Ok(())));
+    assert_eq!(client.get_admin(), admin2);
+
+    // Now only admin2 can remove
+    assert_eq!(client.try_remove_oracle(&admin1, &oracle), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_remove_oracle(&admin2, &oracle), Ok(Ok(())));
+    assert!(!client.is_oracle_whitelisted(&oracle));
+}
+
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
