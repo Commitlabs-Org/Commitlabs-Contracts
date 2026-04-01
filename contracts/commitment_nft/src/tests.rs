@@ -131,6 +131,7 @@ fn mint_to_owner(
     asset_address: &SdkAddress,
     label: &str,
 ) -> u32 {
+    let caller = client.get_admin();
     client.mint(
         owner, // caller
         owner, // owner
@@ -1641,18 +1642,20 @@ fn test_transfer_edge_cases_comprehensive() {
 // ============================================
 
 #[test]
-fn test_settle() {
+fn test_settle_requires_active_and_expired_state() {
     let e = Env::default();
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    e.mock_all_auths();
+    let (admin, client) = setup_contract(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
-    // Mint with 1 day duration
+    client.initialize(&admin);
+
     let token_id = client.mint(
         &admin,
         &owner,
-        &String::from_str(&e, "test_commitment"),
-        &1, // 1 day duration
+        &String::from_str(&e, "settle_active_expired"),
+        &1,
         &10,
         &String::from_str(&e, "safe"),
         &1000,
@@ -1660,15 +1663,13 @@ fn test_settle() {
         &5,
     );
 
-    // NFT should be active initially
     assert_eq!(client.is_active(&token_id), true);
+    assert_eq!(client.is_expired(&token_id), false);
 
-    // Fast forward time past expiration (2 days = 172800 seconds)
     e.ledger().with_mut(|li| {
         li.timestamp = 172800;
     });
 
-    // Verify it's expired
     assert_eq!(client.is_expired(&token_id), true);
 
     // Settle the NFT after expiry
@@ -1676,11 +1677,10 @@ fn test_settle() {
 
     // NFT should now be inactive
     assert_eq!(client.is_active(&token_id), false);
+    assert_eq!(client.is_expired(&token_id), true);
 
-    // Verify Settle event
     let events = e.events().all();
     let last_event = events.last().unwrap();
-
     assert_eq!(last_event.0, client.address);
     assert_eq!(
         last_event.1,
@@ -1694,20 +1694,22 @@ fn test_settle() {
     assert_eq!(data, e.ledger().timestamp());
 }
 
-/// Mint with duration that would cause expires_at to overflow u64 (Issue #118).
 #[test]
 #[should_panic(expected = "Error(Contract, #9)")] // NotExpired
 fn test_settle_not_expired() {
     let e = Env::default();
-    let (_admin, client, _core_id) = setup_contract_with_core(&e);
+    e.mock_all_auths();
+    let (admin, client) = setup_contract(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
 
     let token_id = client.mint(
         &admin,
         &owner,
-        &String::from_str(&e, "test_commitment"),
-        &30, // 30 days duration
+        &String::from_str(&e, "settle_not_expired"),
+        &30,
         &10,
         &String::from_str(&e, "safe"),
         &1000,
@@ -1723,14 +1725,17 @@ fn test_settle_not_expired() {
 #[should_panic(expected = "Error(Contract, #8)")] // AlreadySettled
 fn test_settle_already_settled() {
     let e = Env::default();
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    e.mock_all_auths();
+    let (admin, client) = setup_contract(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
 
     let token_id = client.mint(
         &admin,
         &owner,
-        &String::from_str(&e, "test_commitment"),
+        &String::from_str(&e, "settle_already_settled"),
         &1,
         &10,
         &String::from_str(&e, "safe"),
@@ -1749,15 +1754,19 @@ fn test_settle_already_settled() {
 }
 
 #[test]
-fn test_settle_succeeds_after_expiry() {
+fn test_settle_rejects_inactive_even_if_expired() {
     let e = Env::default();
-    let (_admin, client, core_id) = setup_contract_with_core(&e);
+    e.mock_all_auths();
+    let (admin, client) = setup_contract(&e);
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
+    client.initialize(&admin);
+
     let token_id = client.mint(
+        &admin,
         &owner,
-        &String::from_str(&e, "test_commitment"),
+        &String::from_str(&e, "settle_inactive_expired"),
         &1,
         &10,
         &String::from_str(&e, "safe"),
@@ -1802,7 +1811,6 @@ fn test_settle_first_settle_marks_inactive() {
 
     // Result state: inactive
     assert_eq!(client.is_active(&token_id), false);
-}
 
 #[test]
 fn test_settle_double_settle_returns_error() {
@@ -1905,7 +1913,7 @@ fn test_settle_no_double_events() {
 // ============================================
 
 #[test]
-fn test_is_expired() {
+fn test_is_expired_boundary_matches_settle_threshold() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);
     let owner = Address::generate(&e);
@@ -1925,16 +1933,18 @@ fn test_is_expired() {
         &5,
     );
 
-    // Should not be expired initially
+    let expires_at = client.get_metadata(&token_id).metadata.expires_at;
     assert_eq!(client.is_expired(&token_id), false);
+    let not_expired_result = client.try_settle(&token_id);
+    assert!(not_expired_result.is_err());
 
-    // Fast forward 2 days
     e.ledger().with_mut(|li| {
-        li.timestamp = 172800;
+        li.timestamp = expires_at;
     });
 
-    // Should now be expired
     assert_eq!(client.is_expired(&token_id), true);
+    client.settle(&token_id);
+    assert_eq!(client.is_active(&token_id), false);
 }
 
 #[test]
