@@ -2,7 +2,10 @@
 extern crate std;
 
 use crate::*;
-use soroban_sdk::{Address, Env, String};
+use soroban_sdk::{
+    testutils::Address as _,
+    Address, Env, String,
+};
 
 fn generate_zero_address(env: &Env) -> Address {
     Address::from_string(&String::from_str(
@@ -27,10 +30,12 @@ fn test_create_commitment_zero_owner_fails() {
 
     // Corrected field names for the Commitlabs CommitmentRules struct
     let rules = CommitmentRules {
-        min_commitment_amount: 0,
-        max_commitment_amount: i128::MAX,
-        min_duration: 0,
-        max_duration: u64::MAX,
+        duration_days: 30,
+        max_loss_percent: 10,
+        commitment_type: String::from_str(&env, "safe"),
+        early_exit_penalty: 15,
+        min_fee_threshold: 0,
+        grace_period_days: 0,
     };
 
     client.create_commitment(&zero_owner, &amount, &asset_address, &rules);

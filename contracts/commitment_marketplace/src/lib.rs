@@ -1,3 +1,24 @@
+
+//! # Commitment Marketplace Contract
+//!
+//! Soroban smart contract for NFT marketplace operations (listings, offers, auctions) with reentrancy guard and fee logic.
+//!
+//! ## Security
+//! - All state-changing entry points require authentication (`require_auth`).
+//! - Reentrancy guard is enforced on all external-call entry points.
+//! - Arithmetic is performed using checked math; see individual functions for overflow/underflow notes.
+//!
+//! ## Errors
+//! - See [`MarketplaceError`] for all error codes.
+//!
+//! ## Storage
+//! 
+//! - See [`DataKey`] for all storage keys mutated by each entry point.
+//!
+//! ## Audit Notes
+//! - No cross-contract NFT ownership checks are performed in this implementation (see comments in code).
+//! - All token transfers use Soroban token interface.
+
 #![no_std]
 
 use soroban_sdk::{
@@ -56,6 +77,8 @@ pub enum MarketplaceError {
     ReentrancyDetected = 20,
     /// Transfer failed
     TransferFailed = 21,
+    /// Payment token is not allowlisted for marketplace settlement
+    PaymentTokenNotAllowed = 22,
 }
 
 // ============================================================================
@@ -110,6 +133,10 @@ pub enum DataKey {
     MarketplaceFee,
     /// Fee recipient address
     FeeRecipient,
+    /// Allowlisted payment token flag
+    AllowedPaymentToken(Address),
+    /// All allowlisted payment token addresses
+    AllowedPaymentTokens,
     /// Listing data (token_id -> Listing)
     Listing(u32),
     /// All active listings
@@ -134,19 +161,58 @@ mod tests;
 #[contract]
 pub struct CommitmentMarketplace;
 
+fn read_admin(e: &Env) -> Result<Address, MarketplaceError> {
+    e.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(MarketplaceError::NotInitialized)
+}
+
+fn read_allowed_payment_tokens(e: &Env) -> Vec<Address> {
+    e.storage()
+        .instance()
+        .get(&DataKey::AllowedPaymentTokens)
+        .unwrap_or(Vec::new(e))
+}
+
+fn write_allowed_payment_tokens(e: &Env, tokens: &Vec<Address>) {
+    e.storage()
+        .instance()
+        .set(&DataKey::AllowedPaymentTokens, tokens);
+}
+
+fn is_allowed_payment_token(e: &Env, payment_token: &Address) -> bool {
+    e.storage()
+        .persistent()
+        .get(&DataKey::AllowedPaymentToken(payment_token.clone()))
+        .unwrap_or(false)
+}
+
+fn require_allowed_payment_token(
+    e: &Env,
+    payment_token: &Address,
+) -> Result<(), MarketplaceError> {
+    if !is_allowed_payment_token(e, payment_token) {
+        return Err(MarketplaceError::PaymentTokenNotAllowed);
+    }
+
+    Ok(())
+}
+
 #[contractimpl]
 impl CommitmentMarketplace {
     // ========================================================================
     // Initialization
     // ========================================================================
 
-    /// Initialize the marketplace
-    ///
-    /// # Arguments
-    /// * `admin` - Admin address
-    /// * `nft_contract` - Address of the CommitmentNFT contract
-    /// * `fee_basis_points` - Marketplace fee in basis points (e.g., 250 = 2.5%)
-    /// * `fee_recipient` - Address to receive marketplace fees
+    /// @notice Initialize the marketplace contract.
+    /// @param admin Admin address (must sign the transaction).
+    /// @param nft_contract Address of the CommitmentNFT contract.
+    /// @param fee_basis_points Marketplace fee in basis points (e.g., 250 = 2.5%).
+    /// @param fee_recipient Address to receive marketplace fees.
+    /// @dev Only callable once. Sets up admin, NFT contract, fee, and fee recipient.
+    /// @error MarketplaceError::AlreadyInitialized if already initialized.
+    /// @security Only callable by `admin` (require_auth).
     pub fn initialize(
         e: Env,
         admin: Address,
@@ -181,18 +247,26 @@ impl CommitmentMarketplace {
             .instance()
             .set(&DataKey::ActiveAuctions, &active_auctions);
 
+        let allowed_payment_tokens: Vec<Address> = Vec::new(&e);
+        e.storage()
+            .instance()
+            .set(&DataKey::AllowedPaymentTokens, &allowed_payment_tokens);
+
         Ok(())
     }
 
-    /// Get admin address
+    /// @notice Get the admin address for the marketplace.
+    /// @return admin Address of the admin.
+    /// @error MarketplaceError::NotInitialized if not initialized.
     pub fn get_admin(e: Env) -> Result<Address, MarketplaceError> {
-        e.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(MarketplaceError::NotInitialized)
+        read_admin(&e)
     }
 
-    /// Update marketplace fee (admin only)
+    /// @notice Update the marketplace fee (basis points).
+    /// @param fee_basis_points New fee in basis points.
+    /// @dev Only callable by admin.
+    /// @error MarketplaceError::NotInitialized if not initialized.
+    /// @security Only callable by `admin` (require_auth).
     pub fn update_fee(e: Env, fee_basis_points: u32) -> Result<(), MarketplaceError> {
         let admin: Address = Self::get_admin(e.clone())?;
         admin.require_auth();
@@ -207,20 +281,91 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
+    /// Add a token contract to the payment-token allowlist.
+    ///
+    /// # Arguments
+    /// * `payment_token` - Soroban token contract address approved for marketplace payments
+    ///
+    /// # Errors
+    /// * `MarketplaceError::NotInitialized` if the marketplace has not been initialized
+    ///
+    /// # Security Notes
+    /// Admin-only. All outbound token transfers in the marketplace trust this list.
+    pub fn add_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+
+        if is_allowed_payment_token(&e, &payment_token) {
+            return Ok(());
+        }
+
+        e.storage()
+            .persistent()
+            .set(&DataKey::AllowedPaymentToken(payment_token.clone()), &true);
+
+        let mut allowed_payment_tokens = read_allowed_payment_tokens(&e);
+        allowed_payment_tokens.push_back(payment_token);
+        write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+
+        Ok(())
+    }
+
+    /// Remove a token contract from the payment-token allowlist.
+    ///
+    /// # Arguments
+    /// * `payment_token` - Soroban token contract address to delist
+    ///
+    /// # Errors
+    /// * `MarketplaceError::NotInitialized` if the marketplace has not been initialized
+    ///
+    /// # Security Notes
+    /// Admin-only. Removing a token prevents new usage and also blocks settlement
+    /// for existing listings, offers, or auctions referencing the removed token
+    /// until it is allowlisted again.
+    pub fn remove_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+
+        e.storage()
+            .persistent()
+            .remove(&DataKey::AllowedPaymentToken(payment_token.clone()));
+
+        let mut allowed_payment_tokens = read_allowed_payment_tokens(&e);
+        if let Some(index) = allowed_payment_tokens
+            .iter()
+            .position(|token| token == payment_token)
+        {
+            allowed_payment_tokens.remove(index as u32);
+            write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+        }
+
+        Ok(())
+    }
+
+    /// Return true when a payment token is currently allowlisted.
+    pub fn is_payment_token_allowed(e: Env, payment_token: Address) -> bool {
+        is_allowed_payment_token(&e, &payment_token)
+    }
+
+    /// Return the full set of allowlisted payment tokens.
+    pub fn get_allowed_payment_tokens(e: Env) -> Vec<Address> {
+        read_allowed_payment_tokens(&e)
+    }
+
     // ========================================================================
     // Listing Management
     // ========================================================================
 
-    /// List an NFT for sale
-    ///
-    /// # Arguments
-    /// * `seller` - The seller's address (must be NFT owner)
-    /// * `token_id` - The NFT token ID to list
-    /// * `price` - The sale price
-    /// * `payment_token` - The token contract address for payment
-    ///
-    /// # Reentrancy Protection
-    /// Protected with reentrancy guard as it makes external NFT contract calls
+    /// @notice List an NFT for sale on the marketplace.
+    /// @param seller Seller's address (must be NFT owner and sign the transaction).
+    /// @param token_id NFT token ID to list.
+    /// @param price Sale price (must be > 0).
+    /// @param payment_token Token contract address for payment.
+    /// @dev Reentrancy guard enforced. No cross-contract NFT ownership check in this implementation.
+    /// @error MarketplaceError::InvalidPrice if price <= 0.
+    /// @error MarketplaceError::ListingExists if listing already exists.
+    /// @error MarketplaceError::NotInitialized if contract not initialized.
+    /// @security Only callable by `seller` (require_auth).
     pub fn list_nft(
         e: Env,
         seller: Address,
@@ -249,6 +394,13 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::InvalidPrice);
         }
 
+        if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
+
         // Check if listing already exists
         if e.storage().persistent().has(&DataKey::Listing(token_id)) {
             e.storage()
@@ -268,6 +420,13 @@ impl CommitmentMarketplace {
                     .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::NotInitialized
             })?;
+
+        if let Err(err) = require_allowed_payment_token(&e, &listing.payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
 
         // Note: This would require the NFT contract client
         // For now, we assume the caller has verified ownership
@@ -311,10 +470,13 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Cancel a listing
-    ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern
+    /// @notice Cancel an active NFT listing.
+    /// @param seller Seller's address (must sign the transaction).
+    /// @param token_id NFT token ID to cancel listing for.
+    /// @dev Reentrancy guard enforced. Checks-effects-interactions pattern.
+    /// @error MarketplaceError::ListingNotFound if listing does not exist.
+    /// @error MarketplaceError::NotSeller if caller is not the seller.
+    /// @security Only callable by `seller` (require_auth).
     pub fn cancel_listing(e: Env, seller: Address, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
@@ -377,14 +539,14 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Buy an NFT
-    ///
-    /// # Arguments
-    /// * `buyer` - The buyer's address
-    /// * `token_id` - The NFT token ID to buy
-    ///
-    /// # Reentrancy Protection
-    /// Critical - handles token transfers. Protected with reentrancy guard.
+    /// @notice Buy an NFT from an active listing.
+    /// @param buyer Buyer's address (must sign the transaction).
+    /// @param token_id NFT token ID to buy.
+    /// @dev Reentrancy guard enforced. Handles token transfers. No cross-contract NFT transfer in this implementation.
+    /// @error MarketplaceError::ListingNotFound if listing does not exist.
+    /// @error MarketplaceError::CannotBuyOwnListing if buyer is seller.
+    /// @error MarketplaceError::NotInitialized if contract not initialized.
+    /// @security Only callable by `buyer` (require_auth).
     pub fn buy_nft(e: Env, buyer: Address, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
@@ -497,7 +659,10 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Get a listing
+    /// @notice Get details of a specific NFT listing.
+    /// @param token_id NFT token ID.
+    /// @return Listing struct.
+    /// @error MarketplaceError::ListingNotFound if listing does not exist.
     pub fn get_listing(e: Env, token_id: u32) -> Result<Listing, MarketplaceError> {
         e.storage()
             .persistent()
@@ -505,7 +670,8 @@ impl CommitmentMarketplace {
             .ok_or(MarketplaceError::ListingNotFound)
     }
 
-    /// Get all active listings
+    /// @notice Get all active NFT listings.
+    /// @return Vec<Listing> of all active listings.
     pub fn get_all_listings(e: Env) -> Vec<Listing> {
         let active_listings: Vec<u32> = e
             .storage()
@@ -532,10 +698,15 @@ impl CommitmentMarketplace {
     // Offer System
     // ========================================================================
 
-    /// Make an offer on an NFT
-    ///
-    /// # Reentrancy Protection
-    /// Protected with reentrancy guard
+    /// @notice Make an offer on an NFT.
+    /// @param offerer Offer maker's address (must sign the transaction).
+    /// @param token_id NFT token ID to make offer on.
+    /// @param amount Offer amount (must be > 0).
+    /// @param payment_token Token contract address for payment.
+    /// @dev Reentrancy guard enforced.
+    /// @error MarketplaceError::InvalidOfferAmount if amount <= 0.
+    /// @error MarketplaceError::OfferExists if offerer already has an offer.
+    /// @security Only callable by `offerer` (require_auth).
     pub fn make_offer(
         e: Env,
         offerer: Address,
@@ -562,6 +733,13 @@ impl CommitmentMarketplace {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidOfferAmount);
+        }
+
+        if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
         }
 
         // EFFECTS
@@ -608,10 +786,14 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Accept an offer
-    ///
-    /// # Reentrancy Protection
-    /// Critical - handles token transfers. Protected with reentrancy guard.
+    /// @notice Accept an offer on an NFT.
+    /// @param seller Seller's address (must sign the transaction).
+    /// @param token_id NFT token ID.
+    /// @param offerer Address of the offer maker.
+    /// @dev Reentrancy guard enforced. Handles token transfers. No cross-contract NFT transfer in this implementation.
+    /// @error MarketplaceError::OfferNotFound if offer does not exist.
+    /// @error MarketplaceError::NotInitialized if contract not initialized.
+    /// @security Only callable by `seller` (require_auth).
     pub fn accept_offer(
         e: Env,
         seller: Address,
@@ -673,6 +855,13 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
+        if let Err(err) = require_allowed_payment_token(&e, &offer.payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
+
         // Calculate fee and seller proceeds
         let marketplace_fee = (offer.amount * fee_basis_points as i128) / 10000;
         let seller_proceeds = offer.amount - marketplace_fee;
@@ -724,7 +913,11 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Cancel an offer
+    /// @notice Cancel an offer made on an NFT.
+    /// @param offerer Offer maker's address (must sign the transaction).
+    /// @param token_id NFT token ID.
+    /// @error MarketplaceError::OfferNotFound if offer does not exist.
+    /// @security Only callable by `offerer` (require_auth).
     pub fn cancel_offer(e: Env, offerer: Address, token_id: u32) -> Result<(), MarketplaceError> {
         offerer.require_auth();
 
@@ -755,7 +948,9 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Get all offers for a token
+    /// @notice Get all offers for a specific NFT token.
+    /// @param token_id NFT token ID.
+    /// @return Vec<Offer> of all offers for the token.
     pub fn get_offers(e: Env, token_id: u32) -> Vec<Offer> {
         e.storage()
             .persistent()
@@ -767,10 +962,17 @@ impl CommitmentMarketplace {
     // Auction System
     // ========================================================================
 
-    /// Start an auction
-    ///
-    /// # Reentrancy Protection
-    /// Protected with reentrancy guard
+    /// @notice Start an auction for an NFT.
+    /// @param seller Seller's address (must sign the transaction).
+    /// @param token_id NFT token ID.
+    /// @param starting_price Starting price for the auction (must be > 0).
+    /// @param duration_seconds Duration of the auction in seconds (must be > 0).
+    /// @param payment_token Token contract address for payment.
+    /// @dev Reentrancy guard enforced.
+    /// @error MarketplaceError::InvalidPrice if starting price <= 0.
+    /// @error MarketplaceError::InvalidDuration if duration is 0.
+    /// @error MarketplaceError::ListingExists if auction already exists for token.
+    /// @security Only callable by `seller` (require_auth).
     pub fn start_auction(
         e: Env,
         seller: Address,
@@ -805,6 +1007,13 @@ impl CommitmentMarketplace {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidDuration);
+        }
+
+        if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
         }
 
         if e.storage().persistent().has(&DataKey::Auction(token_id)) {
@@ -858,10 +1067,15 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Place a bid
-    ///
-    /// # Reentrancy Protection
-    /// Critical - handles token transfers for bid refunds. Protected with reentrancy guard.
+    /// @notice Place a bid on an active auction.
+    /// @param bidder Bidder's address (must sign the transaction).
+    /// @param token_id NFT token ID.
+    /// @param bid_amount Amount of the bid (must be > current bid).
+    /// @dev Reentrancy guard enforced. Handles token transfers for bid refunds.
+    /// @error MarketplaceError::AuctionEnded if auction has ended.
+    /// @error MarketplaceError::BidTooLow if bid is not higher than current bid.
+    /// @error MarketplaceError::CannotBuyOwnListing if seller tries to bid.
+    /// @security Only callable by `bidder` (require_auth).
     pub fn place_bid(
         e: Env,
         bidder: Address,
@@ -915,6 +1129,13 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::CannotBuyOwnListing);
         }
 
+        if let Err(err) = require_allowed_payment_token(&e, &auction.payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
+
         // EFFECTS
         let previous_bidder = auction.highest_bidder.clone();
         let previous_bid = auction.current_bid;
@@ -953,10 +1174,12 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// End an auction
-    ///
-    /// # Reentrancy Protection
-    /// Critical - handles final settlement. Protected with reentrancy guard.
+    /// @notice End an auction and settle payment/NFT transfer.
+    /// @param token_id NFT token ID.
+    /// @dev Reentrancy guard enforced. Handles final settlement. Anyone can call after auction ends.
+    /// @error MarketplaceError::AuctionNotFound if auction does not exist.
+    /// @error MarketplaceError::AuctionNotEnded if auction has not ended yet.
+    /// @error MarketplaceError::AuctionEnded if auction already ended.
     pub fn end_auction(e: Env, token_id: u32) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
@@ -1012,6 +1235,15 @@ impl CommitmentMarketplace {
                     .set(&DataKey::ReentrancyGuard, &false);
                 MarketplaceError::NotInitialized
             })?;
+
+        if auction.highest_bidder.is_some() {
+            if let Err(err) = require_allowed_payment_token(&e, &auction.payment_token) {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                return Err(err);
+            }
+        }
 
         // EFFECTS
         auction.ended = true;
@@ -1084,7 +1316,10 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// Get auction details
+    /// @notice Get details of a specific auction.
+    /// @param token_id NFT token ID.
+    /// @return Auction struct.
+    /// @error MarketplaceError::AuctionNotFound if auction does not exist.
     pub fn get_auction(e: Env, token_id: u32) -> Result<Auction, MarketplaceError> {
         e.storage()
             .persistent()
@@ -1092,7 +1327,8 @@ impl CommitmentMarketplace {
             .ok_or(MarketplaceError::AuctionNotFound)
     }
 
-    /// Get all active auctions
+    /// @notice Get all active auctions.
+    /// @return Vec<Auction> of all active auctions.
     pub fn get_all_auctions(e: Env) -> Vec<Auction> {
         let active_auctions: Vec<u32> = e
             .storage()

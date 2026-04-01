@@ -5,7 +5,6 @@
 //! give downstream callers and generated bindings a stable contract surface that
 //! mirrors the production `commitment_core` data model.
 
-extern crate alloc;
 
 pub mod error;
 pub mod types;
@@ -13,7 +12,9 @@ pub mod types;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Symbol, Vec};
 
 use crate::error::Error;
-use crate::types::{Commitment, CommitmentRules};
+pub use crate::types::{
+    Commitment, CommitmentCreatedEvent, CommitmentRules, CommitmentSettledEvent,
+};
 
 /// =======================
 /// Interface Metadata
@@ -87,12 +88,49 @@ impl CommitmentInterface {
     }
 
     /// List commitment ids owned by the supplied address.
+    ///
+    /// # Security
+    /// This is a read-only view into ownership-indexed storage in the live
+    /// contract. No authorization is required because it does not mutate state.
+    pub fn list_commitments_by_owner(_env: Env, _owner: Address) -> Result<Vec<String>, Error> {
+        unimplemented!("interface only")
+    }
+
+    /// List commitment ids owned by the supplied address.
     pub fn get_owner_commitments(_env: Env, _owner: Address) -> Result<Vec<String>, Error> {
         unimplemented!("interface only")
     }
 
     /// Return the aggregate number of commitments created so far.
     pub fn get_total_commitments(_env: Env) -> Result<u64, Error> {
+        unimplemented!("interface only")
+    }
+
+    /// Return the aggregate value locked across active commitments.
+    ///
+    /// # Security
+    /// Live implementations derive this from mutable storage updated during
+    /// create, value-update, settle, and early-exit flows.
+    pub fn get_total_value_locked(_env: Env) -> Result<i128, Error> {
+        unimplemented!("interface only")
+    }
+
+    /// Return commitment ids created between two timestamps, inclusive.
+    pub fn get_commitments_created_between(
+        _env: Env,
+        _from_ts: u64,
+        _to_ts: u64,
+    ) -> Result<Vec<String>, Error> {
+        unimplemented!("interface only")
+    }
+
+    /// Return the configured admin for the live commitment core contract.
+    pub fn get_admin(_env: Env) -> Result<Address, Error> {
+        unimplemented!("interface only")
+    }
+
+    /// Return the linked commitment NFT contract address.
+    pub fn get_nft_contract(_env: Env) -> Result<Address, Error> {
         unimplemented!("interface only")
     }
 
@@ -118,7 +156,10 @@ impl CommitmentInterface {
 #[cfg(test)]
 mod tests {
     use super::INTERFACE_VERSION;
-    use alloc::{string::{String, ToString}, vec::Vec};
+    use alloc::{
+        string::{String, ToString},
+        vec::Vec,
+    };
 
     const INTERFACE_TYPES: &str = include_str!("types.rs");
     const CORE_SOURCE: &str = include_str!("../../commitment_core/src/lib.rs");
@@ -173,7 +214,10 @@ mod tests {
     #[test]
     fn commitment_rules_source_matches_commitment_core() {
         assert_eq!(
-            normalize(&extract_block(INTERFACE_TYPES, "pub struct CommitmentRules {")),
+            normalize(&extract_block(
+                INTERFACE_TYPES,
+                "pub struct CommitmentRules {"
+            )),
             normalize(&extract_block(CORE_SOURCE, "pub struct CommitmentRules {"))
         );
     }
@@ -181,8 +225,14 @@ mod tests {
     #[test]
     fn commitment_rules_source_matches_attestation_engine() {
         assert_eq!(
-            normalize(&extract_block(INTERFACE_TYPES, "pub struct CommitmentRules {")),
-            normalize(&extract_block(ATTESTATION_SOURCE, "pub struct CommitmentRules {"))
+            normalize(&extract_block(
+                INTERFACE_TYPES,
+                "pub struct CommitmentRules {"
+            )),
+            normalize(&extract_block(
+                ATTESTATION_SOURCE,
+                "pub struct CommitmentRules {"
+            ))
         );
     }
 
@@ -198,7 +248,38 @@ mod tests {
     fn commitment_source_matches_attestation_engine() {
         assert_eq!(
             normalize(&extract_block(INTERFACE_TYPES, "pub struct Commitment {")),
-            normalize(&extract_block(ATTESTATION_SOURCE, "pub struct Commitment {"))
+            normalize(&extract_block(
+                ATTESTATION_SOURCE,
+                "pub struct Commitment {"
+            ))
+        );
+    }
+
+    #[test]
+    fn created_event_source_matches_commitment_core() {
+        assert_eq!(
+            normalize(&extract_block(
+                INTERFACE_TYPES,
+                "pub struct CommitmentCreatedEvent {"
+            )),
+            normalize(&extract_block(
+                CORE_SOURCE,
+                "pub struct CommitmentCreatedEvent {"
+            ))
+        );
+    }
+
+    #[test]
+    fn settled_event_source_matches_commitment_core() {
+        assert_eq!(
+            normalize(&extract_block(
+                INTERFACE_TYPES,
+                "pub struct CommitmentSettledEvent {"
+            )),
+            normalize(&extract_block(
+                CORE_SOURCE,
+                "pub struct CommitmentSettledEvent {"
+            ))
         );
     }
 
@@ -210,8 +291,13 @@ mod tests {
             "pub fn initialize(e: Env, admin: Address, nft_contract: Address)",
             "pub fn create_commitment( e: Env, owner: Address, amount: i128, asset_address: Address, rules: CommitmentRules, ) -> String",
             "pub fn get_commitment(e: Env, commitment_id: String) -> Commitment",
+            "pub fn list_commitments_by_owner(e: Env, owner: Address) -> Vec<String>",
             "pub fn get_owner_commitments(e: Env, owner: Address) -> Vec<String>",
             "pub fn get_total_commitments(e: Env) -> u64",
+            "pub fn get_total_value_locked(e: Env) -> i128",
+            "pub fn get_commitments_created_between(e: Env, from_ts: u64, to_ts: u64) -> Vec<String>",
+            "pub fn get_admin(e: Env) -> Address",
+            "pub fn get_nft_contract(e: Env) -> Address",
             "pub fn settle(e: Env, commitment_id: String)",
             "pub fn early_exit(e: Env, commitment_id: String, caller: Address)",
         ] {
