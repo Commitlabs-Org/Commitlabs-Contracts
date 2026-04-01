@@ -3,6 +3,24 @@
 use soroban_sdk::{Address, Env, String};
 
 /// Validation utility functions
+///
+/// # Summary
+/// `Validation` provides deterministic, panic-based input checks used across
+/// CommitLabs contracts. These helpers are pure (no storage mutation) and are
+/// intended for validating user-supplied inputs before performing state
+/// transitions in other contracts.
+///
+/// # Contract usage
+/// - Use these helpers inside contract entrypoints to validate parameters.
+/// - They intentionally `panic!` with clear messages so callers (and unit
+///   tests) can assert expected failure modes using `#[should_panic]`.
+///
+/// # Security notes
+/// - These helpers do not perform authorization. Any code that mutates
+///   storage or performs cross-contract calls must still call `require_auth`
+///   or other access-control checks as appropriate.
+/// - Arithmetic-sensitive helpers use widened, checked accumulation where
+///   appropriate to avoid overflows in edge cases.
 pub struct Validation;
 
 impl Validation {
@@ -45,16 +63,57 @@ impl Validation {
         }
     }
 
-    /// Validate that a percentage is between 0 and 100
+    /// Validate that a percentage is between 0 and 100 (inclusive)
     ///
-    /// # Arguments
-    /// * `percent` - The percentage value
+    /// # Params
+    /// * `percent` - The percentage value to validate (0..=100)
     ///
-    /// # Panics
-    /// Panics with "Invalid percent" if percent > 100
+    /// # Errors
+    /// Panics with `"Invalid percent: must be between 0 and 100"` when
+    /// `percent > 100`.
+    ///
+    /// # Security
+    /// This is a pure check and does not mutate state or perform auth.
     pub fn require_valid_percent(percent: u32) {
         if percent > 100 {
             panic!("Invalid percent: must be between 0 and 100");
+        }
+    }
+
+    /// Validate that a list of percentages sums to exactly 100
+    ///
+    /// # Params
+    /// * `percents` - Slice of individual percentage values (each 0..=100)
+    ///
+    /// # Errors
+    /// - Panics with `"Invalid percent: must be between 0 and 100"` if any
+    ///   individual percent is out of range.
+    /// - Panics with `"Invalid percent sum: must sum to exactly 100"` if the
+    ///   sum of the provided percentages is not exactly 100.
+    ///
+    /// # Rationale
+    /// Percentages are accumulated into a widened `u128` and added using
+    /// `checked_add` to guard against pathological overflows. For typical
+    /// use-cases (small arrays of percentages) this is conservative and
+    /// performant.
+    ///
+    /// # Security
+    /// This helper is pure and deterministic. Use it to validate split
+    /// allocations (fees, penalties, tranche weights) before persisting
+    /// them to storage or performing financial calculations.
+    pub fn require_percent_sum(percents: &[u32]) {
+        // Ensure each percent is individually valid and accumulate in a larger type
+        let mut sum: u128 = 0;
+        for p in percents.iter() {
+            if *p > 100 {
+                panic!("Invalid percent: must be between 0 and 100");
+            }
+            sum = sum
+                .checked_add(*p as u128)
+                .expect("Percent sum overflowed u128 (unexpected)");
+        }
+        if sum != 100u128 {
+            panic!("Invalid percent sum: must sum to exactly 100");
         }
     }
 
@@ -87,15 +146,26 @@ impl Validation {
         // This function is a placeholder for future validation needs
     }
 
-    /// Validate commitment type is one of the allowed values
+    /// Validate that the provided commitment type is one of the allowed values
     ///
-    /// # Arguments
-    /// * `e` - The environment
-    /// * `commitment_type` - The commitment type string
-    /// * `allowed_types` - Slice of allowed type strings
+    /// # Params
+    /// * `e` - Soroban `Env` used to construct `String` values for comparison
+    /// * `commitment_type` - The commitment type as a Soroban `String`
+    /// * `allowed_types` - Slice of allowed type string literals (e.g. `"VEST"`)
     ///
-    /// # Panics
-    /// Panics if commitment_type is not in allowed_types
+    /// # Errors
+    /// Panics with `"Invalid commitment type: must be one of the allowed types"`
+    /// when `commitment_type` is not equal to any value in `allowed_types`.
+    ///
+    /// # Notes
+    /// This helper does string equality checks using Soroban `String` values.
+    /// It is intentionally permissive about the representation (case-sensitive)
+    /// and leaves canonicalization (if desired) to callers.
+    ///
+    /// # Security
+    /// This function is a pure validation helper only. Any code that allows
+    /// callers to set commitment types in on-chain storage should additionally
+    /// validate caller authorization before mutating storage.
     pub fn require_valid_commitment_type(
         e: &Env,
         commitment_type: &String,
@@ -240,5 +310,39 @@ mod tests {
     #[should_panic(expected = "Invalid value")]
     fn test_require_in_range_fails_above() {
         Validation::require_in_range(101, 0, 100, "value");
+    }
+
+    #[test]
+    fn test_require_valid_commitment_type_ok() {
+        let env = Env::default();
+        let ct = String::from_str(&env, "TYPE_A");
+        Validation::require_valid_commitment_type(&env, &ct, &["TYPE_A", "TYPE_B"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid commitment type")]
+    fn test_require_valid_commitment_type_fails() {
+        let env = Env::default();
+        let ct = String::from_str(&env, "TYPE_C");
+        Validation::require_valid_commitment_type(&env, &ct, &["TYPE_A", "TYPE_B"]);
+    }
+
+    #[test]
+    fn test_require_percent_sum_ok() {
+        Validation::require_percent_sum(&[100]);
+        Validation::require_percent_sum(&[50, 50]);
+        Validation::require_percent_sum(&[25, 25, 25, 25]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid percent sum")]
+    fn test_require_percent_sum_fails_sum_mismatch() {
+        Validation::require_percent_sum(&[30, 30]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid percent")]
+    fn test_require_percent_sum_fails_individual_invalid() {
+        Validation::require_percent_sum(&[50, 200]);
     }
 }
