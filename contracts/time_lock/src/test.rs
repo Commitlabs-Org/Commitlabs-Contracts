@@ -95,8 +95,8 @@ fn test_queue_action_success() {
     assert_eq!(action.action_type, ActionType::ParameterChange);
     assert_eq!(action.target, target);
     assert_eq!(action.data, data);
-    assert_eq!(action.executed, false);
-    assert_eq!(action.cancelled, false);
+    assert!(!action.executed);
+    assert!(!action.cancelled);
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn test_execute_action_success() {
     client.execute_action(&action_id);
 
     let action = client.get_action(&action_id);
-    assert_eq!(action.executed, true);
+    assert!(action.executed);
 }
 
 #[test]
@@ -351,7 +351,7 @@ fn test_cancel_action_success() {
     client.cancel_action(&action_id);
 
     let action = client.get_action(&action_id);
-    assert_eq!(action.cancelled, true);
+    assert!(action.cancelled);
 }
 
 #[test]
@@ -538,8 +538,8 @@ fn test_get_pending_actions() {
 
     let pending = client.get_pending_actions();
     assert_eq!(pending.len(), 2);
-    assert!(pending.contains(&id1));
-    assert!(pending.contains(&id3));
+    assert!(pending.contains(id1));
+    assert!(pending.contains(id3));
 
     // Execute one
     env.ledger().with_mut(|li| {
@@ -549,7 +549,7 @@ fn test_get_pending_actions() {
 
     let pending = client.get_pending_actions();
     assert_eq!(pending.len(), 1);
-    assert!(pending.contains(&id3));
+    assert!(pending.contains(id3));
 }
 
 #[test]
@@ -579,7 +579,7 @@ fn test_get_executable_actions() {
 
     let executable = client.get_executable_actions();
     assert_eq!(executable.len(), 1);
-    assert!(executable.contains(&id1));
+    assert!(executable.contains(id1));
 
     // Fast forward to 2 days + 1 second total
     env.ledger().with_mut(|li| {
@@ -588,8 +588,8 @@ fn test_get_executable_actions() {
 
     let executable = client.get_executable_actions();
     assert_eq!(executable.len(), 2);
-    assert!(executable.contains(&id1));
-    assert!(executable.contains(&id2));
+    assert!(executable.contains(id1));
+    assert!(executable.contains(id2));
 
     // Fast forward to 3 days + 1 second total
     env.ledger().with_mut(|li| {
@@ -598,9 +598,9 @@ fn test_get_executable_actions() {
 
     let executable = client.get_executable_actions();
     assert_eq!(executable.len(), 3);
-    assert!(executable.contains(&id1));
-    assert!(executable.contains(&id2));
-    assert!(executable.contains(&id3));
+    assert!(executable.contains(id1));
+    assert!(executable.contains(id2));
+    assert!(executable.contains(id3));
 }
 
 #[test]
@@ -712,7 +712,7 @@ fn test_edge_case_exact_delay_time() {
 
     // Fast forward to exactly the delay time (not past it)
     env.ledger().with_mut(|li| {
-        li.timestamp = li.timestamp + delay;
+        li.timestamp += delay;
     });
 
     // Should be executable at exactly the delay time
@@ -747,4 +747,120 @@ fn test_queue_action_rejects_timestamp_overflow() {
 
     let result = client.try_queue_action(&ActionType::ParameterChange, &target, &data, &delay);
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+}
+#[test]
+fn test_non_admin_cannot_queue_action() {
+    let (env, admin, target) = create_test_env();
+    let attacker = Address::generate(&env);
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let data = String::from_str(&env, "attack");
+
+    env.mock_auths(&[(
+        attacker.clone(),
+        soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "queue_action",
+            args: (ActionType::ParameterChange, target.clone(), data.clone(), 86400).into_val(&env),
+            sub_invokes: &[],
+        },
+    )]);
+
+    let result = client.try_queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+#[test]
+fn test_bypass_attempt_execute_immediately() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "attack");
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    let result = client.try_execute_action(&action_id);
+
+    assert_eq!(result, Err(Ok(Error::DelayNotMet)));
+}
+#[test]
+fn test_bypass_attempt_double_execute() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "double_execute");
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    env.ledger().with_mut(|li| li.timestamp += 86401);
+
+    client.execute_action(&action_id);
+
+    let result = client.try_execute_action(&action_id);
+
+    assert_eq!(result, Err(Ok(Error::ActionAlreadyExecuted)));
+}
+#[test]
+fn test_bypass_attempt_cancel_after_execute() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "cancel_after_execute");
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    env.ledger().with_mut(|li| li.timestamp += 86401);
+
+    client.execute_action(&action_id);
+
+    let result = client.try_cancel_action(&action_id);
+
+    assert_eq!(result, Err(Ok(Error::CannotCancelExecutedAction)));
+}
+#[test]
+fn test_execute_exact_timestamp_boundary() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "boundary");
+
+    let delay = 86400;
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
+
+    env.ledger().with_mut(|li| li.timestamp += delay);
+
+    client.execute_action(&action_id);
+
+    let action = client.get_action(&action_id);
+
+    assert!(action.executed);
 }

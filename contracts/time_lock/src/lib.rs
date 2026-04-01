@@ -119,18 +119,24 @@ impl TimelockContract {
     /// Queue a new action with timelock.
     ///
     /// # Arguments
-    /// * `action_type` - Type of action being queued
-    /// * `target` - Target address for the action
-    /// * `data` - Action data/parameters as string
-    /// * `delay` - Custom delay in seconds (must be >= action type minimum)
+    /// * `action_type` - Type of action being queued.
+    /// * `target` - Target address for the action.
+    /// * `data` - Action data/parameters as string.
+    /// * `delay` - Custom delay in seconds (must be >= action type minimum).
     ///
     /// # Returns
-    /// * Action ID
+    /// * Result containing the new Action ID.
     ///
-    /// Security:
-    /// - requires admin authorization
-    /// - enforces a minimum delay per action type
-    /// - rejects delays above the global maximum
+    /// # Errors
+    /// * `Error::Unauthorized` - Caller is not the admin.
+    /// * `Error::DelayTooShort` - `delay` is less than the action type minimum.
+    /// * `Error::DelayTooLong` - `delay` exceeds `MAX_DELAY`.
+    /// * `Error::ArithmeticOverflow` - Generated ID or timestamp overflows.
+    ///
+    /// # Security Notes
+    /// - **Trust Boundary**: Only the admin can mutate the action queue.
+    /// - **Clock Dependency**: Execution time is calculated relative to `env.ledger().timestamp()`.
+    ///   Soroban guarantees ledger timestamp monotonicity.
     pub fn queue_action(
         env: Env,
         action_type: ActionType,
@@ -209,7 +215,18 @@ impl TimelockContract {
     /// execution liveness independent from the admin being online at the deadline.
     ///
     /// # Arguments
-    /// * `action_id` - ID of the action to execute
+    /// * `action_id` - ID of the action to execute.
+    ///
+    /// # Errors
+    /// * `Error::ActionNotFound` - ID does not match any queued action.
+    /// * `Error::ActionAlreadyExecuted` - Action has already been processed.
+    /// * `Error::ActionCancelled` - Action was cancelled by the admin.
+    /// * `Error::DelayNotMet` - Current ledger timestamp is before `executable_at`.
+    ///
+    /// # Security Notes
+    /// - **Clock Skew**: Execution eligibility is strictly checked against the current ledger 
+    ///   timestamp. Because ledger timestamps are validator-driven, execution may be 
+    ///   delayed by ledger closing times (approx. 5s).
     pub fn execute_action(env: Env, action_id: u64) -> Result<(), Error> {
         let mut action: QueuedAction = env
             .storage()
@@ -253,7 +270,17 @@ impl TimelockContract {
     /// Only the admin can cancel actions, and only before they are executed.
     ///
     /// # Arguments
-    /// * `action_id` - ID of the action to cancel
+    /// * `action_id` - ID of the action to cancel.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - Caller is not the admin.
+    /// * `Error::ActionNotFound` - ID does not match any queued action.
+    /// * `Error::CannotCancelExecutedAction` - Action has already been executed.
+    /// * `Error::ActionAlreadyCancelled` - Action was already cancelled.
+    ///
+    /// # Security Notes
+    /// - **Trust Boundary**: Only the admin can cancel actions, ensuring malicious or erroneous 
+    ///   queued actions can be neutralized before execution.
     pub fn cancel_action(env: Env, action_id: u64) -> Result<(), Error> {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
