@@ -15,7 +15,7 @@ default = []
 soroban-sdk = "21.0.0"
 shared_utils = { path = "../shared_utils" }
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 commitment_core = { path = "../commitment_core" }
 
