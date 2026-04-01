@@ -17,6 +17,7 @@ impl MockNftContract {
     #[allow(clippy::too_many_arguments)]
     pub fn mint(
         _e: Env,
+        _caller: Address,
         _owner: Address,
         _commitment_id: String,
         _duration_days: u32,
@@ -102,9 +103,14 @@ fn test_create_commitment_i128_max() {
     e.mock_all_auths();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &1000);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
@@ -194,7 +200,7 @@ fn test_update_value_zero_behaves() {
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    client.update_value(&commitment_id, &0);
+    client.update_value(&admin, &commitment_id, &0);
     let updated = client.get_commitment(&commitment_id);
     assert_eq!(updated.current_value, 0);
 }
@@ -221,7 +227,7 @@ fn test_update_value_negative_panics() {
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    client.update_value(&commitment_id, &-100);
+    client.update_value(&admin, &commitment_id, &-100);
 }
 
 #[test]
@@ -270,6 +276,7 @@ fn create_test_commitment(
     duration_days: u32,
     created_at: u64,
 ) -> Commitment {
+    let expires_at = created_at + (duration_days as u64) * 86400; // days to seconds
     let expires_at = created_at + (duration_days as u64 * 86400);
 
     Commitment {
@@ -594,30 +601,33 @@ fn test_create_commitment_expiration_overflow() {
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &1000);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
     });
 
-    // Set ledger timestamp so created_at + duration_days * 86400 overflows u64
-    e.ledger().with_mut(|l| {
-        l.timestamp = u64::MAX - 50_000;
-    });
+    // Advance the ledger so created_at + duration_days * 86400 overflows u64.
+    // duration_days = 1 → adds 86400 seconds.  u64::MAX - 86399 is the tipping point.
+    e.ledger().set_timestamp(u64::MAX - 86_399);
 
     let rules = CommitmentRules {
         duration_days: 1,
         max_loss_percent: 10,
-        commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 15,
+        commitment_type: String::from_str(&e, "balanced"),
+        early_exit_penalty: 10,
         min_fee_threshold: 100,
         grace_period_days: 0,
     };
 
     e.as_contract(&contract_id, || {
-        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, asset_address, rules);
+        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, token_address, rules);
     });
 }
 
@@ -1541,7 +1551,36 @@ fn test_update_value_event() {
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    client.update_value(&commitment_id, &1100);
+    client.update_value(&admin, &commitment_id, &1100);
+
+    let updated = client.get_commitment(&commitment_id);
+    assert_eq!(updated.current_value, 1100);
+    assert_eq!(client.get_total_value_locked(), 1100);
+}
+
+#[test]
+#[should_panic(expected = "upd: unauthorized")]
+fn test_update_value_unauthorized_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let unauthorized = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "test_id");
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        let commitment =
+            create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, e.ledger().timestamp());
+        set_commitment(&e, &commitment);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    // unauthorized caller should fail
+    client.update_value(&unauthorized, &commitment_id, &1100);
 
     let updated = client.get_commitment(&commitment_id);
     assert_eq!(updated.current_value, 1100);
@@ -1587,9 +1626,9 @@ fn test_update_value_rate_limit_enforced() {
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
     // First call — allowed
-    client.update_value(&commitment_id, &100);
+    client.update_value(&admin, &commitment_id, &100);
     // Second call — should hit rate limit and panic
-    client.update_value(&commitment_id, &200);
+    client.update_value(&admin, &commitment_id, &200);
 }
 
 #[test]
@@ -1863,6 +1902,7 @@ fn test_allocate_when_active_succeeds() {
     commitment.asset_address = asset_address;
     store_commitment(&e, &contract_id, &commitment);
 
+    // admin is authorized (is the admin address stored in the contract)
     client.allocate(
         &admin,
         &String::from_str(&e, commitment_id),
@@ -2349,19 +2389,28 @@ fn test_early_exit_status_transition() {
     assert_eq!(before.status, String::from_str(&e, "active"));
 }
 #[test]
-fn test_update_value_updates_without_updater_param() {
+fn test_update_value_authorized_updater_succeeds() {
     let e = Env::default();
     e.mock_all_auths();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
     let owner = Address::generate(&e);
+    let updater = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "test_id");
+
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
+        CommitmentCoreContract::add_updater(e.clone(), admin.clone(), updater.clone());
         let commitment = create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, 1000);
         set_commitment(&e, &commitment);
-        CommitmentCoreContract::update_value(e.clone(), String::from_str(&e, "test_id"), 900);
+        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
     });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.update_value(&updater, &commitment_id, &1100);
+    let updated = client.get_commitment(&commitment_id);
+    assert_eq!(updated.current_value, 1100);
 }
 
 #[test]
@@ -2381,7 +2430,7 @@ fn test_update_value_no_violation() {
             .set(&DataKey::TotalValueLocked, &1000i128);
     });
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    client.update_value(&String::from_str(&e, "test_id"), &950);
+    client.update_value(&admin, &String::from_str(&e, "test_id"), &950);
 
     let updated = client.get_commitment(&String::from_str(&e, "test_id"));
     assert_eq!(updated.current_value, 950);
@@ -2417,7 +2466,7 @@ fn test_update_value_triggers_violation() {
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
     // Update to 850: loss = (1000-850)/1000 = 15% > 10% max_loss_percent
-    client.update_value(&String::from_str(&e, "test_id"), &850);
+    client.update_value(&admin, &String::from_str(&e, "test_id"), &850);
 
     let updated = client.get_commitment(&String::from_str(&e, "test_id"));
     assert_eq!(updated.current_value, 850);
@@ -2613,4 +2662,54 @@ fn test_owner_multiple_commitments_settle_one() {
 
     let c3 = client.get_commitment(&String::from_str(&e, "commit_003"));
     assert_eq!(c3.status, String::from_str(&e, "active"));
+}
+
+#[test]
+fn test_role_management() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let other = Address::generate(&e);
+
+    client.initialize(&admin, &nft_contract);
+
+    // Test Operator role
+    assert!(!client.is_operator(&other));
+    client.add_operator(&admin, &other);
+    assert!(client.is_operator(&other));
+    client.pause(&other);
+    assert!(client.is_paused());
+    client.unpause(&other);
+    assert!(!client.is_paused());
+    client.remove_operator(&admin, &other);
+    assert!(!client.is_operator(&other));
+
+    // Test Guardian role
+    assert!(!client.is_guardian(&other));
+    client.add_guardian(&admin, &other);
+    assert!(client.is_guardian(&other));
+    client.set_emergency_mode(&other, &true);
+    assert!(client.is_emergency_mode());
+    client.set_emergency_mode(&other, &false);
+    client.remove_guardian(&admin, &other);
+    assert!(!client.is_guardian(&other));
+
+    // Test Treasurer role
+    assert!(!client.is_treasurer(&other));
+    client.add_treasurer(&admin, &other);
+    assert!(client.is_treasurer(&other));
+    client.set_creation_fee_bps(&other, &100);
+    assert_eq!(client.get_creation_fee_bps(), 100);
+    client.remove_treasurer(&admin, &other);
+    assert!(!client.is_treasurer(&other));
+
+    // Test Allocator (including Allocation Contract and Admin fallback)
+    let alloc_contract = Address::generate(&e);
+    client.set_allocation_contract(&admin, &alloc_contract);
+    assert!(client.is_allocator(&alloc_contract));
+    assert!(client.is_allocator(&admin));
+    assert!(client.is_operator(&admin)); // Admin holds all roles implicitly
 }
