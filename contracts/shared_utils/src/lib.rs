@@ -26,6 +26,7 @@ pub mod rate_limiting;
 pub mod storage;
 pub mod time;
 pub mod validation;
+pub mod fee;
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests;
