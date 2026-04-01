@@ -25,6 +25,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
+use shared_utils::math::SafeMath;
 
 // ============================================================================
 // Error Types
@@ -608,9 +609,11 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        // Calculate fee and seller proceeds
-        let marketplace_fee = (listing.price * fee_basis_points as i128) / 10000;
-        let seller_proceeds = listing.price - marketplace_fee;
+        // Calculate fee and seller proceeds safely using basis points (bps)
+        let fee_basis_points_i128: i128 = fee_basis_points as i128;
+        let marketplace_fee =
+            SafeMath::div(SafeMath::mul(listing.price, fee_basis_points_i128), 10_000_i128);
+        let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
 
         // EFFECTS
         // Remove listing first (prevent reentrancy)
@@ -813,6 +816,13 @@ impl CommitmentMarketplace {
 
         // CHECKS
         seller.require_auth();
+
+        if seller == offerer {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::CannotBuyOwnListing);
+        }
 
         let offers: Vec<Offer> = e
             .storage()
@@ -1025,7 +1035,10 @@ impl CommitmentMarketplace {
 
         // EFFECTS
         let started_at = e.ledger().timestamp();
-        let ends_at = started_at + duration_seconds;
+        let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            MarketplaceError::InvalidDuration
+        })?;
 
         let auction = Auction {
             token_id,
@@ -1266,9 +1279,16 @@ impl CommitmentMarketplace {
 
         // INTERACTIONS
         if let Some(winner) = auction.highest_bidder {
-            // Calculate fees
-            let marketplace_fee = (auction.current_bid * fee_basis_points as i128) / 10000;
-            let seller_proceeds = auction.current_bid - marketplace_fee;
+            // Calculate fees safely using basis points (bps, /10_000)
+            let fee_bps = if fee_basis_points > 10_000 {
+                10_000
+            } else {
+                fee_basis_points
+            };
+            let fee_bps_i128 = fee_bps as i128;
+            let marketplace_fee =
+                SafeMath::div(SafeMath::mul(auction.current_bid, fee_bps_i128), 10_000_i128);
+            let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
 
