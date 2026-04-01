@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 testutils = ["soroban-sdk/testutils"]
 benchmark = []
+fuzzing = []
 default = []
 
 [dependencies]
@@ -17,4 +18,3 @@ shared_utils = { path = "../shared_utils" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
-
