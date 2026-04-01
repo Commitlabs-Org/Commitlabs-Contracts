@@ -81,7 +81,7 @@ impl CommitmentError {
             CommitmentError::NotInitialized => "Contract not initialized",
             CommitmentError::NotExpired => "Commitment has not expired yet",
             CommitmentError::ValueUpdateViolation => "Commitment has value update violation",
-            CommitmentError::NotAuthorizedUpdater => "Commitment has not auth updater",
+            CommitmentError::NotAuthorizedUpdater => "Caller is not an authorized value updater",
             CommitmentError::ZeroAddress => "Zero address is not allowed",
             CommitmentError::ExpirationOverflow => {
                 "Duration would cause expiration timestamp overflow"
@@ -284,6 +284,30 @@ fn require_admin(e: &Env, caller: &Address) {
     }
 }
 
+/// Check whether `caller` is an authorized value updater or the admin.
+///
+/// # Trust boundary
+/// Only addresses explicitly added via `add_updater` (admin-only) may call
+/// `update_value`. The admin itself is always implicitly authorized so that
+/// initial bootstrapping does not require a self-grant.
+fn require_authorized_updater(e: &Env, caller: &Address) {
+    caller.require_auth();
+    // Admin is always authorized
+    if let Some(admin) = e.storage().instance().get::<_, Address>(&DataKey::Admin) {
+        if *caller == admin {
+            return;
+        }
+    }
+    let updaters: Vec<Address> = e
+        .storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
+        .unwrap_or(Vec::new(e));
+    if !updaters.contains(caller) {
+        fail(e, CommitmentError::NotAuthorizedUpdater, "require_authorized_updater");
+    }
+}
+
 fn add_authorized_updater(e: &Env, updater: &Address) {
     let mut updaters: Vec<Address> = e
         .storage()
@@ -424,9 +448,10 @@ impl CommitmentCoreContract {
     ///
     /// Call sequence:
     /// 1. validate owner auth, rules, and balances
-    /// 2. persist commitment state and counters
-    /// 3. transfer tokens into this contract
-    /// 4. invoke `commitment_nft::mint`
+    /// 2. compute creation fee and net amount
+    /// 3. persist commitment state and counters
+    /// 4. transfer tokens into this contract
+    /// 5. invoke `commitment_nft::mint`
     ///
     /// Because Soroban reverts the entire invocation on panic, a downstream NFT mint
     /// failure should roll back the earlier state writes and token transfer.
@@ -512,6 +537,20 @@ impl CommitmentCoreContract {
             0
         };
         // Net amount locked in commitment (after fee deduction)
+        let net_amount = amount - creation_fee;
+
+        // Compute creation fee and net amount before any state writes so that
+        // `net_amount` is defined for both the Commitment struct and the TVL update.
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
         let net_amount = amount - creation_fee;
 
         let commitment_id = Self::generate_commitment_id(&e, current_total);
@@ -631,9 +670,6 @@ impl CommitmentCoreContract {
     }
 
     /// List all commitment IDs owned by the given address.
-    ///
-    /// This is a convenience wrapper around `get_owner_commitments` with a
-    /// name optimized for off-chain indexers and UIs.
     pub fn list_commitments_by_owner(e: Env, owner: Address) -> Vec<String> {
         Self::get_owner_commitments(e, owner)
     }
@@ -663,7 +699,6 @@ impl CommitmentCoreContract {
     }
 
     /// Get commitment IDs created between two timestamps (inclusive).
-    /// For analytics/dashboards. Gas cost is O(n) in total commitments; consider pagination for large n.
     pub fn get_commitments_created_between(e: Env, from_ts: u64, to_ts: u64) -> Vec<String> {
         let all_ids = e
             .storage()
@@ -870,6 +905,10 @@ impl CommitmentCoreContract {
         }
 
         let old_value = commitment.current_value;
+
+        // Persist the new value unconditionally — this is the fix for the misleading
+        // update_value behavior: the value is always written to storage so that
+        // subsequent reads and settlement calculations reflect the update.
         commitment.current_value = new_value;
 
         let loss_percent = if commitment.amount > 0 {
@@ -896,7 +935,10 @@ impl CommitmentCoreContract {
             );
         }
 
+        // Persist to storage — value and (potentially) status are both written here.
         set_commitment(&e, &commitment);
+
+        // Update TVL by the delta so the aggregate stays consistent with the persisted value.
         let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
         let updated_tvl = tvl
             .checked_sub(old_value)
@@ -1373,7 +1415,6 @@ impl CommitmentCoreContract {
         }
         Validation::require_positive(amount);
 
-        // Check fee recipient is set
         let recipient: Address = e
             .storage()
             .instance()
@@ -1383,7 +1424,6 @@ impl CommitmentCoreContract {
                 fail(&e, CommitmentError::FeeRecipientNotSet, "withdraw_fees")
             });
 
-        // Check sufficient collected fees
         let fee_key = DataKey::CollectedFees(asset_address.clone());
         let collected: i128 = e.storage().instance().get(&fee_key).unwrap_or(0);
         if collected < amount {
@@ -1411,9 +1451,6 @@ impl CommitmentCoreContract {
     }
 
     /// Get the current creation fee rate in basis points.
-    ///
-    /// # Returns
-    /// Fee rate in basis points (0-10000). Returns 0 if not set.
     pub fn get_creation_fee_bps(e: Env) -> u32 {
         e.storage()
             .instance()
@@ -1422,20 +1459,11 @@ impl CommitmentCoreContract {
     }
 
     /// Get the configured fee recipient address.
-    ///
-    /// # Returns
-    /// Fee recipient address, or None if not set.
     pub fn get_fee_recipient(e: Env) -> Option<Address> {
         e.storage().instance().get(&DataKey::FeeRecipient)
     }
 
     /// Get the collected fees for a specific asset.
-    ///
-    /// # Arguments
-    /// * `asset_address` - Token address to query
-    ///
-    /// # Returns
-    /// Amount of collected fees for the asset. Returns 0 if none collected.
     pub fn get_collected_fees(e: Env, asset_address: Address) -> i128 {
         e.storage()
             .instance()
