@@ -73,13 +73,52 @@ pub enum DataKey {
     AttestationCounter(String),
     /// Reentrancy guard
     ReentrancyGuard,
-    /// Global analytics: total attestations recorded
+    /// Global analytics: total attestations recorded across all commitments
+    /// 
+    /// Tracks the cumulative count of all attestations recorded in the protocol.
+    /// This counter is incremented for every successful attestation operation
+    /// regardless of attestation type or compliance status.
+    /// 
+    /// Type: u64 counter
+    /// Storage: Instance storage
+    /// Default: 0 (initialized during contract deployment or migration)
+    /// Security: Public read, atomic increments during attestation operations
     TotalAttestations,
     /// Global analytics: total violation-type or non-compliant attestations
+    /// 
+    /// Tracks the cumulative count of violation attestations and non-compliant
+    /// attestations recorded across all commitments. This includes:
+    /// - Explicit violation-type attestations
+    /// - Non-compliant attestations of any type
+    /// 
+    /// Type: u64 counter
+    /// Storage: Instance storage
+    /// Default: 0 (initialized during contract deployment or migration)
+    /// Security: Public read, atomic increments during attestation operations
     TotalViolations,
     /// Global analytics: total fees generated across all commitments
+    /// 
+    /// Tracks the cumulative total of fees generated from fee_generation
+    /// attestations across all commitments. Only updated when fee_amount
+    /// is present in attestation data.
+    /// 
+    /// Type: i128 accumulator
+    /// Storage: Instance storage
+    /// Default: 0 (initialized during contract deployment or migration)
+    /// Security: Public read, atomic accumulation with overflow protection
+    /// Currency: Native token units (same as fee amounts)
     TotalFees,
-    /// Per-verifier analytics: attestation count by verifier
+    /// Per-verifier analytics: attestation count by verifier address
+    /// 
+    /// Tracks the total number of attestations recorded by each specific
+    /// verifier address. Enables per-verifier performance monitoring and
+    /// activity tracking across the protocol.
+    /// 
+    /// Type: u64 counter per verifier address
+    /// Storage: Instance storage with Address key
+    /// Default: 0 (implicit, no storage entry means 0 attestations)
+    /// Security: Public read, atomic increments during attestation operations
+    /// Privacy: Only aggregate counts, no attestation details exposed
     VerifierAttestationCount(Address),
     /// Fee collection: protocol treasury for withdrawals
     FeeRecipient,
@@ -1000,17 +1039,93 @@ impl AttestationEngineContract {
             .unwrap_or_else(|| Vec::new(&e))
     }
 
-    /// Get a page of attestations for a commitment (ordered by timestamp, oldest first).
-    /// Use this for large lists to stay within Soroban limits.
+    /// Get a paginated list of attestations for a commitment (ordered by timestamp, oldest first).
+    ///
+    /// # Summary
+    /// Retrieves a page of attestations for a specific commitment using pagination
+    /// to handle large datasets efficiently and stay within Soroban transaction limits.
+    /// This function is essential for frontend applications and analytics tools
+    /// that need to display attestation data in manageable chunks.
     ///
     /// # Arguments
-    /// * `commitment_id` - The commitment to list attestations for
-    /// * `offset` - Index to start from (0-based)
-    /// * `limit` - Max number of attestations to return (capped at MAX_PAGE_SIZE)
+    /// * `e` - The environment context (provided by Soroban runtime)
+    /// * `commitment_id` - The unique identifier of commitment to query
+    /// * `offset` - Index to start from (0-based). Use 0 for first page
+    /// * `limit` - Maximum number of attestations to return (capped at MAX_PAGE_SIZE)
     ///
     /// # Returns
-    /// * `attestations` - Slice of attestations for this page
-    /// * `next_offset` - Offset for the next page; 0 if no more pages
+    /// Returns an `AttestationsPage` struct containing:
+    /// - `attestations` - Vector of attestation records for this page
+    /// - `next_offset` - Offset for next page; 0 if no more pages available
+    ///
+    /// # Security Properties
+    /// - **Read-only operation**: Does not modify contract state
+    /// - **No authentication required**: Publicly accessible commitment data
+    /// - **Privacy consideration**: Exposes all attestation details including compliance status
+    ///
+    /// # Trust Boundaries
+    /// - Caller: Any address (public function)
+    /// - Storage Reads:
+    ///   - Local: Attestations(commitment_id) - Full attestation vector
+    /// - Storage Writes: None
+    ///
+    /// # Error Handling
+    /// - Returns empty page if offset exceeds total attestations
+    /// - Returns empty page if limit is 0
+    /// - Returns empty page if commitment has no attestations
+    /// - Caps limit at MAX_PAGE_SIZE to prevent gas exhaustion
+    /// - No panic conditions - always returns valid AttestationsPage
+    ///
+    /// # Gas Considerations
+    /// - Single persistent storage read (loads entire attestation vector)
+    /// - Vector slicing operations (O(limit) complexity)
+    /// - Memory usage proportional to limit size
+    /// - Recommended: Use reasonable page sizes (10-100 attestations)
+    ///
+    /// # Pagination Strategy
+    /// - **Sequential pagination**: Use returned next_offset for subsequent pages
+    /// - **Termination**: next_offset = 0 indicates last page reached
+    /// - **Consistency**: New attestations may appear between pages
+    /// - **Efficiency**: Avoids loading entire dataset in single transaction
+    ///
+    /// # Examples
+    /// ```rust
+    /// // Get first page of 50 attestations
+    /// let page1 = AttestationEngineContract::get_attestations_page(
+    ///     env, 
+    ///     "commitment_123".into(), 
+    ///     0, 
+    ///     50
+    /// );
+    /// 
+    /// // Get second page using next_offset
+    /// if page1.next_offset > 0 {
+    ///     let page2 = AttestationEngineContract::get_attestations_page(
+    ///         env, 
+    ///         "commitment_123".into(), 
+    ///         page1.next_offset, 
+    ///         50
+    ///     );
+    /// }
+    /// ```
+    ///
+    /// # Use Cases
+    /// - **Frontend pagination**: Display attestations in manageable chunks
+    /// - **Analytics dashboards**: Process large datasets incrementally
+    /// - **Data exports**: Stream attestations for external analysis
+    /// - **Mobile applications**: Reduce payload sizes for better performance
+    ///
+    /// # Related Functions
+    /// - `get_attestations` - Retrieve all attestations (use for small datasets)
+    /// - `get_attestation_count` - Get total count before pagination
+    /// - `get_verifier_statistics` - Per-verifier attestation analytics
+    ///
+    /// # Storage Details
+    /// - Storage Key: DataKey::Attestations(commitment_id)
+    /// - Storage Type: Persistent storage
+    /// - Value Type: Vec<Attestation>
+    /// - Ordering: Chronological (oldest attestations first)
+    /// - Pagination: Zero-based indexing with configurable page sizes
     pub fn get_attestations_page(
         e: Env,
         commitment_id: String,
@@ -1049,7 +1164,74 @@ impl AttestationEngineContract {
         }
     }
 
-    /// Get attestation count for a commitment
+    /// Get attestation count for a specific commitment.
+    ///
+    /// # Summary
+    /// Retrieves the total number of attestations recorded for a specific commitment ID.
+    /// This function provides per-commitment activity tracking and analytics data.
+    ///
+    /// # Arguments
+    /// * `e` - The environment context (provided by Soroban runtime)
+    /// * `commitment_id` - The unique identifier of the commitment to query
+    ///
+    /// # Returns
+    /// Returns a u64 representing the total count of attestations recorded
+    /// for the specified commitment ID.
+    ///
+    /// # Security Properties
+    /// - **Read-only operation**: Does not modify contract state
+    /// - **No authentication required**: Publicly accessible commitment data
+    /// - **Privacy consideration**: Only shows aggregate count, not attestation details
+    ///
+    /// # Trust Boundaries
+    /// - Caller: Any address (public function)
+    /// - Storage Reads:
+    ///   - Local: AttestationCounter(commitment_id) - Per-commitment counter
+    /// - Storage Writes: None
+    ///
+    /// # Error Handling
+    /// - Returns 0 if commitment has no attestations recorded
+    /// - Returns 0 if commitment_id does not exist in storage
+    /// - Returns 0 if commitment counter was never initialized
+    /// - No panic conditions - always returns a valid u64 value
+    ///
+    /// # Gas Considerations
+    /// - Single persistent storage read
+    /// - Minimal computation overhead
+    /// - O(1) complexity - direct storage lookup
+    ///
+    /// # Data Accuracy
+    /// - Counter is incremented atomically during each attestation operation
+    /// - Includes all attestation types (health_check, violation, fee_generation, drawdown)
+    /// - Updated by both single and batch attestation operations
+    /// - Persistent storage ensures data survives contract upgrades
+    ///
+    /// # Examples
+    /// ```rust
+    /// let attestation_count = AttestationEngineContract::get_attestation_count(
+    ///     env, 
+    ///     "commitment_123".into()
+    /// );
+    /// ```
+    ///
+    /// # Use Cases
+    /// - **Commitment monitoring**: Track activity levels for specific commitments
+    /// - **Compliance reporting**: Verify required attestation frequency
+    /// - **Risk assessment**: Analyze attestation patterns for risk modeling
+    /// - **Performance analytics**: Correlate attestation frequency with outcomes
+    ///
+    /// # Related Functions
+    /// - `get_attestations` - Retrieve full attestation details for a commitment
+    /// - `get_attestations_page` - Paginated attestation retrieval for large datasets
+    /// - `get_verifier_statistics` - Per-verifier attestation counts
+    /// - `get_protocol_statistics` - Global protocol-wide analytics
+    ///
+    /// # Storage Details
+    /// - Storage Key: DataKey::AttestationCounter(commitment_id)
+    /// - Storage Type: Persistent storage
+    /// - Value Type: u64 (counter)
+    /// - Initialization: Counter starts at 0, incremented per attestation
+    /// - Persistence: Survives contract upgrades and migrations
     pub fn get_attestation_count(e: Env, commitment_id: String) -> u64 {
         let key = DataKey::AttestationCounter(commitment_id);
         e.storage().persistent().get(&key).unwrap_or(0)
@@ -1470,11 +1652,57 @@ impl AttestationEngineContract {
 
     /// Get high-level protocol analytics combining commitment and attestation data.
     ///
-    /// Returns:
-    /// - total_commitments (from core contract)
-    /// - total_attestations
-    /// - total_violations
-    /// - total_fees_generated
+    /// # Summary
+    /// Retrieves comprehensive protocol statistics by combining data from this attestation engine
+    /// and the linked commitment_core contract. Provides a complete overview of protocol
+    /// activity and performance metrics.
+    ///
+    /// # Arguments
+    /// * `e` - The environment context (provided by Soroban runtime)
+    ///
+    /// # Returns
+    /// Returns a 4-tuple containing:
+    /// - `total_commitments` (u64): Total number of commitments created in the protocol
+    /// - `total_attestations` (u64): Total attestations recorded across all commitments
+    /// - `total_violations` (u64): Total violations or non-compliant attestations
+    /// - `total_fees_generated` (i128): Total fees generated across all attestations
+    ///
+    /// # Security Properties
+    /// - **Read-only operation**: Does not modify contract state
+    /// - **No authentication required**: Publicly accessible data
+    /// - **Cross-contract call**: Retrieves data from commitment_core contract
+    ///
+    /// # Trust Boundaries
+    /// - Caller: Any address (public function)
+    /// - Storage Reads: 
+    ///   - Local: TotalAttestations, TotalViolations, TotalFees, CoreContract
+    ///   - External: Calls commitment_core.get_total_commitments()
+    /// - Storage Writes: None
+    ///
+    /// # Error Handling
+    /// - Returns default values (0) if counters are not initialized
+    /// - May fail if commitment_core contract is not set or unreachable
+    ///
+    /// # Gas Considerations
+    /// - One cross-contract call to commitment_core
+    /// - Four instance storage reads
+    /// - Minimal computation overhead
+    ///
+    /// # Examples
+    /// ```rust
+    /// let (commitments, attestations, violations, fees) = 
+    ///     AttestationEngineContract::get_protocol_statistics(env);
+    /// ```
+    ///
+    /// # Events
+    /// None emitted (read-only function)
+    ///
+    /// # See Also
+    /// - `get_verifier_statistics` - Individual verifier analytics
+    /// - `get_attestation_count` - Per-commitment attestation counts
+    /// - DataKey::TotalAttestations - Raw counter storage
+    /// - DataKey::TotalViolations - Violation counter storage
+    /// - DataKey::TotalFees - Fee counter storage
     pub fn get_protocol_statistics(e: Env) -> (u64, u64, u64, i128) {
         // Read commitment_core statistics
         let commitment_core: Address = e.storage().instance().get(&DataKey::CoreContract).unwrap();
@@ -1510,7 +1738,68 @@ impl AttestationEngineContract {
 
     /// Get analytics for a given verifier (attestation recorder).
     ///
-    /// Returns the total number of attestations recorded by this verifier.
+    /// # Summary
+    /// Retrieves the total number of attestations recorded by a specific verifier address.
+    /// This function provides per-verifier performance metrics and activity tracking.
+    ///
+    /// # Arguments
+    /// * `e` - The environment context (provided by Soroban runtime)
+    /// * `verifier` - The address of the verifier to query statistics for
+    ///
+    /// # Returns
+    /// Returns a u64 representing the total count of attestations recorded
+    /// by the specified verifier address.
+    ///
+    /// # Security Properties
+    /// - **Read-only operation**: Does not modify contract state
+    /// - **No authentication required**: Publicly accessible verifier performance data
+    /// - **Privacy consideration**: Only shows aggregate counts, not attestation details
+    ///
+    /// # Trust Boundaries
+    /// - Caller: Any address (public function)
+    /// - Storage Reads:
+    ///   - Local: VerifierAttestationCount(verifier) - Per-verifier counter
+    /// - Storage Writes: None
+    ///
+    /// # Error Handling
+    /// - Returns 0 if verifier has not recorded any attestations
+    /// - Returns 0 if verifier address is not found in counter storage
+    /// - No panic conditions - always returns a valid u64 value
+    ///
+    /// # Gas Considerations
+    /// - Single instance storage read
+    /// - Minimal computation overhead
+    /// - O(1) complexity - direct storage lookup
+    ///
+    /// # Data Accuracy
+    /// - Counter is incremented atomically during each attestation
+    /// - Includes all attestation types (health_check, violation, fee_generation, drawdown)
+    /// - Updated by both single and batch attestation operations
+    ///
+    /// # Examples
+    /// ```rust
+    /// let verifier_count = AttestationEngineContract::get_verifier_statistics(
+    ///     env, 
+    ///     verifier_address
+    /// );
+    /// ```
+    ///
+    /// # Use Cases
+    /// - **Verifier performance tracking**: Monitor most/least active verifiers
+    /// - **Protocol analytics**: Understand attestation distribution across verifiers
+    /// - **Reputation systems**: Build verifier trust scores based on activity
+    /// - **Incentive programs**: Reward verifiers based on contribution volume
+    ///
+    /// # Related Functions
+    /// - `get_protocol_statistics` - Global protocol-wide analytics
+    /// - `get_attestation_count` - Per-commitment attestation counts
+    /// - `is_verifier` - Check if address is authorized verifier
+    ///
+    /// # Storage Details
+    /// - Storage Key: DataKey::VerifierAttestationCount(verifier)
+    /// - Storage Type: Instance storage
+    /// - Value Type: u64 (counter)
+    /// - Initialization: Counter starts at 0, incremented per attestation
     pub fn get_verifier_statistics(e: Env, verifier: Address) -> u64 {
         let key = DataKey::VerifierAttestationCount(verifier);
         e.storage().instance().get(&key).unwrap_or(0)

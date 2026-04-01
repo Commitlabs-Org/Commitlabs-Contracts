@@ -89,6 +89,360 @@ fn setup_test_pools(_env: &Env, client: &AllocationStrategiesContractClient, adm
 }
 
 // ============================================================================
+// COMPREHENSIVE REBALANCE TESTS - Issue #236
+// Focus: Owner Match, Strategy Persistence, Summary Correctness
+// ============================================================================
+
+#[test]
+fn test_rebalance_owner_match_verification() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let owner = Address::generate(&env);
+    let non_owner = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Owner creates allocation
+    let initial_summary = client.allocate(&owner, &commitment_id, &amount, &Strategy::Balanced);
+    assert_eq!(initial_summary.total_allocated, amount);
+
+    // Owner can rebalance - should succeed
+    let rebalanced_by_owner = client.rebalance(&owner, &commitment_id);
+    assert_eq!(rebalanced_by_owner.commitment_id, commitment_id);
+    assert_eq!(rebalanced_by_owner.strategy, Strategy::Balanced);
+
+    // Non-owner cannot rebalance - should fail
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.rebalance(&non_owner, &commitment_id);
+    }));
+    assert!(result.is_err()); // Should panic with Unauthorized error
+}
+
+#[test]
+fn test_rebalance_strategy_persistence_safe_strategy() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Create allocation with Safe strategy
+    let initial_summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+    assert_eq!(initial_summary.strategy, Strategy::Safe);
+
+    // Verify initial allocation uses only low-risk pools
+    for allocation in initial_summary.allocations.iter() {
+        let pool = client.get_pool(&allocation.pool_id);
+        assert_eq!(pool.risk_level, RiskLevel::Low);
+    }
+
+    // Rebalance should maintain Safe strategy
+    let rebalanced_summary = client.rebalance(&user, &commitment_id);
+    assert_eq!(rebalanced_summary.strategy, Strategy::Safe);
+    assert_eq!(rebalanced_summary.commitment_id, commitment_id);
+
+    // Verify rebalanced allocation still uses only low-risk pools
+    for allocation in rebalanced_summary.allocations.iter() {
+        let pool = client.get_pool(&allocation.pool_id);
+        assert_eq!(pool.risk_level, RiskLevel::Low);
+    }
+
+    // Total allocated should remain the same
+    assert_eq!(rebalanced_summary.total_allocated, amount);
+}
+
+#[test]
+fn test_rebalance_strategy_persistence_aggressive_strategy() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Create allocation with Aggressive strategy
+    let initial_summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Aggressive);
+    assert_eq!(initial_summary.strategy, Strategy::Aggressive);
+
+    // Verify initial allocation uses only medium/high-risk pools
+    for allocation in initial_summary.allocations.iter() {
+        let pool = client.get_pool(&allocation.pool_id);
+        assert_ne!(pool.risk_level, RiskLevel::Low);
+    }
+
+    // Rebalance should maintain Aggressive strategy
+    let rebalanced_summary = client.rebalance(&user, &commitment_id);
+    assert_eq!(rebalanced_summary.strategy, Strategy::Aggressive);
+    assert_eq!(rebalanced_summary.commitment_id, commitment_id);
+
+    // Verify rebalanced allocation still uses only medium/high-risk pools
+    for allocation in rebalanced_summary.allocations.iter() {
+        let pool = client.get_pool(&allocation.pool_id);
+        assert_ne!(pool.risk_level, RiskLevel::Low);
+    }
+
+    // Total allocated should remain the same
+    assert_eq!(rebalanced_summary.total_allocated, amount);
+}
+
+#[test]
+fn test_rebalance_summary_correctness() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+    let strategy = Strategy::Balanced;
+
+    // Create initial allocation
+    let initial_summary = client.allocate(&user, &commitment_id, &amount, &strategy);
+    
+    // Verify initial summary correctness
+    assert_eq!(initial_summary.commitment_id, commitment_id);
+    assert_eq!(initial_summary.strategy, strategy);
+    assert_eq!(initial_summary.total_allocated, amount);
+    
+    // Verify allocation amounts sum to total
+    let mut sum_from_allocations = 0i128;
+    for allocation in initial_summary.allocations.iter() {
+        sum_from_allocations += allocation.amount;
+        assert_eq!(allocation.commitment_id, commitment_id);
+    }
+    assert_eq!(sum_from_allocations, amount);
+
+    // Rebalance
+    let rebalanced_summary = client.rebalance(&user, &commitment_id);
+
+    // Verify rebalanced summary correctness
+    assert_eq!(rebalanced_summary.commitment_id, commitment_id);
+    assert_eq!(rebalanced_summary.strategy, strategy);
+    assert_eq!(rebalanced_summary.total_allocated, amount);
+
+    // Verify rebalanced allocation amounts sum to total
+    let mut rebalanced_sum = 0i128;
+    for allocation in rebalanced_summary.allocations.iter() {
+        rebalanced_sum += allocation.amount;
+        assert_eq!(allocation.commitment_id, commitment_id);
+        assert!(allocation.amount > 0);
+        assert!(allocation.timestamp > 0);
+    }
+    assert_eq!(rebalanced_sum, amount);
+
+    // Verify storage is updated correctly
+    let stored_summary = client.get_allocation(&commitment_id);
+    assert_eq!(stored_summary.commitment_id, commitment_id);
+    assert_eq!(stored_summary.strategy, strategy);
+    assert_eq!(stored_summary.total_allocated, amount);
+    assert_eq!(stored_summary.allocations.len(), rebalanced_summary.allocations.len());
+}
+
+#[test]
+fn test_rebalance_with_pool_status_changes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Create initial allocation
+    let initial_summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Balanced);
+    let initial_pool_count = initial_summary.allocations.len();
+
+    // Deactivate some pools
+    client.update_pool_status(&admin, &0, &false); // Low risk pool
+    client.update_pool_status(&admin, &2, &false); // Medium risk pool
+
+    // Rebalance should adapt to active pools only
+    let rebalanced_summary = client.rebalance(&user, &commitment_id);
+    
+    // Strategy should be maintained
+    assert_eq!(rebalanced_summary.strategy, Strategy::Balanced);
+    assert_eq!(rebalanced_summary.commitment_id, commitment_id);
+    
+    // Total should remain the same
+    assert_eq!(rebalanced_summary.total_allocated, amount);
+    
+    // Allocations should only use active pools
+    for allocation in rebalanced_summary.allocations.iter() {
+        let pool = client.get_pool(&allocation.pool_id);
+        assert!(pool.active);
+    }
+
+    // Verify summary correctness after pool changes
+    let mut sum = 0i128;
+    for allocation in rebalanced_summary.allocations.iter() {
+        sum += allocation.amount;
+    }
+    assert_eq!(sum, amount);
+}
+
+#[test]
+fn test_rebalance_multiple_commitments_isolation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let commitment1 = 1u64;
+    let commitment2 = 2u64;
+    let amount = 50_000_000i128;
+
+    // Create two separate allocations with different strategies
+    let summary1 = client.allocate(&user1, &commitment1, &amount, &Strategy::Safe);
+    let summary2 = client.allocate(&user2, &commitment2, &amount, &Strategy::Aggressive);
+
+    // Verify initial state
+    assert_eq!(summary1.strategy, Strategy::Safe);
+    assert_eq!(summary2.strategy, Strategy::Aggressive);
+
+    // Rebalance commitment1 - should not affect commitment2
+    let rebalanced1 = client.rebalance(&user1, &commitment1);
+    assert_eq!(rebalanced1.strategy, Strategy::Safe);
+    assert_eq!(rebalanced1.commitment_id, commitment1);
+    assert_eq!(rebalanced1.total_allocated, amount);
+
+    // Verify commitment2 is unchanged
+    let unchanged2 = client.get_allocation(&commitment2);
+    assert_eq!(unchanged2.strategy, Strategy::Aggressive);
+    assert_eq!(unchanged2.commitment_id, commitment2);
+    assert_eq!(unchanged2.total_allocated, amount);
+    assert_eq!(unchanged2.allocations.len(), summary2.allocations.len());
+
+    // Rebalance commitment2 - should not affect commitment1
+    let rebalanced2 = client.rebalance(&user2, &commitment2);
+    assert_eq!(rebalanced2.strategy, Strategy::Aggressive);
+    assert_eq!(rebalanced2.commitment_id, commitment2);
+    assert_eq!(rebalanced2.total_allocated, amount);
+
+    // Verify commitment1 is still unchanged
+    let final1 = client.get_allocation(&commitment1);
+    assert_eq!(final1.strategy, Strategy::Safe);
+    assert_eq!(final1.total_allocated, amount);
+}
+
+#[test]
+fn test_rebalance_summary_timestamp_updates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Set initial timestamp
+    env.ledger().set_timestamp(1000);
+
+    let (admin, _, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Create initial allocation
+    let initial_summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Balanced);
+    let initial_timestamp = initial_summary.allocations.get(0).unwrap().timestamp;
+    assert_eq!(initial_timestamp, 1000);
+
+    // Advance time
+    env.ledger().set_timestamp(2000);
+
+    // Rebalance should update timestamps
+    let rebalanced_summary = client.rebalance(&user, &commitment_id);
+    
+    // All allocations should have new timestamps
+    for allocation in rebalanced_summary.allocations.iter() {
+        assert_eq!(allocation.timestamp, 2000);
+        assert_ne!(allocation.timestamp, initial_timestamp);
+    }
+
+    // Summary correctness should be maintained
+    assert_eq!(rebalanced_summary.total_allocated, amount);
+    assert_eq!(rebalanced_summary.strategy, Strategy::Balanced);
+}
+
+#[test]
+fn test_rebalance_edge_case_zero_allocation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    
+    // Register only pools that will be deactivated
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Medium, &1000, &800_000_000);
+    
+    // Deactivate all pools
+    client.update_pool_status(&admin, &0, &false);
+    client.update_pool_status(&admin, &1, &false);
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Initial allocation should fail due to no active pools
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.allocate(&user, &commitment_id, &amount, &Strategy::Balanced);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_rebalance_with_capacity_constraints() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+    
+    // Register pools with limited capacity
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &50_000_000); // Limited capacity
+    client.register_pool(&admin, &1, &RiskLevel::Low, &600, &1_000_000_000); // Large capacity
+
+    let user = Address::generate(&env);
+    let commitment_id = 1u64;
+    let amount = 100_000_000i128;
+
+    // Create allocation that hits capacity constraints
+    let initial_summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+    assert_eq!(initial_summary.total_allocated, amount);
+
+    // Fill up pool 0 to capacity
+    let other_user = Address::generate(&env);
+    client.allocate(&other_user, &2, &50_000_000, &Strategy::Safe);
+
+    // Rebalance should handle capacity constraints correctly
+    let rebalanced_summary = client.rebalance(&user, &commitment_id);
+    
+    // Summary should remain correct
+    assert_eq!(rebalanced_summary.total_allocated, amount);
+    assert_eq!(rebalanced_summary.strategy, Strategy::Safe);
+    
+    // Verify allocations respect capacity
+    let pool0 = client.get_pool(&0);
+    let pool1 = client.get_pool(&1);
+    assert!(pool0.total_liquidity <= pool0.max_capacity);
+    assert!(pool1.total_liquidity <= pool1.max_capacity);
+}
+
+// ============================================================================
 // BASIC FUNCTIONALITY TESTS
 // ============================================================================
 
