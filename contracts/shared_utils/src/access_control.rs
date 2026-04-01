@@ -8,7 +8,7 @@ pub struct AccessControl;
 
 impl AccessControl {
     /// Require that the caller is the admin
-    ///
+    /// 
     /// # Arguments
     /// * `e` - The environment
     /// * `caller` - The caller address
@@ -102,7 +102,7 @@ impl AccessControl {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::super::storage::Storage;
     use super::*;

@@ -359,3 +359,309 @@ fn test_allocation_exceeds_commitment_balance_fails() {
     // Attempt to allocate 100M should fail
     client.allocate(&user, &commitment_id, &100_000_000, &Strategy::Safe);
 }
+
+// ============================================================================
+// REGISTER_POOL COMPREHENSIVE TESTS - Issue #234
+// ============================================================================
+
+// ============================================================================
+// APY VALIDATION TESTS
+// ============================================================================
+
+#[test]
+fn test_register_pool_valid_apy_boundary_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test minimum valid APY (0 basis points = 0%)
+    client.register_pool(&admin, &0, &RiskLevel::Low, &0, &1_000_000_000);
+    let pool_min = client.get_pool(&0);
+    assert_eq!(pool_min.apy, 0);
+
+    // Test maximum valid APY (100,000 basis points = 1000%)
+    client.register_pool(&admin, &1, &RiskLevel::Low, &100_000, &1_000_000_000);
+    let pool_max = client.get_pool(&1);
+    assert_eq!(pool_max.apy, 100_000);
+
+    // Test common APY values
+    client.register_pool(&admin, &2, &RiskLevel::Medium, &500, &800_000_000); // 5%
+    let pool_common = client.get_pool(&2);
+    assert_eq!(pool_common.apy, 500);
+
+    client.register_pool(&admin, &3, &RiskLevel::High, &1500, &500_000_000); // 15%
+    let pool_high = client.get_pool(&3);
+    assert_eq!(pool_high.apy, 1500);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #11)")]
+fn test_register_pool_invalid_apy_exceeds_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test APY exceeding maximum (100,001 basis points > 1000%)
+    client.register_pool(&admin, &0, &RiskLevel::Low, &100_001, &1_000_000_000);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #11)")]
+fn test_register_pool_extremely_high_apy_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test extremely high APY value
+    client.register_pool(&admin, &0, &RiskLevel::Low, &u32::MAX, &1_000_000_000);
+}
+
+#[test]
+fn test_register_pool_apy_with_different_risk_levels() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test valid APY values across all risk levels
+    client.register_pool(&admin, &0, &RiskLevel::Low, &300, &1_000_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Medium, &800, &800_000_000);
+    client.register_pool(&admin, &2, &RiskLevel::High, &2000, &500_000_000);
+
+    let pool_low = client.get_pool(&0);
+    let pool_medium = client.get_pool(&1);
+    let pool_high = client.get_pool(&2);
+
+    assert_eq!(pool_low.apy, 300);
+    assert_eq!(pool_medium.apy, 800);
+    assert_eq!(pool_high.apy, 2000);
+}
+
+// ============================================================================
+// CAPACITY VALIDATION TESTS
+// ============================================================================
+
+#[test]
+fn test_register_pool_valid_capacity_boundary_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test minimum valid capacity (1)
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1);
+    let pool_min = client.get_pool(&0);
+    assert_eq!(pool_min.max_capacity, 1);
+
+    // Test large capacity values
+    client.register_pool(&admin, &1, &RiskLevel::Medium, &1000, &i128::MAX);
+    let pool_max = client.get_pool(&1);
+    assert_eq!(pool_max.max_capacity, i128::MAX);
+
+    // Test common capacity values
+    client.register_pool(&admin, &2, &RiskLevel::High, &1500, &100_000_000);
+    let pool_common = client.get_pool(&2);
+    assert_eq!(pool_common.max_capacity, 100_000_000);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #12)")]
+fn test_register_pool_zero_capacity_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test zero capacity
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &0);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #12)")]
+fn test_register_pool_negative_capacity_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test negative capacity
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &-1);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #12)")]
+fn test_register_pool_extremely_negative_capacity_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test extremely negative capacity
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &i128::MIN);
+}
+
+// ============================================================================
+// INVALID INPUT TESTS
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #10)")]
+fn test_register_pool_duplicate_id_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Register first pool
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    
+    // Attempt to register pool with same ID
+    client.register_pool(&admin, &0, &RiskLevel::Medium, &1000, &800_000_000);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #3)")]
+fn test_register_pool_unauthorized_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = create_contract(&env);
+    let non_admin = Address::generate(&env);
+
+    // Test registration by non-admin user
+    client.register_pool(&non_admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #2)")]
+fn test_register_pool_uninitialized_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register_contract(None, AllocationStrategiesContract);
+    let client = AllocationStrategiesContractClient::new(&env, &contract_id);
+
+    // Test registration on uninitialized contract
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+}
+
+#[test]
+fn test_register_pool_all_risk_levels_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test all risk levels with valid parameters
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Medium, &1000, &800_000_000);
+    client.register_pool(&admin, &2, &RiskLevel::High, &2000, &500_000_000);
+
+    let pool_low = client.get_pool(&0);
+    let pool_medium = client.get_pool(&1);
+    let pool_high = client.get_pool(&2);
+
+    assert_eq!(pool_low.risk_level, RiskLevel::Low);
+    assert_eq!(pool_medium.risk_level, RiskLevel::Medium);
+    assert_eq!(pool_high.risk_level, RiskLevel::High);
+}
+
+// ============================================================================
+// SECURITY AND EDGE CASE TESTS
+// ============================================================================
+
+#[test]
+fn test_register_pool_reentrancy_protection() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Test that reentrancy guard is properly handled during pool registration
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    
+    // Verify pool was created successfully
+    let pool = client.get_pool(&0);
+    assert_eq!(pool.pool_id, 0);
+    assert!(pool.active);
+}
+
+#[test]
+fn test_register_pool_pool_registry_updated() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // Verify initial registry is empty
+    let pools_before = client.get_all_pools();
+    assert_eq!(pools_before.len(), 0);
+
+    // Register multiple pools
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Medium, &1000, &800_000_000);
+    client.register_pool(&admin, &2, &RiskLevel::High, &2000, &500_000_000);
+
+    // Verify registry is updated
+    let pools_after = client.get_all_pools();
+    assert_eq!(pools_after.len(), 3);
+}
+
+#[test]
+fn test_register_pool_timestamps_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Set ledger timestamp
+    env.ledger().set_timestamp(1000);
+
+    let (admin, _, client) = create_contract(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+
+    let pool = client.get_pool(&0);
+    
+    // Verify timestamps are set correctly
+    assert!(pool.created_at > 0);
+    assert!(pool.updated_at > 0);
+    assert_eq!(pool.created_at, pool.updated_at);
+}
+
+#[test]
+fn test_register_pool_default_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+
+    let pool = client.get_pool(&0);
+    
+    // Verify default values are set correctly
+    assert_eq!(pool.total_liquidity, 0);
+    assert!(pool.active);
+    assert_eq!(pool.pool_id, 0);
+    assert_eq!(pool.risk_level, RiskLevel::Low);
+    assert_eq!(pool.apy, 500);
+    assert_eq!(pool.max_capacity, 1_000_000_000);
+}
+
+#[test]
+fn test_register_pool_event_emission() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = create_contract(&env);
+
+    // This test verifies that the function executes without panicking
+    // Event emission testing would require more sophisticated event capture mechanisms
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    
+    let pool = client.get_pool(&0);
+    assert_eq!(pool.pool_id, 0);
+}

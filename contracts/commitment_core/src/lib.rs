@@ -11,6 +11,9 @@
 //! The end-to-end review for the `commitment_core <-> commitment_nft <-> attestation_engine`
 //! call graph lives in:
 //! [`docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph`](../../../docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph)
+//!
+//! Formal verification planning placeholder:
+//! [`docs/COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md`](../../../docs/COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md)
 
 use shared_utils::{
     emit_error_event, fees, EmergencyControl, Pausable, RateLimiter, SafeMath, TimeUtils,
@@ -20,6 +23,8 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, symbol_short, token, Address, Env,
     IntoVal, String, Symbol, Vec,
 };
+
+pub mod fuzzing;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -52,6 +57,8 @@ pub enum CommitmentError {
     FeeRecipientNotSet = 22,
     /// Insufficient collected fees to withdraw
     InsufficientFees = 23,
+    /// Arithmetic operation overflowed or underflowed
+    ArithmeticOverflow = 24,
 }
 
 impl CommitmentError {
@@ -74,12 +81,15 @@ impl CommitmentError {
             CommitmentError::NotInitialized => "Contract not initialized",
             CommitmentError::NotExpired => "Commitment has not expired yet",
             CommitmentError::ValueUpdateViolation => "Commitment has value update violation",
-            CommitmentError::NotAuthorizedUpdater => "Commitment has not auth updater",
+            CommitmentError::NotAuthorizedUpdater => "Caller is not an authorized value updater",
             CommitmentError::ZeroAddress => "Zero address is not allowed",
-            CommitmentError::ExpirationOverflow => "Duration would cause expiration timestamp overflow",
+            CommitmentError::ExpirationOverflow => {
+                "Duration would cause expiration timestamp overflow"
+            }
             CommitmentError::InvalidFeeBps => "Invalid fee basis points: must be 0-10000",
             CommitmentError::FeeRecipientNotSet => "Fee recipient not set; cannot withdraw",
             CommitmentError::InsufficientFees => "Insufficient collected fees to withdraw",
+            CommitmentError::ArithmeticOverflow => "Arithmetic overflow or underflow",
         }
     }
 }
@@ -121,7 +131,7 @@ pub struct CommitmentCreatedEvent {
 pub struct CommitmentRules {
     pub duration_days: u32,
     pub max_loss_percent: u32,
-    pub commitment_type: String, 
+    pub commitment_type: String,
     pub early_exit_penalty: u32,
     pub min_fee_threshold: i128,
     pub grace_period_days: u32,
@@ -139,7 +149,7 @@ pub struct Commitment {
     pub created_at: u64,
     pub expires_at: u64,
     pub current_value: i128,
-    pub status: String, 
+    pub status: String,
 }
 
 #[contracttype]
@@ -154,7 +164,10 @@ pub enum DataKey {
     ReentrancyGuard,
     TotalValueLocked,
     AuthorizedAllocator(Address),
-    AuthorizedUpdaters,
+    AuthorizedUpdater(Address),
+    AuthorizedGuardian(Address),
+    AuthorizedTreasurer(Address),
+    AuthorizedOperator(Address),
     /// All commitment IDs for time-range queries (analytics). Appended on create.
     AllCommitmentIds,
     /// Fee recipient (protocol treasury) for fee withdrawals
@@ -168,7 +181,10 @@ pub enum DataKey {
 // --- Internal Helpers ---
 
 fn is_zero_address(e: &Env, address: &Address) -> bool {
-    let zero_str = String::from_str(e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero_str = String::from_str(
+        e,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
     let zero_addr = Address::from_string(&zero_str);
     address == &zero_addr
 }
@@ -178,7 +194,11 @@ fn check_sufficient_balance(e: &Env, owner: &Address, asset_address: &Address, a
     let balance = token_client.balance(owner);
     if balance < amount {
         log!(e, "Insufficient balance: {} < {}", balance, amount);
-        fail(e, CommitmentError::InsufficientBalance, "check_sufficient_balance");
+        fail(
+            e,
+            CommitmentError::InsufficientBalance,
+            "check_sufficient_balance",
+        );
     }
 }
 
@@ -187,9 +207,7 @@ fn transfer_assets(e: &Env, from: &Address, to: &Address, asset_address: &Addres
     token_client.transfer(from, to, &amount);
 }
 
-/// Helper function to call NFT contract mint function. Passes current contract as caller for access control.
-/// Call the NFT contract mint function.
-/// Helper function to call NFT contract mint function
+/// Helper function to call NFT contract mint function.
 fn call_nft_mint(
     e: &Env,
     nft_contract: &Address,
@@ -218,57 +236,117 @@ fn call_nft_mint(
 }
 
 fn read_commitment(e: &Env, commitment_id: &String) -> Option<Commitment> {
-    e.storage().instance().get::<_, Commitment>(&DataKey::Commitment(commitment_id.clone()))
+    e.storage()
+        .instance()
+        .get::<_, Commitment>(&DataKey::Commitment(commitment_id.clone()))
 }
 
 fn set_commitment(e: &Env, commitment: &Commitment) {
-    e.storage().instance().set(&DataKey::Commitment(commitment.commitment_id.clone()), commitment);
+    e.storage().instance().set(
+        &DataKey::Commitment(commitment.commitment_id.clone()),
+        commitment,
+    );
 }
 
-fn has_commitment(e: &Env, commitment_id: &String) -> bool {
-    e.storage().instance().has(&DataKey::Commitment(commitment_id.clone()))
-}
+// fn has_commitment(e: &Env, commitment_id: &String) -> bool {
+//     e.storage().instance().has(&DataKey::Commitment(commitment_id.clone()))
+// }
 
 fn require_no_reentrancy(e: &Env) {
-    if e.storage().instance().get::<_, bool>(&DataKey::ReentrancyGuard).unwrap_or(false) {
-        fail(e, CommitmentError::ReentrancyDetected, "require_no_reentrancy");
+    if e.storage()
+        .instance()
+        .get::<_, bool>(&DataKey::ReentrancyGuard)
+        .unwrap_or(false)
+    {
+        fail(
+            e,
+            CommitmentError::ReentrancyDetected,
+            "require_no_reentrancy",
+        );
     }
 }
 
 fn set_reentrancy_guard(e: &Env, value: bool) {
-    e.storage().instance().set(&DataKey::ReentrancyGuard, &value);
+    e.storage()
+        .instance()
+        .set(&DataKey::ReentrancyGuard, &value);
 }
 
 fn require_admin(e: &Env, caller: &Address) {
     caller.require_auth();
-    let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin)
+    let admin = e
+        .storage()
+        .instance()
+        .get::<_, Address>(&DataKey::Admin)
         .unwrap_or_else(|| fail(e, CommitmentError::NotInitialized, "require_admin"));
     if *caller != admin {
         fail(e, CommitmentError::Unauthorized, "require_admin");
     }
 }
 
+/// Check whether `caller` is an authorized value updater or the admin.
+///
+/// # Trust boundary
+/// Only addresses explicitly added via `add_updater` (admin-only) may call
+/// `update_value`. The admin itself is always implicitly authorized so that
+/// initial bootstrapping does not require a self-grant.
+fn require_authorized_updater(e: &Env, caller: &Address) {
+    caller.require_auth();
+    // Admin is always authorized
+    if let Some(admin) = e.storage().instance().get::<_, Address>(&DataKey::Admin) {
+        if *caller == admin {
+            return;
+        }
+    }
+    let updaters: Vec<Address> = e
+        .storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
+        .unwrap_or(Vec::new(e));
+    if !updaters.contains(caller) {
+        fail(e, CommitmentError::NotAuthorizedUpdater, "require_authorized_updater");
+    }
+}
+
 fn add_authorized_updater(e: &Env, updater: &Address) {
-    let mut updaters: Vec<Address> = e.storage().instance().get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters).unwrap_or(Vec::new(e));
+    let mut updaters: Vec<Address> = e
+        .storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
+        .unwrap_or(Vec::new(e));
     if !updaters.contains(updater) {
         updaters.push_back(updater.clone());
-        e.storage().instance().set(&DataKey::AuthorizedUpdaters, &updaters);
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedUpdaters, &updaters);
     }
 }
 
 fn remove_authorized_updater(e: &Env, updater: &Address) {
-    let mut updaters: Vec<Address> = e.storage().instance().get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters).unwrap_or(Vec::new(e));
+    let mut updaters: Vec<Address> = e
+        .storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
+        .unwrap_or(Vec::new(e));
     if let Some(idx) = updaters.iter().position(|a| a == *updater) {
         updaters.remove(idx as u32);
-        e.storage().instance().set(&DataKey::AuthorizedUpdaters, &updaters);
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedUpdaters, &updaters);
     }
 }
 
 fn remove_from_owner_commitments(e: &Env, owner: &Address, commitment_id: &String) {
-    let mut commitments: Vec<String> = e.storage().instance().get::<_, Vec<String>>(&DataKey::OwnerCommitments(owner.clone())).unwrap_or(Vec::new(e));
+    let mut commitments: Vec<String> = e
+        .storage()
+        .instance()
+        .get::<_, Vec<String>>(&DataKey::OwnerCommitments(owner.clone()))
+        .unwrap_or(Vec::new(e));
     if let Some(idx) = commitments.iter().position(|id| id == *commitment_id) {
         commitments.remove(idx as u32);
-        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &commitments);
+        e.storage()
+            .instance()
+            .set(&DataKey::OwnerCommitments(owner.clone()), &commitments);
     }
 }
 
@@ -307,30 +385,39 @@ impl CommitmentCoreContract {
             if rules.early_exit_penalty < 10 {
                 panic!("Balanced type: early_exit_penalty must be >= 10");
             }
-        } else if rules.commitment_type == String::from_str(e, "aggressive") {
-            if rules.early_exit_penalty < 5 {
-                panic!("Aggressive type: early_exit_penalty must be >= 5");
-            }
+        } else if rules.commitment_type == String::from_str(e, "aggressive")
+            && rules.early_exit_penalty < 5
+        {
+            panic!("Aggressive type: early_exit_penalty must be >= 5");
         }
     }
 
     fn generate_commitment_id(e: &Env, counter: u64) -> String {
         let mut buf = [0u8; 32];
-        buf[0] = b'c'; buf[1] = b'_';
+        buf[0] = b'c';
+        buf[1] = b'_';
         let mut n = counter;
         let mut i = 2;
-        if n == 0 { buf[i] = b'0'; i += 1; } else {
+        if n == 0 {
+            buf[i] = b'0';
+            i += 1;
+        } else {
             let mut digits = [0u8; 20];
             let mut count = 0;
-            while n > 0 { digits[count] = (n % 10) as u8 + b'0'; n /= 10; count += 1; }
-            for j in 0..count { buf[i] = digits[count - 1 - j]; i += 1; }
+            while n > 0 {
+                digits[count] = (n % 10) as u8 + b'0';
+                n /= 10;
+                count += 1;
+            }
+            for j in 0..count {
+                buf[i] = digits[count - 1 - j];
+                i += 1;
+            }
         }
         String::from_str(e, core::str::from_utf8(&buf[..i]).unwrap_or("c_0"))
     }
 
-    /// Initialize the core contract with its admin and linked NFT contract.
-    ///
-    /// The provided `nft_contract` becomes the downstream dependency used by
+    /// Initialize the core contract with its admin and linked NFT contract. The provided `nft_contract` becomes the downstream dependency used by
     /// `create_commitment`, `settle`, and `early_exit`.
     pub fn initialize(e: Env, admin: Address, nft_contract: Address) {
         if e.storage().instance().has(&DataKey::Admin) {
@@ -338,16 +425,21 @@ impl CommitmentCoreContract {
         }
 
         e.storage().instance().set(&DataKey::Admin, &admin);
-        e.storage().instance().set(&DataKey::NftContract, &nft_contract);
-        e.storage().instance().set(&DataKey::TotalCommitments, &0u64);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &0i128);
         e.storage()
             .instance()
-            .set(&DataKey::AuthorizedUpdaters, &Vec::<Address>::new(&e));
+            .set(&DataKey::NftContract, &nft_contract);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalCommitments, &0u64);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &0i128);
         e.storage()
             .instance()
             .set(&DataKey::AllCommitmentIds, &Vec::<String>::new(&e));
-        e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
         e.storage().instance().set(&Pausable::PAUSED_KEY, &false);
         EmergencyControl::set_emergency_mode(&e, false);
     }
@@ -356,9 +448,10 @@ impl CommitmentCoreContract {
     ///
     /// Call sequence:
     /// 1. validate owner auth, rules, and balances
-    /// 2. persist commitment state and counters
-    /// 3. transfer tokens into this contract
-    /// 4. invoke `commitment_nft::mint`
+    /// 2. compute creation fee and net amount
+    /// 3. persist commitment state and counters
+    /// 4. transfer tokens into this contract
+    /// 5. invoke `commitment_nft::mint`
     ///
     /// Because Soroban reverts the entire invocation on panic, a downstream NFT mint
     /// failure should roll back the earlier state writes and token transfer.
@@ -381,10 +474,27 @@ impl CommitmentCoreContract {
         RateLimiter::check(&e, &owner, &symbol_short!("create"));
         Validation::require_positive(amount);
         Self::validate_rules(&e, &rules);
-        check_sufficient_balance(&e, &owner, &asset_address, amount);
+
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = fuzzing::checked_fee_from_bps(amount, creation_fee_bps)
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "create");
+            });
+        let net_amount = amount.checked_sub(creation_fee).unwrap_or_else(|| {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::ArithmeticOverflow, "create");
+        });
 
         let expires_at = TimeUtils::checked_calculate_expiration(&e, rules.duration_days)
-            .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::ExpirationOverflow, "create") });
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ExpirationOverflow, "create")
+            });
 
         // Calculate creation fee and net amount
         let creation_fee_bps: u32 = e
@@ -399,21 +509,77 @@ impl CommitmentCoreContract {
         };
         let net_amount = amount - creation_fee;
 
-        let current_total = e.storage().instance().get::<_, u64>(&DataKey::TotalCommitments).unwrap_or(0);
-        let nft_contract = e.storage().instance().get::<_, Address>(&DataKey::NftContract)
-            .unwrap_or_else(|| { set_reentrancy_guard(&e, false); fail(&e, CommitmentError::NotInitialized, "create") });
+        check_sufficient_balance(&e, &owner, &asset_address, amount);
+
+        let current_total = e
+            .storage()
+            .instance()
+            .get::<_, u64>(&DataKey::TotalCommitments)
+            .unwrap_or(0);
+        let nft_contract = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::NftContract)
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::NotInitialized, "create")
+            });
+
+        // Calculate creation fee if configured
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
+        // Net amount locked in commitment (after fee deduction)
+        let net_amount = amount - creation_fee;
+
+        // Compute creation fee and net amount before any state writes so that
+        // `net_amount` is defined for both the Commitment struct and the TVL update.
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
+        let net_amount = amount - creation_fee;
 
         let commitment_id = Self::generate_commitment_id(&e, current_total);
+
+        // Calculate creation fee first
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
+
+        // Net amount locked in commitment (after fee deduction)
+        let net_amount = amount - creation_fee;
+
         let commitment = Commitment {
             commitment_id: commitment_id.clone(),
             owner: owner.clone(),
             nft_token_id: 0,
             rules: rules.clone(),
-            amount: net_amount,
+            amount: amount,
             asset_address: asset_address.clone(),
             created_at: TimeUtils::now(&e),
             expires_at,
-            current_value: net_amount,
+            current_value: amount,
             status: String::from_str(&e, "active"),
         };
 
@@ -424,16 +590,23 @@ impl CommitmentCoreContract {
             .get::<_, Vec<String>>(&DataKey::OwnerCommitments(owner.clone()))
             .unwrap_or(Vec::new(&e));
         owner_commitments.push_back(commitment_id.clone());
+        e.storage().instance().set(
+            &DataKey::OwnerCommitments(owner.clone()),
+            &owner_commitments,
+        );
         e.storage()
             .instance()
-            .set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
-        e.storage().instance().set(&DataKey::TotalCommitments, &(current_total + 1));
+            .set(&DataKey::TotalCommitments, &(current_total + 1));
         let tvl = e
             .storage()
             .instance()
             .get::<_, i128>(&DataKey::TotalValueLocked)
             .unwrap_or(0);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl + net_amount));
+        let updated_tvl = tvl.checked_add(net_amount).unwrap_or_else(|| {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::ArithmeticOverflow, "create");
+        });
+        e.storage().instance().set(&DataKey::TotalValueLocked, &updated_tvl);
 
         let mut all_ids = e
             .storage()
@@ -452,9 +625,13 @@ impl CommitmentCoreContract {
         if creation_fee > 0 {
             let fee_key = DataKey::CollectedFees(asset_address.clone());
             let current_fees: i128 = e.storage().instance().get(&fee_key).unwrap_or(0);
+            let updated_fees = current_fees.checked_add(creation_fee).unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "create");
+            });
             e.storage()
                 .instance()
-                .set(&fee_key, &(current_fees + creation_fee));
+                .set(&fee_key, &updated_fees);
         }
 
         let nft_token_id = call_nft_mint(
@@ -493,9 +670,6 @@ impl CommitmentCoreContract {
     }
 
     /// List all commitment IDs owned by the given address.
-    ///
-    /// This is a convenience wrapper around `get_owner_commitments` with a
-    /// name optimized for off-chain indexers and UIs.
     pub fn list_commitments_by_owner(e: Env, owner: Address) -> Vec<String> {
         Self::get_owner_commitments(e, owner)
     }
@@ -525,7 +699,6 @@ impl CommitmentCoreContract {
     }
 
     /// Get commitment IDs created between two timestamps (inclusive).
-    /// For analytics/dashboards. Gas cost is O(n) in total commitments; consider pagination for large n.
     pub fn get_commitments_created_between(e: Env, from_ts: u64, to_ts: u64) -> Vec<String> {
         let all_ids = e
             .storage()
@@ -560,58 +733,169 @@ impl CommitmentCoreContract {
     }
 
     pub fn pause(e: Env, caller: Address) {
-        require_admin(&e, &caller);
+        caller.require_auth();
+        if !Self::is_operator(e.clone(), caller.clone()) {
+            fail(&e, CommitmentError::Unauthorized, "pause");
+        }
         Pausable::pause(&e);
     }
 
+    /// Unpauses the contract, re-enabling normal operations.
+    ///
+    /// Restricted to the Operator or Admin role.
     pub fn unpause(e: Env, caller: Address) {
-        require_admin(&e, &caller);
+        caller.require_auth();
+        if !Self::is_operator(e.clone(), caller.clone()) {
+            fail(&e, CommitmentError::Unauthorized, "unpause");
+        }
         Pausable::unpause(&e);
     }
 
+    /// Returns true if the contract is currently paused.
     pub fn is_paused(e: Env) -> bool {
         Pausable::is_paused(&e)
     }
 
+    /// Adds an address to the authorized allocators list.
+    ///
+    /// Restricted to the Admin role.
+    /// Authorized allocators can call the `allocate` function to move assets
+    /// from commitments to target pools.
+    pub fn add_allocator(e: Env, caller: Address, allocator: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().set(
+            &DataKey::AuthorizedAllocator(contract_address.clone()),
+            &true,
+        );
+        e.events().publish(
+            (Symbol::new(&e, "AuthorizedAllocatorAdded"),),
+            (allocator, e.ledger().timestamp()),
+        );
+    }
+
+    /// Removes an address from the authorized allocators list.
+    ///
+    /// Restricted to the Admin role.
+    pub fn remove_allocator(e: Env, caller: Address, allocator: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().remove(&DataKey::AuthorizedAllocator(allocator.clone()));
+        e.events().publish(
+            (Symbol::new(&e, "AuthorizedAllocatorRemoved"),),
+            (allocator, e.ledger().timestamp()),
+        );
+    }
+
+    /// Alias for `add_allocator` to maintain backward compatibility with previous versions.
     pub fn add_authorized_contract(e: Env, caller: Address, contract_address: Address) {
-        require_admin(&e, &caller);
-        e.storage()
-            .instance()
-            .set(&DataKey::AuthorizedAllocator(contract_address.clone()), &true);
-        e.events().publish(
-            (Symbol::new(&e, "AuthorizedContractAdded"),),
-            (contract_address, e.ledger().timestamp()),
-        );
+        Self::add_allocator(e, caller, contract_address);
     }
 
+    /// Alias for `remove_allocator` to maintain backward compatibility with previous versions.
     pub fn remove_authorized_contract(e: Env, caller: Address, contract_address: Address) {
-        require_admin(&e, &caller);
-        e.storage()
-            .instance()
-            .remove(&DataKey::AuthorizedAllocator(contract_address.clone()));
-        e.events().publish(
-            (Symbol::new(&e, "AuthorizedContractRemoved"),),
-            (contract_address, e.ledger().timestamp()),
-        );
+        Self::remove_allocator(e, caller, contract_address);
     }
 
-    pub fn is_authorized(e: Env, contract_address: Address) -> bool {
+    /// Returns true if the given address is an authorized allocator.
+    ///
+    /// An address is an authorized allocator if it is the Admin, the registered
+    /// Allocation Contract, or an address explicitly added via `add_allocator`.
+    pub fn is_allocator(e: Env, address: Address) -> bool {
         let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
         if let Some(a) = admin {
-            if contract_address == a {
+            if address == a { return true; }
+        }
+        if let Some(alloc_contract) = e.storage().instance().get::<_, Address>(&DataKey::AllocationContract) {
+            if address == alloc_contract { return true; }
+        }
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::AuthorizedAllocator(address))
+            .unwrap_or(false)
+    }
+
+    /// Alias for `is_allocator` to maintain backward compatibility with previous versions.
+    pub fn is_authorized(e: Env, contract_address: Address) -> bool {
+        Self::is_allocator(e, contract_address)
+    }
+
+    /// Check if an address is authorized to update commitment values.
+    ///
+    pub fn is_updater(e: Env, address: Address) -> bool {
+        let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
+        if let Some(a) = admin {
+            if address == a {
                 return true;
             }
         }
         e.storage()
             .instance()
-            .get::<_, bool>(&DataKey::AuthorizedAllocator(contract_address))
+            .get::<_, bool>(&DataKey::AuthorizedUpdater(address))
             .unwrap_or(false)
     }
 
-    pub fn update_value(e: Env, commitment_id: String, new_value: i128) {
+    /// Returns true if the given address is an authorized Guardian.
+    ///
+    /// Guardians are authorized to set the emergency mode and perform emergency
+    /// asset withdrawals. The Admin is implicitly a Guardian.
+    pub fn is_guardian(e: Env, address: Address) -> bool {
+        let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
+        if let Some(a) = admin {
+            if address == a { return true; }
+        }
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::AuthorizedGuardian(address))
+            .unwrap_or(false)
+    }
+
+    /// Returns true if the given address is an authorized Treasurer.
+    ///
+    /// Treasurers are authorized to manage protocol fees, including setting rates,
+    /// recipients, and performing withdrawals. The Admin is implicitly a Treasurer.
+    pub fn is_treasurer(e: Env, address: Address) -> bool {
+        let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
+        if let Some(a) = admin {
+            if address == a { return true; }
+        }
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::AuthorizedTreasurer(address))
+            .unwrap_or(false)
+    }
+
+    /// Returns true if the given address is an authorized Operator.
+    ///
+    /// Operators are authorized to pause and unpause the contract.
+    /// The Admin is implicitly an Operator.
+    pub fn is_operator(e: Env, address: Address) -> bool {
+        let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
+        if let Some(a) = admin {
+            if address == a { return true; }
+        }
+        e.storage().instance().get::<_, bool>(&DataKey::AuthorizedOperator(address)).unwrap_or(false)
+    }
+
+    /// Update the current value of a commitment.
+    ///
+    /// This is a restricted state-changing operation that can only be performed by
+    /// the admin or an authorized updater. It updates the commitment's valuation
+    /// and the total protocol TVL.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address initiating the update. Must be admin or authorized updater.
+    /// - `commitment_id`: Unique identifier of the commitment.
+    /// - `new_value`: The new valuation to set.
+    ///
+    /// ### Security Notes
+    /// - Requires `caller.require_auth()`.
+    /// - Enforces `is_updater` check.
+    pub fn update_value(e: Env, caller: Address, commitment_id: String, new_value: i128) {
+        caller.require_auth();
+        if !Self::is_updater(e.clone(), caller.clone()) {
+            fail(&e, CommitmentError::Unauthorized, "upd: unauthorized");
+        }
         let fn_symbol = symbol_short!("upd_val");
-        let contract_address = e.current_contract_address();
-        RateLimiter::check(&e, &contract_address, &fn_symbol);
+        RateLimiter::check(&e, &caller, &fn_symbol);
         Validation::require_non_negative(new_value);
 
         let mut commitment = read_commitment(&e, &commitment_id)
@@ -621,6 +905,10 @@ impl CommitmentCoreContract {
         }
 
         let old_value = commitment.current_value;
+
+        // Persist the new value unconditionally — this is the fix for the misleading
+        // update_value behavior: the value is always written to storage so that
+        // subsequent reads and settlement calculations reflect the update.
         commitment.current_value = new_value;
 
         let loss_percent = if commitment.amount > 0 {
@@ -647,9 +935,16 @@ impl CommitmentCoreContract {
             );
         }
 
+        // Persist to storage — value and (potentially) status are both written here.
         set_commitment(&e, &commitment);
+
+        // Update TVL by the delta so the aggregate stays consistent with the persisted value.
         let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl - old_value + new_value));
+        let updated_tvl = tvl
+            .checked_sub(old_value)
+            .and_then(|value| value.checked_add(new_value))
+            .unwrap_or_else(|| fail(&e, CommitmentError::ArithmeticOverflow, "upd"));
+        e.storage().instance().set(&DataKey::TotalValueLocked, &updated_tvl);
     }
 
     pub fn check_violations(e: Env, commitment_id: String) -> bool {
@@ -678,8 +973,13 @@ impl CommitmentCoreContract {
     }
 
     pub fn get_violation_details(e: Env, commitment_id: String) -> (bool, bool, bool, i128, u64) {
-        let commitment = read_commitment(&e, &commitment_id)
-            .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "get_violation_details"));
+        let commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| {
+            fail(
+                &e,
+                CommitmentError::CommitmentNotFound,
+                "get_violation_details",
+            )
+        });
 
         let now = e.ledger().timestamp();
         let loss_percent = if commitment.amount > 0 {
@@ -690,11 +990,7 @@ impl CommitmentCoreContract {
         let loss_violated = loss_percent > commitment.rules.max_loss_percent as i128;
         let duration_violated = now >= commitment.expires_at;
         let has_violations = loss_violated || duration_violated;
-        let time_remaining = if now >= commitment.expires_at {
-            0
-        } else {
-            commitment.expires_at - now
-        };
+        let time_remaining = commitment.expires_at.saturating_sub(now);
 
         (
             has_violations,
@@ -746,14 +1042,12 @@ impl CommitmentCoreContract {
             .instance()
             .get::<_, i128>(&DataKey::TotalValueLocked)
             .unwrap_or(0);
-        e.storage().instance().set(
-            &DataKey::TotalValueLocked,
-            &(if tvl > settlement_amount {
-                tvl - settlement_amount
-            } else {
-                0
-            }),
-        );
+        let new_tvl = if tvl > settlement_amount {
+            SafeMath::sub(tvl, settlement_amount)
+        } else {
+            0
+        };
+        e.storage().instance().set(&DataKey::TotalValueLocked, &new_tvl);
 
         transfer_assets(
             &e,
@@ -806,7 +1100,10 @@ impl CommitmentCoreContract {
             fail(&e, CommitmentError::NotActive, "exit");
         }
 
-        let penalty = SafeMath::penalty_amount(commitment.current_value, commitment.rules.early_exit_penalty);
+        let penalty = SafeMath::penalty_amount(
+            commitment.current_value,
+            commitment.rules.early_exit_penalty,
+        );
         let returned = SafeMath::sub(commitment.current_value, penalty);
         let original_val = commitment.current_value;
 
@@ -828,7 +1125,9 @@ impl CommitmentCoreContract {
             .instance()
             .get::<_, i128>(&DataKey::TotalValueLocked)
             .unwrap_or(0);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &(tvl - original_val));
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &(tvl - original_val));
 
         if returned > 0 {
             transfer_assets(
@@ -855,7 +1154,10 @@ impl CommitmentCoreContract {
         e.invoke_contract::<()>(&nft_contract, &Symbol::new(&e, "mark_inactive"), args);
 
         set_reentrancy_guard(&e, false);
-        e.events().publish((symbol_short!("EarlyExt"), commitment_id, caller), (penalty, returned, e.ledger().timestamp()));
+        e.events().publish(
+            (symbol_short!("EarlyExt"), commitment_id, caller),
+            (penalty, returned, e.ledger().timestamp()),
+        );
     }
 
     pub fn add_updater(e: Env, caller: Address, updater: Address) {
@@ -863,6 +1165,46 @@ impl CommitmentCoreContract {
         add_authorized_updater(&e, &updater);
     }
 
+    pub fn add_guardian(e: Env, caller: Address, guardian: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().set(&DataKey::AuthorizedGuardian(guardian), &true);
+    }
+    pub fn remove_guardian(e: Env, caller: Address, guardian: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().remove(&DataKey::AuthorizedGuardian(guardian));
+    }
+    pub fn add_treasurer(e: Env, caller: Address, treasurer: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().set(&DataKey::AuthorizedTreasurer(treasurer), &true);
+    }
+    pub fn remove_treasurer(e: Env, caller: Address, treasurer: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().remove(&DataKey::AuthorizedTreasurer(treasurer));
+    }
+    pub fn add_operator(e: Env, caller: Address, operator: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().set(&DataKey::AuthorizedOperator(operator), &true);
+    }
+    pub fn remove_operator(e: Env, caller: Address, operator: Address) {
+        require_admin(&e, &caller);
+        e.storage().instance().remove(&DataKey::AuthorizedOperator(operator));
+    }
+
+    /// Allocates assets from a commitment to a target investment pool.
+    ///
+    /// This operation is restricted to the admin or an authorized allocator contract.
+    /// It reduces the commitment's internal `current_value` and transfers the 
+    /// underlying tokens to the target address.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address initiating the allocation. Must be authorized.
+    /// - `commitment_id`: Unique identifier of the commitment.
+    /// - `target_pool`: Destination address for the tokens.
+    /// - `amount`: Quantity of assets to allocate.
+    ///
+    /// ### Security Notes
+    /// - Requires `caller.require_auth()`.
+    /// - Enforces `is_allocator` check.
     pub fn allocate(
         e: Env,
         caller: Address,
@@ -875,13 +1217,9 @@ impl CommitmentCoreContract {
         Pausable::require_not_paused(&e);
 
         caller.require_auth();
-        if !Self::is_authorized(e.clone(), caller.clone()) {
+        if !Self::is_allocator(e.clone(), caller.clone()) {
             set_reentrancy_guard(&e, false);
-            fail(
-                &e,
-                CommitmentError::Unauthorized,
-                "allocate: caller not admin or authorized allocator",
-            );
+            fail(&e, CommitmentError::Unauthorized, "allocate: unauthorized");
         }
 
         let fn_symbol = symbol_short!("alloc");
@@ -923,6 +1261,9 @@ impl CommitmentCoreContract {
         );
     }
 
+    /// Removes an address from the authorized updaters list.
+    ///
+    /// Restricted to the Admin role.
     pub fn remove_updater(e: Env, caller: Address, updater: Address) {
         require_admin(&e, &caller);
         remove_authorized_updater(&e, &updater);
@@ -930,14 +1271,9 @@ impl CommitmentCoreContract {
 
     pub fn set_allocation_contract(e: Env, caller: Address, addr: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().set(&DataKey::AllocationContract, &addr);
-    }
-
-    pub fn get_authorized_updaters(e: Env) -> Vec<Address> {
         e.storage()
             .instance()
-            .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
-            .unwrap_or(Vec::new(&e))
+            .set(&DataKey::AllocationContract, &addr);
     }
 
     pub fn set_rate_limit(
@@ -956,17 +1292,33 @@ impl CommitmentCoreContract {
         RateLimiter::set_exempt(&e, &address, exempt);
     }
 
+    /// Returns true if the contract is currently in emergency mode.
     pub fn is_emergency_mode(e: Env) -> bool {
         EmergencyControl::is_emergency_mode(&e)
     }
 
+    /// Sets the emergency mode status.
+    ///
+    /// Restricted to the Guardian or Admin role.
+    /// When enabled, new commitments cannot be created, but emergency withdrawals
+    /// can be performed.
     pub fn set_emergency_mode(e: Env, caller: Address, enabled: bool) {
-        require_admin(&e, &caller);
+        caller.require_auth();
+        if !Self::is_guardian(e.clone(), caller.clone()) {
+            fail(&e, CommitmentError::Unauthorized, "set_emergency_mode");
+        }
         EmergencyControl::set_emergency_mode(&e, enabled);
     }
 
+    /// Performs an emergency withdrawal of assets from the contract.
+    ///
+    /// Restricted to the Guardian or Admin role.
+    /// Can only be called when the contract is in emergency mode.
     pub fn emergency_withdraw(e: Env, caller: Address, asset: Address, to: Address, amount: i128) {
-        require_admin(&e, &caller);
+        caller.require_auth();
+        if !Self::is_guardian(e.clone(), caller.clone()) {
+            fail(&e, CommitmentError::Unauthorized, "emergency_withdraw");
+        }
         EmergencyControl::require_emergency(&e);
         Validation::require_positive(amount);
         transfer_assets(&e, &e.current_contract_address(), &to, &asset, amount);
@@ -980,17 +1332,20 @@ impl CommitmentCoreContract {
     ///
     /// # Arguments
     /// * `caller` - Must be admin
-    /// * `bps` - Fee rate in basis points. 100 bps = 1%. Must be 0-10000.
+    /// * `bps` - Fee rate in basis points. 100 bps = 1%. Must be 0-10000. Restricted to Treasurer or Admin.
     ///
     /// # Security
-    /// - Admin-only: Uses `require_admin` for authorization
+    /// - Treasurer-only: Uses `is_treasurer` for authorization
     /// - Validates bps is within valid range (0-10000)
     ///
     /// # Errors
-    /// - `CommitmentError::Unauthorized` if caller is not admin
+    /// - `CommitmentError::Unauthorized` if caller is not treasurer or admin
     /// - `CommitmentError::InvalidFeeBps` if bps > 10000
     pub fn set_creation_fee_bps(e: Env, caller: Address, bps: u32) {
-        require_admin(&e, &caller);
+        caller.require_auth();
+        if !Self::is_treasurer(e.clone(), caller.clone()) {
+            fail(&e, CommitmentError::Unauthorized, "set_creation_fee_bps");
+        }
         if bps > fees::BPS_MAX {
             fail(&e, CommitmentError::InvalidFeeBps, "set_creation_fee_bps");
         }
@@ -1008,18 +1363,23 @@ impl CommitmentCoreContract {
     /// * `recipient` - Address to receive withdrawn fees
     ///
     /// # Security
-    /// - Admin-only: Uses `require_admin` for authorization
+    /// - Treasurer-only: Uses `is_treasurer` for authorization
     /// - Validates recipient is not zero address
     ///
     /// # Errors
-    /// - `CommitmentError::Unauthorized` if caller is not admin
+    /// - `CommitmentError::Unauthorized` if caller is not treasurer or admin
     /// - `CommitmentError::ZeroAddress` if recipient is zero address
     pub fn set_fee_recipient(e: Env, caller: Address, recipient: Address) {
-        require_admin(&e, &caller);
+        caller.require_auth();
+        if !Self::is_treasurer(e.clone(), caller.clone()) {
+            fail(&e, CommitmentError::Unauthorized, "set_fee_recipient");
+        }
         if is_zero_address(&e, &recipient) {
             fail(&e, CommitmentError::ZeroAddress, "set_fee_recipient");
         }
-        e.storage().instance().set(&DataKey::FeeRecipient, &recipient);
+        e.storage()
+            .instance()
+            .set(&DataKey::FeeRecipient, &recipient);
         e.events().publish(
             (Symbol::new(&e, "FeeRecipientSet"),),
             (recipient.clone(), e.ledger().timestamp()),
@@ -1034,24 +1394,27 @@ impl CommitmentCoreContract {
     /// * `amount` - Amount of fees to withdraw
     ///
     /// # Security
-    /// - Admin-only: Uses `require_admin` for authorization
+    /// - Treasurer-only: Uses `is_treasurer` for authorization
     /// - Reentrancy protection: Uses existing reentrancy guard
     /// - Validates fee recipient is set
     /// - Validates sufficient collected fees exist
     /// - Amount must be positive
     ///
     /// # Errors
-    /// - `CommitmentError::Unauthorized` if caller is not admin
+    /// - `CommitmentError::Unauthorized` if caller is not treasurer or admin
     /// - `CommitmentError::FeeRecipientNotSet` if recipient not configured
     /// - `CommitmentError::InsufficientFees` if amount > collected fees
     /// - `CommitmentError::InvalidAmount` if amount <= 0
     pub fn withdraw_fees(e: Env, caller: Address, asset_address: Address, amount: i128) {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
-        require_admin(&e, &caller);
+        caller.require_auth();
+        if !Self::is_treasurer(e.clone(), caller.clone()) {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::Unauthorized, "withdraw_fees");
+        }
         Validation::require_positive(amount);
 
-        // Check fee recipient is set
         let recipient: Address = e
             .storage()
             .instance()
@@ -1061,7 +1424,6 @@ impl CommitmentCoreContract {
                 fail(&e, CommitmentError::FeeRecipientNotSet, "withdraw_fees")
             });
 
-        // Check sufficient collected fees
         let fee_key = DataKey::CollectedFees(asset_address.clone());
         let collected: i128 = e.storage().instance().get(&fee_key).unwrap_or(0);
         if collected < amount {
@@ -1070,10 +1432,16 @@ impl CommitmentCoreContract {
         }
 
         // Update collected fees
-        e.storage().instance().set(&fee_key, &(collected - amount));
+        e.storage().instance().set(&fee_key, &SafeMath::sub(collected, amount));
 
         // Transfer fees to recipient
-        transfer_assets(&e, &e.current_contract_address(), &recipient, &asset_address, amount);
+        transfer_assets(
+            &e,
+            &e.current_contract_address(),
+            &recipient,
+            &asset_address,
+            amount,
+        );
 
         set_reentrancy_guard(&e, false);
         e.events().publish(
@@ -1083,9 +1451,6 @@ impl CommitmentCoreContract {
     }
 
     /// Get the current creation fee rate in basis points.
-    ///
-    /// # Returns
-    /// Fee rate in basis points (0-10000). Returns 0 if not set.
     pub fn get_creation_fee_bps(e: Env) -> u32 {
         e.storage()
             .instance()
@@ -1094,20 +1459,11 @@ impl CommitmentCoreContract {
     }
 
     /// Get the configured fee recipient address.
-    ///
-    /// # Returns
-    /// Fee recipient address, or None if not set.
     pub fn get_fee_recipient(e: Env) -> Option<Address> {
         e.storage().instance().get(&DataKey::FeeRecipient)
     }
 
     /// Get the collected fees for a specific asset.
-    ///
-    /// # Arguments
-    /// * `asset_address` - Token address to query
-    ///
-    /// # Returns
-    /// Amount of collected fees for the asset. Returns 0 if none collected.
     pub fn get_collected_fees(e: Env, asset_address: Address) -> i128 {
         e.storage()
             .instance()
@@ -1125,8 +1481,20 @@ mod emergency_tests;
 #[cfg(test)]
 mod fee_tests;
 
+#[cfg(test)]
+mod fuzz_tests;
+
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
 
 #[cfg(test)]
 mod test_zero_address;
+
+/// Invariant tests that verify the correctness of every invariant exercised by
+/// [`benchmarks_optimized`]. These run under the normal `cargo test` profile
+/// (no `benchmark` feature required).
+#[cfg(test)]
+mod benchmark_invariant_tests;
+
+#[cfg(all(test, feature = "benchmark"))]
+mod benchmarks_optimized;

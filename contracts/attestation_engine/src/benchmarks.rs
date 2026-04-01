@@ -54,11 +54,7 @@ impl BenchmarkMetrics {
     }
 
     fn print_summary(&self) {
-        let _gas_used = if self.gas_after > self.gas_before {
-            self.gas_after - self.gas_before
-        } else {
-            0
-        };
+        let _gas_used = self.gas_after.saturating_sub(self.gas_before);
         let _ = &self.function_name;
         // Benchmark metrics collected - can be extended with proper logging
     }
