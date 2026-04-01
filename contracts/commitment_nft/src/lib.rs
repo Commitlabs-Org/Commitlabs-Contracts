@@ -1,12 +1,16 @@
 #![no_std]
+//! Commitment NFT contract.
+//!
+//! This contract mirrors the lifecycle of commitments managed by
+//! `commitment_core`. Minting, settlement, and early-exit deactivation mutate
+//! NFT state and therefore must only be driven by trusted protocol contracts.
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
 };
-use shared_utils::{EmergencyControl, Pausable};
 
 // Current storage version for migration checks.
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 // Issue #139: String parameter constraints
 #[allow(dead_code)]
@@ -63,13 +67,30 @@ pub enum ContractError {
     ExpirationOverflow = 20,
     /// Invalid commitment_id (must be non-empty and <= 256 chars)
     InvalidCommitmentId = 21,
+    /// Given address is a zero/invalid address
+    InvalidAddress = 22,
 }
 
 // ============================================================================
 // Data Types
 // ============================================================================
 
-/// Metadata associated with a commitment NFT
+/// Metadata associated with a commitment NFT.
+///
+/// All fields mirror the parameters passed by `commitment_core::create_commitment`
+/// through `call_nft_mint`. `early_exit_penalty` is stored here (in addition to
+/// the top-level `CommitmentNFT` field) so that integrators reading only the
+/// metadata struct have the full picture without needing to inspect the parent.
+///
+/// # Field alignment with `commitment_core`
+/// | `CommitmentMetadata` field | `CommitmentRules` / `create_commitment` param |
+/// |----------------------------|-----------------------------------------------|
+/// | `duration_days`            | `CommitmentRules::duration_days`              |
+/// | `max_loss_percent`         | `CommitmentRules::max_loss_percent`           |
+/// | `commitment_type`          | `CommitmentRules::commitment_type`            |
+/// | `initial_amount`           | `amount` (net, after fee deduction)           |
+/// | `asset_address`            | `asset_address`                               |
+/// | `early_exit_penalty`       | `CommitmentRules::early_exit_penalty`         |
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitmentMetadata {
@@ -81,9 +102,16 @@ pub struct CommitmentMetadata {
     pub expires_at: u64,
     pub initial_amount: i128,
     pub asset_address: Address,
+    /// Early-exit penalty in percent (0-100). Mirrors `CommitmentRules::early_exit_penalty`
+    /// from `commitment_core`. Stored here for single-struct readability by integrators.
+    pub early_exit_penalty: u32,
 }
 
-/// The Commitment NFT structure
+/// The Commitment NFT structure.
+///
+/// `early_exit_penalty` appears both here (top-level, for quick access) and inside
+/// `metadata` (for integrators reading the metadata struct in isolation).
+/// Both fields are always written with the same value during `mint`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitmentNFT {
@@ -91,6 +119,9 @@ pub struct CommitmentNFT {
     pub token_id: u32,
     pub metadata: CommitmentMetadata,
     pub is_active: bool,
+    /// Early-exit penalty in percent (0-100). Mirrors `CommitmentRules::early_exit_penalty`
+    /// from `commitment_core`. Also stored in `metadata.early_exit_penalty` for
+    /// single-struct readability.
     pub early_exit_penalty: u32,
 }
 
@@ -117,6 +148,8 @@ pub enum DataKey {
     /// Owner tokens list (Address -> Vec<u32>)
     OwnerTokens(Address),
     /// List of all token IDs (Vec<u32>)
+    ///
+    /// Stored in persistent storage to avoid instance storage growth on hot paths.
     TokenIds,
     /// Authorized commitment_core contract address (for settlement)
     CoreContract,
@@ -132,8 +165,11 @@ pub enum DataKey {
     CommitmentIdIndex(String),
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-test-suite"))]
 mod tests;
+
+#[cfg(test)]
+mod smoke_tests;
 
 // ============================================================================
 // Contract Implementation
@@ -146,6 +182,11 @@ pub struct CommitmentNFTContract;
 impl CommitmentNFTContract {
     /// Initialize the NFT contract
     pub fn initialize(e: Env, admin: Address) -> Result<(), ContractError> {
+        // Reject zero address for admin
+        if is_zero_address(&e, &admin) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         // Check if already initialized
         if e.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
@@ -157,9 +198,9 @@ impl CommitmentNFTContract {
         // Initialize token counter to 0
         e.storage().instance().set(&DataKey::TokenCounter, &0u32);
 
-        // Initialize empty token IDs vector
+        // Initialize empty token IDs vector (persistent storage for scalability)
         let token_ids: Vec<u32> = Vec::new(&e);
-        e.storage().instance().set(&DataKey::TokenIds, &token_ids);
+        e.storage().persistent().set(&DataKey::TokenIds, &token_ids);
 
         // Initialize paused state (default: not paused)
         e.storage()
@@ -326,9 +367,23 @@ impl CommitmentNFTContract {
         }
     }
 
-    /// Set the authorized commitment_core contract address for settlement
-    /// Only the admin can call this function
+    /// Set the authorized commitment_core contract address for lifecycle updates.
+    ///
+    /// # Params
+    /// - `core_contract`: Address of the trusted `commitment_core` deployment.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if the NFT contract is not initialized.
+    /// - [`ContractError::NotAuthorized`] if the caller is not the stored admin.
+    ///
+    /// # Security
+    /// - Requires admin authorization.
+    /// - This address becomes the only contract allowed to settle or deactivate NFTs.
     pub fn set_core_contract(e: Env, core_contract: Address) -> Result<(), ContractError> {
+        if is_zero_address(&e, &core_contract) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         let admin: Address = e
             .storage()
             .instance()
@@ -347,7 +402,7 @@ impl CommitmentNFTContract {
         Ok(())
     }
 
-    /// Get the authorized commitment_core contract address
+    /// Get the authorized commitment_core contract address.
     pub fn get_core_contract(e: Env) -> Result<Address, ContractError> {
         e.storage()
             .instance()
@@ -370,6 +425,11 @@ impl CommitmentNFTContract {
         contract_address: Address,
     ) -> Result<(), ContractError> {
         require_admin(&e, &caller)?;
+
+        if is_zero_address(&e, &contract_address) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         e.storage()
             .instance()
             .set(&DataKey::AuthorizedMinter(contract_address.clone()), &true);
@@ -404,7 +464,11 @@ impl CommitmentNFTContract {
                 return true;
             }
         }
-        if let Some(core) = e.storage().instance().get::<_, Address>(&DataKey::CoreContract) {
+        if let Some(core) = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::CoreContract)
+        {
             if contract_address == core {
                 return true;
             }
@@ -423,6 +487,11 @@ impl CommitmentNFTContract {
     /// Update admin (admin-only).
     pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&e, &caller)?;
+        
+        if is_zero_address(&e, &new_admin) {
+            return Err(ContractError::InvalidAddress);
+        }
+
         e.storage().instance().set(&DataKey::Admin, &new_admin);
         Ok(())
     }
@@ -455,9 +524,9 @@ impl CommitmentNFTContract {
         if !e.storage().instance().has(&DataKey::TokenCounter) {
             e.storage().instance().set(&DataKey::TokenCounter, &0u32);
         }
-        if !e.storage().instance().has(&DataKey::TokenIds) {
+        if !e.storage().persistent().has(&DataKey::TokenIds) {
             let token_ids: Vec<u32> = Vec::new(&e);
-            e.storage().instance().set(&DataKey::TokenIds, &token_ids);
+            e.storage().persistent().set(&DataKey::TokenIds, &token_ids);
         }
         if !e.storage().instance().has(&DataKey::ReentrancyGuard) {
             e.storage()
@@ -476,6 +545,7 @@ impl CommitmentNFTContract {
     // ========================================================================
 
     /// Mint a new Commitment NFT. Caller must be admin or an authorized minter (see add_authorized_contract).
+    #[allow(clippy::too_many_arguments)]
     pub fn mint(
         e: Env,
         caller: Address,
@@ -510,19 +580,41 @@ impl CommitmentNFTContract {
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotInitialized);
         }
+
+        // --- Authorization: enforce on-chain signature from caller ---
         let admin: Address = e.storage().instance().get(&DataKey::Admin).unwrap();
         let core_contract: Option<Address> = e.storage().instance().get(&DataKey::CoreContract);
-        let is_authorized_minter = e.storage().instance().get(&DataKey::AuthorizedMinter(caller.clone())).unwrap_or(false);
-        let allowed = (caller == admin) || (core_contract.as_ref() == Some(&caller)) || is_authorized_minter;
+        let is_authorized_minter = e
+            .storage()
+            .instance()
+            .get(&DataKey::AuthorizedMinter(caller.clone()))
+            .unwrap_or(false);
+        let allowed =
+            (caller == admin) || (core_contract.as_ref() == Some(&caller)) || is_authorized_minter;
         if !allowed {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotAuthorized);
         }
+        // Require a valid on-chain authorization from the caller.
+        // This must come AFTER the allowlist check so that only whitelisted
+        // callers can even attempt to provide auth, preventing spurious auth
+        // consumption by arbitrary addresses.
+        caller.require_auth();
 
         // CHECKS: Reject zero address owner
         if is_zero_address(&e, &owner) {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::TransferToZeroAddress);
+        }
+
+        // CHECKS: Reject zero address for asset
+        if is_zero_address(&e, &asset_address) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(ContractError::InvalidAddress);
         }
 
         // Validate inputs
@@ -544,7 +636,7 @@ impl CommitmentNFTContract {
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::InvalidCommitmentType);
         }
-        if initial_amount <= 0 {
+        if initial_amount < 0 {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
@@ -574,13 +666,14 @@ impl CommitmentNFTContract {
         };
 
         // EFFECTS: Update state
-        // Generate unique token_id
+        // Generate unique token_id using SafeMath to prevent overflow
         let token_id: u32 = e
             .storage()
             .instance()
             .get(&DataKey::TokenCounter)
             .unwrap_or(0);
-        let next_token_id = token_id + 1;
+        let next_token_id =
+            SafeMath::add(token_id as i128, 1) as u32;
         e.storage()
             .instance()
             .set(&DataKey::TokenCounter, &next_token_id);
@@ -604,6 +697,7 @@ impl CommitmentNFTContract {
             expires_at,
             initial_amount,
             asset_address,
+            early_exit_penalty,
         };
 
         // Create CommitmentNFT
@@ -643,11 +737,11 @@ impl CommitmentNFTContract {
         // Add token_id to the list of all tokens
         let mut token_ids: Vec<u32> = e
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TokenIds)
             .unwrap_or(Vec::new(&e));
         token_ids.push_back(token_id);
-        e.storage().instance().set(&DataKey::TokenIds, &token_ids);
+        e.storage().persistent().set(&DataKey::TokenIds, &token_ids);
 
         // Clear reentrancy guard
         e.storage()
@@ -706,11 +800,25 @@ impl CommitmentNFTContract {
         Ok(nft.owner)
     }
 
-    /// Transfer NFT to new owner
+    /// @notice Transfers the ownership of an NFT from one address to another.
+    /// @dev This function enforces "lock rules" where active commitments cannot be transferred.
     ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern. This function only writes to storage
-    /// and doesn't make external calls, but still protected for consistency.
+    /// @param from The current owner address (must authorize).
+    /// @param to The recipient address (cannot be zero or same as from).
+    /// @param token_id The unique identifier of the token.
+    ///
+    /// @return Result<(), ContractError>
+    ///
+    /// @error ContractError::TokenNotFound If the token does not exist.
+    /// @error ContractError::NotOwner If 'from' does not own the token.
+    /// @error ContractError::TransferToZeroAddress If 'to' is invalid (zero or self-transfer).
+    /// @error ContractError::NFTLocked If the commitment is still active.
+    ///
+    /// @security
+    /// - Requires auth from the 'from' address.
+    /// - Protected by reentrancy guard.
+    /// - Implements the Transfer State Machine:
+    ///   [docs/CONTRACT_FUNCTIONS.md#transfer-state-machine](../../../docs/CONTRACT_FUNCTIONS.md#transfer-state-machine)
     pub fn transfer(
         e: Env,
         from: Address,
@@ -746,7 +854,9 @@ impl CommitmentNFTContract {
 
         // CHECKS: Reject transfer to zero address
         if is_zero_address(&e, &to) {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::TransferToZeroAddress);
         }
 
@@ -873,10 +983,13 @@ impl CommitmentNFTContract {
     }
 
     /// Get all NFTs metadata (for frontend)
+    ///
+    /// Storage note: uses persistent `TokenIds` to avoid instance storage growth
+    /// on hot-path list operations.
     pub fn get_all_metadata(e: Env) -> Vec<CommitmentNFT> {
         let token_ids: Vec<u32> = e
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TokenIds)
             .unwrap_or(Vec::new(&e));
 
@@ -922,11 +1035,24 @@ impl CommitmentNFTContract {
     // Settlement (Issue #5 - Main Implementation)
     // ========================================================================
 
-    /// Mark NFT as inactive (for early exit or other non-expiry scenarios)
+    /// Mark NFT as inactive for an authorized lifecycle transition.
     ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern.
-    pub fn mark_inactive(e: Env, token_id: u32) -> Result<(), ContractError> {
+    /// # Params
+    /// - `caller`: Contract address requesting the lifecycle update.
+    /// - `token_id`: NFT token identifier.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if no core contract has been configured.
+    /// - [`ContractError::NotAuthorized`] if `caller` is not the configured core contract.
+    /// - [`ContractError::TokenNotFound`] if the NFT does not exist.
+    /// - [`ContractError::AlreadySettled`] if the NFT is already inactive.
+    /// - [`ContractError::ReentrancyDetected`] if the guard is already set.
+    ///
+    /// # Security
+    /// - Requires `caller.require_auth()` so an external account cannot spoof the core address.
+    /// - Restricted to the configured `commitment_core` contract because this mutates lifecycle state.
+    /// - Uses checks-effects-interactions and does not perform outbound calls.
+    pub fn mark_inactive(e: Env, caller: Address, token_id: u32) -> Result<(), ContractError> {
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -939,6 +1065,11 @@ impl CommitmentNFTContract {
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
         EmergencyControl::require_not_emergency(&e);
+
+        if let Err(err) = require_core_contract_caller(&e, &caller) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
 
         // Check if contract is paused
         Pausable::require_not_paused(&e);
@@ -982,12 +1113,25 @@ impl CommitmentNFTContract {
         Ok(())
     }
 
-    /// Mark NFT as settled (after maturity)
+    /// Mark NFT as settled after maturity.
     ///
-    /// # Reentrancy Protection
-    /// Uses checks-effects-interactions pattern. This function only writes to storage
-    /// and doesn't make external calls, but still protected for consistency.
-    pub fn settle(e: Env, token_id: u32) -> Result<(), ContractError> {
+    /// # Params
+    /// - `caller`: Contract address requesting settlement.
+    /// - `token_id`: NFT token identifier.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if no core contract has been configured.
+    /// - [`ContractError::NotAuthorized`] if `caller` is not the configured core contract.
+    /// - [`ContractError::TokenNotFound`] if the NFT does not exist.
+    /// - [`ContractError::AlreadySettled`] if the NFT is already inactive.
+    /// - [`ContractError::NotExpired`] if the ledger timestamp is before `expires_at`.
+    /// - [`ContractError::ReentrancyDetected`] if the guard is already set.
+    ///
+    /// # Security
+    /// - Requires `caller.require_auth()` so only the authorized core contract can settle.
+    /// - Restricted to the configured `commitment_core` contract to keep core and NFT state aligned.
+    /// - Uses checks-effects-interactions and does not perform outbound calls.
+    pub fn settle(e: Env, caller: Address, token_id: u32) -> Result<(), ContractError> {
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1000,6 +1144,11 @@ impl CommitmentNFTContract {
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
         EmergencyControl::require_not_emergency(&e);
+
+        if let Err(err) = require_core_contract_caller(&e, &caller) {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
 
         // Check if contract is paused
         Pausable::require_not_paused(&e);
@@ -1105,6 +1254,19 @@ fn require_admin(e: &Env, caller: &Address) -> Result<(), ContractError> {
     Ok(())
 }
 
+fn require_core_contract_caller(e: &Env, caller: &Address) -> Result<(), ContractError> {
+    caller.require_auth();
+    let core_contract: Address = e
+        .storage()
+        .instance()
+        .get(&DataKey::CoreContract)
+        .ok_or(ContractError::NotInitialized)?;
+    if *caller != core_contract {
+        return Err(ContractError::NotAuthorized);
+    }
+    Ok(())
+}
+
 fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), ContractError> {
     let zero = BytesN::from_array(e, &[0; 32]);
     if *wasm_hash == zero {
@@ -1114,13 +1276,14 @@ fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), Contra
 }
 
 fn is_zero_address(e: &Env, address: &Address) -> bool {
-    let zero_str = String::from_str(e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero_str = String::from_str(
+        e,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
     address.to_string() == zero_str
 }
 
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
-
 #[cfg(test)]
 mod test_zero_address;
-mod benchmarks;

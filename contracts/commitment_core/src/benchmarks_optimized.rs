@@ -1,7 +1,30 @@
-//! Gas optimization benchmarks for commitment_core contract
-//! 
-//! This module contains benchmarks to measure the impact of gas optimizations.
-//! Run with: cargo test --features benchmark --release
+//! Gas optimization benchmarks for `commitment_core`.
+//!
+//! # Purpose
+//! Each benchmark measures CPU-instruction and memory-byte costs for a specific
+//! hot path. They are **not** correctness tests — they print metrics and rely on
+//! the Soroban budget API. Correctness of the invariants exercised here is
+//! separately verified in [`crate::benchmark_invariant_tests`].
+//!
+//! # Invariants exercised (cross-reference)
+//! | Benchmark | Invariant verified in `benchmark_invariant_tests` |
+//! |-----------|---------------------------------------------------|
+//! | `benchmark_create_commitment_storage_reads` | Counter monotonicity, TVL conservation |
+//! | `benchmark_batch_counter_updates` | Batch linearity (N creates → TVL = Σ amounts) |
+//! | `benchmark_commitment_id_generation` | ID uniqueness, "c_" prefix, correct encoding |
+//! | `benchmark_check_violations` | Violation predicate correctness, zero-amount edge case |
+//! | `benchmark_storage_pattern_comparison` | Sequential == batch read equivalence |
+//! | `benchmark_settle_function` | Settle post-conditions (status, TVL, owner list) |
+//! | `benchmark_memory_usage` | TVL conservation across N creates |
+//!
+//! # Running
+//! ```sh
+//! cargo test -p commitment_core --features benchmark --release -- benchmark
+//! ```
+//!
+//! # Security notes
+//! - Benchmarks call `env.mock_all_auths()` — auth is not under test here.
+//! - Budget numbers are environment-specific; treat them as relative, not absolute.
 
 #![cfg(all(test, feature = "benchmark"))]
 
@@ -21,6 +44,20 @@ fn setup_test_env() -> (Env, Address, Address, Address, Address) {
     (env, admin, nft_contract, owner, asset)
 }
 
+/// Benchmark: `create_commitment` storage-read pattern.
+///
+/// Measures the CPU and memory cost of a single `create_commitment` call after
+/// initialization. The call exercises the batch-read pattern for
+/// `TotalCommitments`, `TotalValueLocked`, and `NftContract`.
+///
+/// # Invariants exercised
+/// - `TotalCommitments` is read once and written back as `counter + 1`.
+/// - `TotalValueLocked` is read once and written back as `tvl + net_amount`.
+/// - The NFT contract address is read exactly once per create.
+///
+/// Correctness of these invariants is asserted in
+/// `benchmark_invariant_tests::invariant_total_commitments_increments_by_one_per_create`
+/// and `invariant_tvl_equals_sum_of_seeded_amounts`.
 #[test]
 fn benchmark_create_commitment_storage_reads() {
     let (env, admin, nft_contract, owner, asset) = setup_test_env();
@@ -60,6 +97,17 @@ fn benchmark_create_commitment_storage_reads() {
     println!("Expected Improvement: ~20-30% reduction in storage operations");
 }
 
+/// Benchmark: batch counter updates across N sequential creates.
+///
+/// Creates 10 commitments in a loop and measures average CPU cost per call.
+/// Verifies that counter updates scale linearly (no super-linear growth).
+///
+/// # Invariants exercised
+/// - After N creates, `TotalCommitments == N` (counter monotonicity).
+/// - `TotalValueLocked` equals the sum of all net amounts (TVL conservation).
+///
+/// Correctness asserted in `invariant_total_commitments_increments_by_one_per_create`
+/// and `invariant_tvl_equals_sum_of_seeded_amounts`.
 #[test]
 fn benchmark_batch_counter_updates() {
     let (env, admin, nft_contract, owner, asset) = setup_test_env();
@@ -96,6 +144,18 @@ fn benchmark_batch_counter_updates() {
     println!("Expected: Linear scaling with minimal overhead");
 }
 
+/// Benchmark: `generate_commitment_id` for 100 sequential counter values.
+///
+/// Measures average CPU cost of the direct counter-to-string conversion.
+///
+/// # Invariants exercised
+/// - Each counter value in `[0, 100)` produces a distinct string.
+/// - Every ID starts with the prefix `"c_"`.
+/// - Counter 0 → `"c_0"`, counter 1 → `"c_1"`, etc.
+///
+/// Correctness asserted in `invariant_commitment_ids_are_unique`,
+/// `invariant_commitment_id_prefix`, `invariant_commitment_id_counter_zero`,
+/// and `invariant_commitment_id_large_counter`.
 #[test]
 fn benchmark_commitment_id_generation() {
     let env = Env::default();
@@ -117,6 +177,18 @@ fn benchmark_commitment_id_generation() {
     println!("Expected: Minimal allocation overhead");
 }
 
+/// Benchmark: `check_violations` called 100 times on a healthy commitment.
+///
+/// Measures average CPU cost of the violation check hot path.
+///
+/// # Invariants exercised
+/// - Returns `false` when `loss_percent <= max_loss_percent` and not expired.
+/// - Zero-amount commitments do not trigger division-by-zero.
+/// - Non-active commitments return `false` immediately (no false positives).
+///
+/// Correctness asserted in `invariant_check_violations_false_when_healthy`,
+/// `invariant_check_violations_zero_amount_no_panic`, and
+/// `invariant_check_violations_false_for_settled_commitment`.
 #[test]
 fn benchmark_check_violations() {
     let (env, admin, nft_contract, owner, asset) = setup_test_env();
@@ -154,6 +226,17 @@ fn benchmark_check_violations() {
     println!("Expected: Fast path for common cases");
 }
 
+/// Benchmark: sequential vs batch storage-read patterns.
+///
+/// Compares CPU cost of reading `TotalCommitments`, `TotalValueLocked`, and
+/// `NftContract` sequentially versus in a single destructured block.
+///
+/// # Invariants exercised
+/// - Both patterns read the same underlying storage keys.
+/// - Both patterns return identical values for the same keys.
+///
+/// Correctness asserted in
+/// `invariant_sequential_and_batch_reads_are_equivalent`.
 #[test]
 fn benchmark_storage_pattern_comparison() {
     let env = Env::default();
@@ -203,6 +286,16 @@ fn benchmark_storage_pattern_comparison() {
     });
 }
 
+/// Benchmark: `settle` function on an expired commitment.
+///
+/// Measures CPU and memory cost of the full settle path including TVL update.
+///
+/// # Invariants exercised
+/// - After settle: `status == "settled"`.
+/// - `TotalValueLocked` decreases by `settlement_amount`.
+/// - Owner commitment list no longer contains the settled id.
+///
+/// Correctness asserted in `invariant_settle_post_conditions`.
 #[test]
 fn benchmark_settle_function() {
     let (env, admin, nft_contract, owner, asset) = setup_test_env();
@@ -243,6 +336,15 @@ fn benchmark_settle_function() {
     println!("Optimization: Efficient TVL update with single read-write");
 }
 
+/// Benchmark: memory allocation across 10 sequential creates.
+///
+/// Measures average memory bytes per commitment creation.
+///
+/// # Invariants exercised
+/// - `TotalValueLocked` equals the sum of all net amounts after N creates.
+/// - Memory growth is linear in the number of commitments.
+///
+/// Correctness asserted in `invariant_tvl_equals_sum_of_seeded_amounts`.
 #[test]
 fn benchmark_memory_usage() {
     let (env, admin, nft_contract, owner, asset) = setup_test_env();

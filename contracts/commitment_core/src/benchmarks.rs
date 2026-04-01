@@ -5,6 +5,7 @@ use super::*;
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 /// Benchmark helper to measure gas usage
+#[allow(dead_code)]
 struct BenchmarkMetrics {
     function_name: String,
     gas_before: u32,
