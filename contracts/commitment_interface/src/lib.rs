@@ -164,6 +164,7 @@ mod tests {
     const INTERFACE_TYPES: &str = include_str!("types.rs");
     const CORE_SOURCE: &str = include_str!("../../commitment_core/src/lib.rs");
     const ATTESTATION_SOURCE: &str = include_str!("../../attestation_engine/src/lib.rs");
+    const NFT_SOURCE: &str = include_str!("../../commitment_nft/src/lib.rs");
 
     fn extract_block(source: &str, marker: &str) -> String {
         let start = source
@@ -280,6 +281,22 @@ mod tests {
                 CORE_SOURCE,
                 "pub struct CommitmentSettledEvent {"
             ))
+        );
+    }
+
+    #[test]
+    fn commitment_metadata_source_matches_commitment_nft() {
+        assert_eq!(
+            normalize(&extract_block(INTERFACE_TYPES, "pub struct CommitmentMetadata {")),
+            normalize(&extract_block(NFT_SOURCE, "pub struct CommitmentMetadata {"))
+        );
+    }
+
+    #[test]
+    fn commitment_nft_source_matches_commitment_nft() {
+        assert_eq!(
+            normalize(&extract_block(INTERFACE_TYPES, "pub struct CommitmentNFT {")),
+            normalize(&extract_block(NFT_SOURCE, "pub struct CommitmentNFT {"))
         );
     }
 
