@@ -128,6 +128,16 @@ Run tests:
 cargo test --package shared_utils
 ```
 
+Build the contract for Soroban WASM target:
+
+```bash
+cargo build -p shared_utils --target wasm32v1-none --release
+```
+
+Note: `cargo test --target wasm32v1-none` is not supported for this no_std Soroban target
+because Rust's `test` harness crate is unavailable on `wasm32v1-none`. Use host tests plus
+WASM release build checks as the CI-safe split.
+
 ## Design Principles
 
 1. **Simplicity**: Utilities are focused and do one thing well
