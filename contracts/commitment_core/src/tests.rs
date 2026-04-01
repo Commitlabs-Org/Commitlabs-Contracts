@@ -102,9 +102,14 @@ fn test_create_commitment_i128_max() {
     e.mock_all_auths();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &1000);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
@@ -587,9 +592,13 @@ fn test_create_commitment_expiration_overflow() {
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let owner = Address::generate(&e);
-    let asset_address = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset_address);
+    token_admin_client.mint(&owner, &1000);
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
@@ -1756,6 +1765,7 @@ fn test_allocate_when_settled_fails() {
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::allocate(
             e.clone(),
+            admin.clone(),
             String::from_str(&e, commitment_id),
             target_pool.clone(),
             100,
@@ -1788,6 +1798,7 @@ fn test_allocate_when_violated_fails() {
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::allocate(
             e.clone(),
+            admin.clone(),
             String::from_str(&e, commitment_id),
             target_pool.clone(),
             100,
@@ -1820,6 +1831,7 @@ fn test_allocate_when_early_exit_fails() {
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::allocate(
             e.clone(),
+            admin.clone(),
             String::from_str(&e, commitment_id),
             target_pool.clone(),
             100,
@@ -1858,6 +1870,7 @@ fn test_allocate_when_active_succeeds() {
     store_commitment(&e, &contract_id, &commitment);
 
     client.allocate(
+        &admin,
         &String::from_str(&e, commitment_id),
         &target_pool,
         &allocation_amount,

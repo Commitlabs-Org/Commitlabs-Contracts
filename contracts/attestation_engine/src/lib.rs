@@ -24,7 +24,7 @@ pub enum AttestationError {
     Unauthorized = 3,
     /// Invalid commitment ID
     InvalidCommitmentId = 4,
-    /// Invalid attestation type (must be health_check, violation, fee_generation, or drawdown)
+    /// Invalid attestation type. Allowed types: "health_check", "violation", "fee_generation", "drawdown".
     InvalidAttestationType = 5,
     /// Invalid attestation data for the given type
     InvalidAttestationData = 6,
@@ -198,11 +198,22 @@ impl AttestationEngineContract {
     // Verifier Whitelist Management
     // ========================================================================
 
-    /// Add a verifier to the whitelist
+    /// Add a verifier to the allowlist.
     ///
     /// # Arguments
     /// * `caller` - Must be admin
     /// * `verifier` - Address to add as authorized verifier
+    ///
+    /// # Errors
+    /// * `NotInitialized` – contract not initialized
+    /// * `Unauthorized` – caller is not admin
+    ///
+    /// # Security Notes
+    /// - Rate-limited per caller via `RateLimiter` (configurable via `set_rate_limit`
+    ///   using function symbol `"add_verif"`).
+    /// - Duplicate adds are idempotent: emits `VerifAddAbuse` audit event and returns
+    ///   `Ok(())` without modifying state, so call patterns are visible on-chain
+    ///   without disrupting operation.
     pub fn add_verifier(
         e: Env,
         caller: Address,
@@ -221,23 +232,53 @@ impl AttestationEngineContract {
             return Err(AttestationError::Unauthorized);
         }
 
-        // Add verifier to whitelist
+        // Rate-limit allowlist mutations per caller (panics if limit exceeded)
+        let fn_symbol = Symbol::new(&e, "add_verif");
+        RateLimiter::check(&e, &caller, &fn_symbol);
+
+        // Abuse case: duplicate add — emit audit event and return idempotently
+        let already_listed: bool = e
+            .storage()
+            .instance()
+            .get(&DataKey::Verifier(verifier.clone()))
+            .unwrap_or(false);
+        if already_listed {
+            e.events().publish(
+                (Symbol::new(&e, "VerifAddAbuse"),),
+                (caller, verifier, e.ledger().timestamp()),
+            );
+            return Ok(());
+        }
+
+        // Add verifier to allowlist
         e.storage()
             .instance()
             .set(&DataKey::Verifier(verifier.clone()), &true);
 
-        // Emit event
-        e.events()
-            .publish((Symbol::new(&e, "VerifierAdded"),), (verifier,));
+        // Emit audit event with caller and timestamp
+        e.events().publish(
+            (Symbol::new(&e, "VerifierAdded"),),
+            (caller, verifier, e.ledger().timestamp()),
+        );
 
         Ok(())
     }
 
-    /// Remove a verifier from the whitelist
+    /// Remove a verifier from the allowlist.
     ///
     /// # Arguments
     /// * `caller` - Must be admin
     /// * `verifier` - Address to remove from authorized verifiers
+    ///
+    /// # Errors
+    /// * `NotInitialized` – contract not initialized
+    /// * `Unauthorized` – caller is not admin
+    ///
+    /// # Security Notes
+    /// - Rate-limited per caller via `RateLimiter` (configurable via `set_rate_limit`
+    ///   using function symbol `"rm_verif"`).
+    /// - Removing an address not in the allowlist is idempotent: emits `VerifRmAbuse`
+    ///   audit event and returns `Ok(())` without modifying state.
     pub fn remove_verifier(
         e: Env,
         caller: Address,
@@ -256,14 +297,34 @@ impl AttestationEngineContract {
             return Err(AttestationError::Unauthorized);
         }
 
-        // Remove verifier from whitelist
+        // Rate-limit allowlist mutations per caller (panics if limit exceeded)
+        let fn_symbol = Symbol::new(&e, "rm_verif");
+        RateLimiter::check(&e, &caller, &fn_symbol);
+
+        // Abuse case: remove of non-existent verifier — emit audit event and return idempotently
+        let is_listed: bool = e
+            .storage()
+            .instance()
+            .get(&DataKey::Verifier(verifier.clone()))
+            .unwrap_or(false);
+        if !is_listed {
+            e.events().publish(
+                (Symbol::new(&e, "VerifRmAbuse"),),
+                (caller, verifier, e.ledger().timestamp()),
+            );
+            return Ok(());
+        }
+
+        // Remove verifier from allowlist
         e.storage()
             .instance()
             .remove(&DataKey::Verifier(verifier.clone()));
 
-        // Emit event
-        e.events()
-            .publish((Symbol::new(&e, "VerifierRemoved"),), (verifier,));
+        // Emit audit event with caller and timestamp
+        e.events().publish(
+            (Symbol::new(&e, "VerifierRemoved"),),
+            (caller, verifier, e.ledger().timestamp()),
+        );
 
         Ok(())
     }

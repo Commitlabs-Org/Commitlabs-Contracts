@@ -9,17 +9,25 @@ This document summarizes public entry points for each contract and their access 
 | initialize(admin, nft_contract)                                       | Set admin, NFT contract, and counters.           | None (single-use).                        | Panics if already initialized.                     |
 | create_commitment(owner, amount, asset_address, rules) -> String      | Creates commitment, transfers assets, mints NFT. | owner.require_auth; caller supplies owner.   | Uses reentrancy guard and rate limiting per owner. |
 | get_commitment(commitment_id) -> Commitment                           | Fetch commitment details.                        | View.                                     | Panics if not found.                               |
+| list_commitments_by_owner(owner) -> Vec<String>                       | List commitment IDs for owner (convenience).     | View.                                     | Wrapper around get_owner_commitments.              |
 | get_owner_commitments(owner) -> Vec<String>                           | List commitment IDs for owner.                   | View.                                     | Returns empty Vec if none.                         |
 | list_commitments_by_owner(owner) -> Vec<String>                     | List commitment IDs for owner (alias).           | View.                                     | Same as get_owner_commitments.                      |
 | get_commitments_created_between(from_ts, to_ts) -> Vec<String>    | Get commitments created in time range.           | View.                                     | O(n) cost; use for analytics.                      |
 | get_total_commitments() -> u64                                        | Total commitments count.                         | View.                                     | Reads instance storage counter.                    |
 | get_total_value_locked() -> i128                                      | Total value locked across commitments.           | View.                                     | Aggregate stored in instance storage.              |
+| get_commitments_created_between(from_ts, to_ts) -> Vec<String>        | Get commitments created in time range.           | View.                                     | O(n) cost; use pagination for large datasets.     |
 | get_admin() -> Address                                                | Fetch admin address.                             | View.                                     | Panics if not initialized.                         |
 | pause(caller)                                                          | Pause contract operations.                      | Admin require_auth.                        | Prevents state-changing operations.                |
 | unpause(caller)                                                        | Unpause contract operations.                    | Admin require_auth.                        | Re-enables state-changing operations.              |
 | is_paused() -> bool                                                    | Check if contract is paused.                     | View.                                     | Returns pause state.                               |
 | get_nft_contract() -> Address                                         | Fetch NFT contract address.                      | View.                                     | Panics if not initialized.                         |
-| update_value(commitment_id, new_value)                                | Update commitment value and check violations.   | No require_auth (rate limited).             | Updates stored value and checks loss violations.  |
+| pause(caller)                                                         | Pause contract operations.                       | Admin require_auth.                        | Uses Pausable utility.                             |
+| unpause(caller)                                                       | Unpause contract operations.                     | Admin require_auth.                        | Uses Pausable utility.                             |
+| is_paused() -> bool                                                   | Check if contract is paused.                     | View.                                     | Returns pause state.                               |
+| add_authorized_contract(caller, contract_address)                    | Add authorized allocator contract.               | Admin require_auth.                        | Stores authorization flag.                          |
+| remove_authorized_contract(caller, contract_address)                 | Remove authorized allocator contract.            | Admin require_auth.                        | Removes authorization flag.                        |
+| is_authorized(contract_address) -> bool                              | Check if contract is authorized.                 | View.                                     | Admin is implicitly authorized.                    |
+| update_value(commitment_id, new_value)                                | Emit value update event.                         | No require_auth.                          | Updates stored commitment value and TVL.           |
 | check_violations(commitment_id) -> bool                               | Evaluate loss or duration violations.            | View.                                     | Emits violation event when violated.               |
 | get_violation_details(commitment_id) -> (bool, bool, bool, i128, u64) | Detailed violation info.                         | View.                                     | Calculates loss percent and time remaining.        |
 | settle(commitment_id)                                                 | Settle expired commitment and NFT.               | No require_auth.                          | Transfers assets and calls NFT settle.             |
@@ -27,46 +35,41 @@ This document summarizes public entry points for each contract and their access 
 | allocate(caller, commitment_id, target_pool, amount)                          | Allocate assets to pool.                         | caller.require_auth + admin or authorized allocator. | Transfers assets to target pool.                   |
 | set_rate_limit(caller, function, window, max_calls)                   | Configure rate limits.                           | Admin only.                               | Uses shared RateLimiter.                           |
 | set_rate_limit_exempt(caller, address, exempt)                        | Configure rate limit exemption.                  | Admin only.                               | Uses shared RateLimiter.                           |
-| add_authorized_contract(caller, contract_address)                     | Add authorized allocator contract.               | Admin require_auth.                        | Sets contract as authorized allocator.            |
-| remove_authorized_contract(caller, contract_address)                  | Remove authorized allocator contract.            | Admin require_auth.                        | Removes contract authorization.                   |
-| is_authorized(contract_address) -> bool                               | Check if contract is authorized allocator.       | View.                                     | Returns true for admin and authorized contracts.   |
-| add_updater(caller, updater)                                          | Add authorized value updater.                    | Admin require_auth.                        | Can update commitment values.                     |
-| remove_updater(caller, updater)                                       | Remove authorized value updater.                 | Admin require_auth.                        | Removes value update authorization.               |
-| get_authorized_updaters() -> Vec<Address>                             | Get list of authorized updaters.                 | View.                                     | Returns empty Vec if none.                        |
-| set_allocation_contract(caller, addr)                                 | Set allocation contract address.                 | Admin require_auth.                        | Updates allocation contract reference.            |
-| is_emergency_mode() -> bool                                           | Check emergency mode status.                     | View.                                     | Returns true if emergency mode is active.         |
-| set_emergency_mode(caller, enabled)                                   | Enable/disable emergency mode.                   | Admin require_auth.                        | Controls emergency operations.                    |
-| emergency_withdraw(caller, asset, to, amount)                        | Emergency asset withdrawal.                      | Admin require_auth + emergency mode.      | Withdraws assets to specified address.            |
-| set_creation_fee_bps(caller, bps)                                      | Set creation fee rate in basis points.          | Admin require_auth.                        | 100 bps = 1%. Must be 0-10000.                    |
-| set_fee_recipient(caller, recipient)                                   | Set fee recipient address.                       | Admin require_auth.                        | Sets protocol treasury for fee withdrawals.        |
-| withdraw_fees(caller, asset_address, amount)                           | Withdraw collected fees to recipient.            | Admin require_auth.                        | Requires fee recipient to be set.                 |
-| get_creation_fee_bps() -> u32                                           | Get current creation fee rate.                   | View.                                     | Returns 0 if not set.                             |
-| get_fee_recipient() -> Option<Address>                                 | Get configured fee recipient.                    | View.                                     | Returns None if not set.                          |
-| get_collected_fees(asset_address) -> i128                              | Get collected fees for asset.                    | View.                                     | Returns 0 if no fees collected.                   |
+| set_creation_fee_bps(caller, bps)                                     | Set creation fee rate in basis points.           | Admin only.                               | Fee rate 0-10000 bps (100 bps = 1%).               |
+| set_fee_recipient(caller, recipient)                                  | Set protocol treasury for fee withdrawals.       | Admin only.                               | Validates recipient is not zero address.           |
+| withdraw_fees(caller, asset_address, amount)                          | Withdraw collected fees to recipient.            | Admin only.                               | Requires recipient set, sufficient fees collected. |
+| get_creation_fee_bps() -> u32                                         | Get current creation fee rate.                   | View.                                     | Returns 0 if not set.                              |
+| get_fee_recipient() -> Option<Address>                                | Get configured fee recipient.                    | View.                                     | Returns None if not set.                           |
+| get_collected_fees(asset_address) -> i128                             | Get collected fees for an asset.                 | View.                                     | Returns 0 if none collected.                       |
 
 ### commitment_core cross-contract notes
 
 - `create_commitment` is the main outbound write edge into `commitment_nft`; it also moves user assets into core custody.
 - `settle` and `early_exit` both depend on downstream NFT lifecycle calls to keep mirrored state aligned.
 - `get_commitment` is the canonical read edge consumed by `attestation_engine`.
+- `allocate` transfers assets to authorized pool contracts and requires caller authorization.
+- `update_value` modifies stored commitment state and TVL, emitting events for downstream consumers.
+- Fee management functions (`set_creation_fee_bps`, `withdraw_fees`, etc.) handle protocol revenue collection.
+- Emergency control functions (`emergency_withdraw`, `set_emergency_mode`) provide admin safety controls.
 - Cross-contract review reference: `docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md`
 
 ## commitment_interface
 
-`commitment_interface` is an ABI-only crate. It should mirror the live
-`commitment_core` commitment schema and a narrow set of production entrypoints.
-CI drift tests compare its source-defined types and expected signatures against
-`commitment_core` and `attestation_engine`.
+`commitment_interface` is an ABI-only crate. It mirrors the live
+`commitment_core` commitment schema, event payloads, and the core read-only
+entrypoints that downstream bindings commonly consume. CI drift checks compare
+its source-defined types and expected signatures against `commitment_core` and
+`attestation_engine`.
 
-| Function                                                            | Summary                                      | Access control            | Notes                                                                    |
-| ------------------------------------------------------------------- | -------------------------------------------- | ------------------------- | ------------------------------------------------------------------------ |
-| initialize(admin, nft_contract) -> Result                           | Initialize admin and linked NFT contract.    | Interface only.           | Live core contract is single-use; no state exists in this crate.         |
-| create_commitment(owner, amount, asset_address, rules) -> Result<String> | Create a commitment and return string id.    | Interface only.           | Mirrors live `commitment_core` types, including `CommitmentRules`.       |
-| get_commitment(commitment_id) -> Result<Commitment>                 | Fetch the canonical commitment record.       | View in live contract.    | `Commitment` shape is drift-checked against `commitment_core`.           |
-| get_owner_commitments(owner) -> Result<Vec<String>>                 | List commitment ids owned by an address.     | View in live contract.    | Used by UIs and indexers.                                                |
-| get_total_commitments() -> Result<u64>                              | Read the total commitment counter.           | View in live contract.    | Counter is stored by the live core contract.                             |
-| settle(commitment_id) -> Result                                     | Settle an expired commitment.                | Mutating in live contract | Live implementation performs token and NFT cross-contract interactions.  |
-| early_exit(commitment_id, caller) -> Result                         | Exit a commitment early with penalty logic.  | Mutating in live contract | Live implementation must enforce caller auth and overflow-safe math.     |
+| Function                                                                 | Summary                                     | Access control            | Notes                                                                   |
+| ------------------------------------------------------------------------ | ------------------------------------------- | ------------------------- | ----------------------------------------------------------------------- |
+| initialize(admin, nft_contract) -> Result                                | Initialize admin and linked NFT contract.   | Interface only.           | Live core contract is single-use; no state exists in this crate.        |
+| create_commitment(owner, amount, asset_address, rules) -> Result<String> | Create a commitment and return string id.   | Interface only.           | Mirrors live `commitment_core` types, including `CommitmentRules`.      |
+| get_commitment(commitment_id) -> Result<Commitment>                      | Fetch the canonical commitment record.      | View in live contract.    | `Commitment` shape is drift-checked against `commitment_core`.          |
+| get_owner_commitments(owner) -> Result<Vec<String>>                      | List commitment ids owned by an address.    | View in live contract.    | Used by UIs and indexers.                                               |
+| get_total_commitments() -> Result<u64>                                   | Read the total commitment counter.          | View in live contract.    | Counter is stored by the live core contract.                            |
+| settle(commitment_id) -> Result                                          | Settle an expired commitment.               | Mutating in live contract | Live implementation performs token and NFT cross-contract interactions. |
+| early_exit(commitment_id, caller) -> Result                              | Exit a commitment early with penalty logic. | Mutating in live contract | Live implementation must enforce caller auth and overflow-safe math.    |
 
 ## commitment_nft
 
@@ -91,28 +94,28 @@ CI drift tests compare its source-defined types and expected signatures against
 
 ## attestation_engine
 
-| Function                                                                      | Summary                           | Access control         | Notes                                                          |
-| ----------------------------------------------------------------------------- | --------------------------------- | ---------------------- | -------------------------------------------------------------- |
-| initialize(admin, commitment_core) -> Result                                  | Set admin and core contract.      | None (single-use).     | Returns AlreadyInitialized on repeat.                          |
-| add_verifier(caller, verifier) -> Result                                      | Authorize verifier address.       | Admin require_auth.    | Stores verifier flag.                                          |
-| remove_verifier(caller, verifier) -> Result                                   | Remove verifier authorization.    | Admin require_auth.    | Removes verifier flag.                                         |
-| is_verifier(address) -> bool                                                  | Check verifier authorization.     | View.                  | Admin is implicitly authorized.                                |
-| get_admin() -> Result<Address>                                                | Fetch admin address.              | View.                  | Fails if not initialized.                                      |
-| get_core_contract() -> Result<Address>                                        | Fetch core contract address.      | View.                  | Fails if not initialized.                                      |
-| get_stored_health_metrics(commitment_id) -> Option<HealthMetrics>             | Fetch cached health metrics.      | View.                  | Returns None if missing.                                       |
-| attest(caller, commitment_id, attestation_type, data, is_compliant) -> Result | Record attestation.               | Verifier require_auth. | Validates commitment, uses rate limiting and reentrancy guard. |
-| get_attestations(commitment_id) -> Vec<Attestation>                           | List attestations for commitment. | View.                  | Returns empty Vec if none.                                     |
-| get_attestations_page(commitment_id, offset, limit) -> AttestationsPage        | Paginated attestations.           | View.                  | Order: timestamp (oldest first). Max page size MAX_PAGE_SIZE=100. next_offset=0 when no more. |
-| get_attestation_count(commitment_id) -> u64                                   | Count attestations.               | View.                  | Stored in persistent storage.                                  |
-| get_health_metrics(commitment_id) -> HealthMetrics                            | Compute current health metrics.   | View.                  | Reads commitment_core data.                                    |
-| verify_compliance(commitment_id) -> bool                                      | Check compliance vs rules.        | View.                  | Uses health metrics and rules.                                 |
-| record_fees(caller, commitment_id, fee_amount) -> Result                      | Convenience fee attestation.      | Verifier require_auth. | Calls attest() internally.                                     |
-| record_drawdown(caller, commitment_id, drawdown_percent) -> Result            | Convenience drawdown attestation. | Verifier require_auth. | Calls attest() internally.                                     |
-| calculate_compliance_score(commitment_id) -> u32                              | Compute compliance score.         | View.                  | Emits ScoreUpd event.                                          |
-| get_protocol_statistics() -> (u64, u64, u64, i128)                            | Aggregate protocol stats.         | View.                  | Reads commitment_core counters.                                |
-| get_verifier_statistics(verifier) -> u64                                      | Per-verifier attestation count.   | View.                  | Stored in instance storage.                                    |
-| set_rate_limit(caller, function, window, max_calls) -> Result                 | Configure rate limits.            | Admin require_auth.    | Uses shared RateLimiter.                                       |
-| set_rate_limit_exempt(caller, verifier, exempt) -> Result                     | Configure rate limit exemption.   | Admin require_auth.    | Uses shared RateLimiter.                                       |
+| Function                                                                      | Summary                           | Access control         | Notes                                                                                         |
+| ----------------------------------------------------------------------------- | --------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------- |
+| initialize(admin, commitment_core) -> Result                                  | Set admin and core contract.      | None (single-use).     | Returns AlreadyInitialized on repeat.                                                         |
+| add_verifier(caller, verifier) -> Result                                      | Authorize verifier address.       | Admin require_auth.    | Stores verifier flag.                                                                         |
+| remove_verifier(caller, verifier) -> Result                                   | Remove verifier authorization.    | Admin require_auth.    | Removes verifier flag.                                                                        |
+| is_verifier(address) -> bool                                                  | Check verifier authorization.     | View.                  | Admin is implicitly authorized.                                                               |
+| get_admin() -> Result<Address>                                                | Fetch admin address.              | View.                  | Fails if not initialized.                                                                     |
+| get_core_contract() -> Result<Address>                                        | Fetch core contract address.      | View.                  | Fails if not initialized.                                                                     |
+| get_stored_health_metrics(commitment_id) -> Option<HealthMetrics>             | Fetch cached health metrics.      | View.                  | Returns None if missing.                                                                      |
+| attest(caller, commitment_id, attestation_type, data, is_compliant) -> Result | Record attestation.               | Verifier require_auth. | Validates commitment, uses rate limiting and reentrancy guard.                                |
+| get_attestations(commitment_id) -> Vec<Attestation>                           | List attestations for commitment. | View.                  | Returns empty Vec if none.                                                                    |
+| get_attestations_page(commitment_id, offset, limit) -> AttestationsPage       | Paginated attestations.           | View.                  | Order: timestamp (oldest first). Max page size MAX_PAGE_SIZE=100. next_offset=0 when no more. |
+| get_attestation_count(commitment_id) -> u64                                   | Count attestations.               | View.                  | Stored in persistent storage.                                                                 |
+| get_health_metrics(commitment_id) -> HealthMetrics                            | Compute current health metrics.   | View.                  | Reads commitment_core data.                                                                   |
+| verify_compliance(commitment_id) -> bool                                      | Check compliance vs rules.        | View.                  | Uses health metrics and rules.                                                                |
+| record_fees(caller, commitment_id, fee_amount) -> Result                      | Convenience fee attestation.      | Verifier require_auth. | Calls attest() internally.                                                                    |
+| record_drawdown(caller, commitment_id, drawdown_percent) -> Result            | Convenience drawdown attestation. | Verifier require_auth. | Calls attest() internally.                                                                    |
+| calculate_compliance_score(commitment_id) -> u32                              | Compute compliance score.         | View.                  | Emits ScoreUpd event.                                                                         |
+| get_protocol_statistics() -> (u64, u64, u64, i128)                            | Aggregate protocol stats.         | View.                  | Reads commitment_core counters.                                                               |
+| get_verifier_statistics(verifier) -> u64                                      | Per-verifier attestation count.   | View.                  | Stored in instance storage.                                                                   |
+| set_rate_limit(caller, function, window, max_calls) -> Result                 | Configure rate limits.            | Admin require_auth.    | Uses shared RateLimiter.                                                                      |
+| set_rate_limit_exempt(caller, verifier, exempt) -> Result                     | Configure rate limit exemption.   | Admin require_auth.    | Uses shared RateLimiter.                                                                      |
 
 ### attestation_engine cross-contract notes
 
@@ -128,9 +131,9 @@ CI drift tests compare its source-defined types and expected signatures against
 | register_pool(admin, pool_id, risk_level, apy, max_capacity) -> Result         | Register investment pool.               | Admin require_auth.  | Validates capacity and APY.               |
 | update_pool_status(admin, pool_id, active) -> Result                           | Activate/deactivate pool.               | Admin require_auth.  | Updates pool timestamps.                  |
 | update_pool_capacity(admin, pool_id, new_capacity) -> Result                   | Update pool capacity.                   | Admin require_auth.  | Ensures capacity >= liquidity.            |
-| allocate(caller, commitment_id, amount, strategy) -> Result<AllocationSummary> | Allocate funds across pools.            | caller.require_auth. | Uses rate limiting and reentrancy guard.  |
-| rebalance(caller, commitment_id) -> Result<AllocationSummary>                  | Reallocate using stored strategy.       | caller.require_auth. | Requires caller matches allocation owner. |
-| get_allocation(commitment_id) -> AllocationSummary                             | Fetch allocation summary.               | View.                | Returns empty summary if missing.         |
+| allocate(caller, commitment_id, amount, strategy) -> Result<AllocationSummary> | Allocate funds across pools.            | caller.require_auth. | Validates commitment against core; uses rate limiting. |
+| rebalance(caller, commitment_id) -> Result<AllocationSummary>                  | Reallocate using stored strategy.       | caller.require_auth. | Requires caller matches owner; validates core. |
+| get_allocation(commitment_id) -> AllocationSummary                             | Fetch allocation summary.               | View.                | String ID; returns empty summary if missing.         |
 | get_pool(pool_id) -> Result<Pool>                                              | Fetch pool info.                        | View.                | Returns PoolNotFound if missing.          |
 | get_all_pools() -> Vec<Pool>                                                   | Fetch all pools.                        | View.                | Iterates registry.                        |
 | is_initialized() -> bool                                                       | Check initialization flag.              | View.                | Returns false if uninitialized.           |
@@ -139,21 +142,21 @@ CI drift tests compare its source-defined types and expected signatures against
 
 ## price_oracle
 
-| Function                                               | Summary                                          | Access control            | Notes                                                                          |
-| ------------------------------------------------------ | ------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------ |
-| initialize(admin) -> Result                            | Set admin and default staleness window.          | None (single-use).        | Initializes whitelist authority and versioned config.                          |
-| add_oracle(caller, oracle_address) -> Result           | Add a trusted price publisher.                   | Admin require_auth.       | Whitelisted oracle can overwrite the latest price for any asset it updates.    |
-| remove_oracle(caller, oracle_address) -> Result        | Remove a trusted price publisher.                | Admin require_auth.       | Prevents further updates from that address.                                    |
-| is_oracle_whitelisted(address) -> bool                 | Check whitelist membership.                      | View.                     | Reads the admin-managed trust list.                                            |
-| set_price(caller, asset, price, decimals) -> Result    | Publish latest price for an asset.               | Oracle require_auth.      | Validates non-negative price; does not aggregate or reconcile multiple feeds.  |
-| get_price(asset) -> PriceData                          | Read the raw latest price snapshot.              | View.                     | Returns zeroed `PriceData` if unset; does not enforce freshness.               |
-| get_price_valid(asset, max_staleness_override) -> Result<PriceData> | Read a fresh price snapshot or fail. | View.                     | Rejects stale and future-dated data; preferred for security-sensitive reads.   |
-| set_max_staleness(caller, seconds) -> Result           | Update default freshness window.                 | Admin require_auth.       | Tunes rejection threshold for delayed oracle updates.                          |
-| get_max_staleness() -> u64                             | Read default freshness window.                   | View.                     | Used when `get_price_valid` has no override.                                   |
-| get_admin() -> Address                                 | Read oracle admin.                               | View.                     | Returns the current whitelist/config authority.                                |
-| set_admin(caller, new_admin) -> Result                 | Transfer oracle admin authority.                 | Admin require_auth.       | Transfers control over whitelist and configuration.                            |
-| upgrade(caller, new_wasm_hash) -> Result               | Upgrade contract code.                           | Admin require_auth.       | Validates non-zero WASM hash.                                                  |
-| migrate(caller, from_version) -> Result                | Migrate legacy storage to current version.       | Admin require_auth.       | Replays are blocked once current version is installed.                         |
+| Function                                                            | Summary                                    | Access control       | Notes                                                                         |
+| ------------------------------------------------------------------- | ------------------------------------------ | -------------------- | ----------------------------------------------------------------------------- |
+| initialize(admin) -> Result                                         | Set admin and default staleness window.    | None (single-use).   | Initializes whitelist authority and versioned config.                         |
+| add_oracle(caller, oracle_address) -> Result                        | Add a trusted price publisher.             | Admin require_auth.  | Whitelisted oracle can overwrite the latest price for any asset it updates.   |
+| remove_oracle(caller, oracle_address) -> Result                     | Remove a trusted price publisher.          | Admin require_auth.  | Prevents further updates from that address.                                   |
+| is_oracle_whitelisted(address) -> bool                              | Check whitelist membership.                | View.                | Reads the admin-managed trust list.                                           |
+| set_price(caller, asset, price, decimals) -> Result                 | Publish latest price for an asset.         | Oracle require_auth. | Validates non-negative price; does not aggregate or reconcile multiple feeds. |
+| get_price(asset) -> PriceData                                       | Read the raw latest price snapshot.        | View.                | Returns zeroed `PriceData` if unset; does not enforce freshness.              |
+| get_price_valid(asset, max_staleness_override) -> Result<PriceData> | Read a fresh price snapshot or fail.       | View.                | Rejects stale and future-dated data; preferred for security-sensitive reads.  |
+| set_max_staleness(caller, seconds) -> Result                        | Update default freshness window.           | Admin require_auth.  | Tunes rejection threshold for delayed oracle updates.                         |
+| get_max_staleness() -> u64                                          | Read default freshness window.             | View.                | Used when `get_price_valid` has no override.                                  |
+| get_admin() -> Address                                              | Read oracle admin.                         | View.                | Returns the current whitelist/config authority.                               |
+| set_admin(caller, new_admin) -> Result                              | Transfer oracle admin authority.           | Admin require_auth.  | Transfers control over whitelist and configuration.                           |
+| upgrade(caller, new_wasm_hash) -> Result                            | Upgrade contract code.                     | Admin require_auth.  | Validates non-zero WASM hash.                                                 |
+| migrate(caller, from_version) -> Result                             | Migrate legacy storage to current version. | Admin require_auth.  | Replays are blocked once current version is installed.                        |
 
 ### price_oracle manipulation-resistance notes
 
@@ -263,20 +266,20 @@ cargo test --package commitment_nft test_transfer
 
 ## time_lock
 
-| Function | Summary | Access control | Notes |
-| --- | --- | --- | --- |
-| initialize(admin) | Set the initial timelock admin. | None (single-use). | Establishes the authority allowed to queue and cancel actions. |
-| queue_action(action_type, target, data, delay) -> Result<u64> | Queue a delayed governance action. | Stored admin `require_auth`. | Delay must be at least the action-type minimum and no more than 30 days. |
-| execute_action(action_id) -> Result | Execute a matured action. | Permissionless after delay. | Anyone may execute once `executable_at` is reached. |
-| cancel_action(action_id) -> Result | Cancel a queued action. | Stored admin `require_auth`. | Fails if the action already executed or was already cancelled. |
-| get_action(action_id) -> Result<QueuedAction> | Read queued action metadata. | View. | Includes `queued_at`, `executable_at`, and execution state. |
-| get_all_actions() -> Vec<u64> | Read all queued action ids. | View. | Includes executed and cancelled actions. |
-| get_pending_actions() -> Vec<u64> | Read actions that are neither executed nor cancelled. | View. | Useful for operator review and execution scans. |
-| get_executable_actions() -> Vec<u64> | Read pending actions whose delay has elapsed. | View. | Actions are executable at exactly `executable_at`. |
-| get_admin() -> Address | Read the current admin. | View. | Returns the authority for queue/cancel operations. |
-| get_min_delay(action_type) -> u64 | Read the minimum delay for an action type. | View. | Current floors: 1 day for parameter/fee, 2 days for admin, 3 days for upgrade. |
-| get_max_delay() -> u64 | Read the global maximum allowed delay. | View. | Hard cap is 30 days. |
-| get_action_count() -> u64 | Read total number of queued actions. | View. | Monotonic counter for action ids. |
+| Function                                                      | Summary                                               | Access control               | Notes                                                                          |
+| ------------------------------------------------------------- | ----------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------ |
+| initialize(admin)                                             | Set the initial timelock admin.                       | None (single-use).           | Establishes the authority allowed to queue and cancel actions.                 |
+| queue_action(action_type, target, data, delay) -> Result<u64> | Queue a delayed governance action.                    | Stored admin `require_auth`. | Delay must be at least the action-type minimum and no more than 30 days.       |
+| execute_action(action_id) -> Result                           | Execute a matured action.                             | Permissionless after delay.  | Anyone may execute once `executable_at` is reached.                            |
+| cancel_action(action_id) -> Result                            | Cancel a queued action.                               | Stored admin `require_auth`. | Fails if the action already executed or was already cancelled.                 |
+| get_action(action_id) -> Result<QueuedAction>                 | Read queued action metadata.                          | View.                        | Includes `queued_at`, `executable_at`, and execution state.                    |
+| get_all_actions() -> Vec<u64>                                 | Read all queued action ids.                           | View.                        | Includes executed and cancelled actions.                                       |
+| get_pending_actions() -> Vec<u64>                             | Read actions that are neither executed nor cancelled. | View.                        | Useful for operator review and execution scans.                                |
+| get_executable_actions() -> Vec<u64>                          | Read pending actions whose delay has elapsed.         | View.                        | Actions are executable at exactly `executable_at`.                             |
+| get_admin() -> Address                                        | Read the current admin.                               | View.                        | Returns the authority for queue/cancel operations.                             |
+| get_min_delay(action_type) -> u64                             | Read the minimum delay for an action type.            | View.                        | Current floors: 1 day for parameter/fee, 2 days for admin, 3 days for upgrade. |
+| get_max_delay() -> u64                                        | Read the global maximum allowed delay.                | View.                        | Hard cap is 30 days.                                                           |
+| get_action_count() -> u64                                     | Read total number of queued actions.                  | View.                        | Monotonic counter for action ids.                                              |
 
 ### time_lock operational notes
 
