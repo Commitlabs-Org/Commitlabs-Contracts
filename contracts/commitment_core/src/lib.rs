@@ -233,9 +233,9 @@ fn set_commitment(e: &Env, commitment: &Commitment) {
     e.storage().instance().set(&DataKey::Commitment(commitment.commitment_id.clone()), commitment);
 }
 
-fn has_commitment(e: &Env, commitment_id: &String) -> bool {
-    e.storage().instance().has(&DataKey::Commitment(commitment_id.clone()))
-}
+// fn has_commitment(e: &Env, commitment_id: &String) -> bool {
+//     e.storage().instance().has(&DataKey::Commitment(commitment_id.clone()))
+// }
 
 fn require_no_reentrancy(e: &Env) {
     if e.storage().instance().get::<_, bool>(&DataKey::ReentrancyGuard).unwrap_or(false) {

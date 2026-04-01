@@ -1,5 +1,73 @@
-#![cfg(test)]
 
+#[test]
+fn test_attest_invalid_types() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "commitment_invalid_type");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "commitment_invalid_type",
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    let data = Map::new(&e);
+
+    // Empty attestation_type
+    let empty_type = String::from_str(&e, "");
+    let result = client.try_attest(&admin, &commitment_id, &empty_type, &data, &true);
+    assert!(result.is_err());
+
+    // Unknown attestation_type
+    let unknown_type = String::from_str(&e, "unknown");
+    let result = client.try_attest(&admin, &commitment_id, &unknown_type, &data, &true);
+    assert!(result.is_err());
+
+    // Allowed types with required data
+    // health_check: no required fields
+    let att_type = String::from_str(&e, "health_check");
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &Map::new(&e), &true);
+    assert!(result.is_ok(), "attest should succeed for allowed type: health_check");
+
+    // violation: requires "violation_type" and "severity"
+    let att_type = String::from_str(&e, "violation");
+    let mut data = Map::new(&e);
+    data.set(String::from_str(&e, "violation_type"), String::from_str(&e, "foo"));
+    data.set(String::from_str(&e, "severity"), String::from_str(&e, "high"));
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true);
+    assert!(result.is_ok(), "attest should succeed for allowed type: violation");
+
+    // fee_generation: requires "fee_amount"
+    let att_type = String::from_str(&e, "fee_generation");
+    let mut data = Map::new(&e);
+    data.set(String::from_str(&e, "fee_amount"), String::from_str(&e, "100"));
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true);
+    assert!(result.is_ok(), "attest should succeed for allowed type: fee_generation");
+
+    // drawdown: requires "drawdown_percent"
+    let att_type = String::from_str(&e, "drawdown");
+    let mut data = Map::new(&e);
+    data.set(String::from_str(&e, "drawdown_percent"), String::from_str(&e, "5"));
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true);
+    assert!(result.is_ok(), "attest should succeed for allowed type: drawdown");
+}
 use super::*;
 
 

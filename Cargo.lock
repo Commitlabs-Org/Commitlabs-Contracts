@@ -185,6 +185,7 @@ dependencies = [
 name = "commitment_nft"
 version = "0.1.0"
 dependencies = [
+ "commitment_core",
  "shared_utils",
  "soroban-sdk",
 ]

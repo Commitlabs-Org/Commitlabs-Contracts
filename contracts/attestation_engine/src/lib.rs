@@ -24,7 +24,7 @@ pub enum AttestationError {
     Unauthorized = 3,
     /// Invalid commitment ID
     InvalidCommitmentId = 4,
-    /// Invalid attestation type (must be health_check, violation, fee_generation, or drawdown)
+    /// Invalid attestation type. Allowed types: "health_check", "violation", "fee_generation", "drawdown".
     InvalidAttestationType = 5,
     /// Invalid attestation data for the given type
     InvalidAttestationData = 6,
