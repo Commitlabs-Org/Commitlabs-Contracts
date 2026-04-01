@@ -13,6 +13,22 @@ env:
   RUN_TESTNET_IT: ${{ secrets.RUN_TESTNET_IT || 'false' }}
 
 jobs:
+  commitment-interface-drift:
+    name: Commitment Interface Drift Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run commitment interface drift tests
+        run: |
+          cargo test -p commitment_interface
+          echo "✓ Commitment interface drift checks passed"
+
   build-and-test:
     name: Build and Test Soroban Contracts
     runs-on: macos-latest
@@ -35,9 +51,9 @@ jobs:
         run: |
           brew tap stellar/stellar-cli 2>/dev/null || true
           brew install stellar-cli 2>/dev/null || brew install stellar 2>/dev/null || true
-        continue-on-error: true
           brew tap stellar/tap || true
           brew install stellar-cli || brew install stellar
+        continue-on-error: true
 
       - name: Verify Stellar CLI installation
         run: |
@@ -99,11 +115,6 @@ jobs:
           # Run tests for all workspace contracts (native target)
           cargo test --workspace
           echo "✓ Unit tests passed"
-
-      - name: Drift check commitment interface
-        run: |
-          cargo test -p commitment_interface
-          echo "✓ Commitment interface drift checks passed"
 
       - name: Run integration tests
         run: |

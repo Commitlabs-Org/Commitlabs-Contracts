@@ -38,10 +38,11 @@ This document summarizes public entry points for each contract and their access 
 
 ## commitment_interface
 
-`commitment_interface` is an ABI-only crate. It should mirror the live
-`commitment_core` commitment schema and a narrow set of production entrypoints.
-CI drift tests compare its source-defined types and expected signatures against
-`commitment_core` and `attestation_engine`.
+`commitment_interface` is an ABI-only crate. It mirrors the live
+`commitment_core` commitment schema, event payloads, and the core read-only
+entrypoints that downstream bindings commonly consume. CI drift checks compare
+its source-defined types and expected signatures against `commitment_core` and
+`attestation_engine`.
 
 | Function                                                                 | Summary                                     | Access control            | Notes                                                                   |
 | ------------------------------------------------------------------------ | ------------------------------------------- | ------------------------- | ----------------------------------------------------------------------- |
