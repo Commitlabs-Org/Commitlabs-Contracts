@@ -44,6 +44,14 @@
                     "storage": [
                       {
                         "key": {
+                          "symbol": "EMG_MODE"
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
                           "symbol": "paused"
                         },
                         "val": {
@@ -67,6 +75,18 @@
                           "vec": [
                             {
                               "symbol": "AllCommitmentIds"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "AuthorizedUpdaters"
                             }
                           ]
                         },
@@ -244,6 +264,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "TotalCommitments"
                             }
                           ]
@@ -301,6 +333,33 @@
     ]
   },
   "events": [
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "EmgMode"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "symbol": "EMG_OFF"
+                },
+                {
+                  "u64": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
     {
       "event": {
         "ext": "v0",

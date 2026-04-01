@@ -50,6 +50,15 @@ pub enum Strategy {
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Coarse-grained risk category for a registered pool.
+///
+/// Risk levels are used by [`Strategy`] to determine which subset of pools
+/// may receive allocations.
+///
+/// Allocation mapping:
+/// - [`Strategy::Safe`]: `Low` only
+/// - [`Strategy::Balanced`]: `Low` + `Medium` + `High`
+/// - [`Strategy::Aggressive`]: `Medium` + `High`
 pub enum RiskLevel {
     Low,
     Medium,
@@ -58,6 +67,13 @@ pub enum RiskLevel {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
+/// On-chain representation of an investment pool registered in the pool registry.
+///
+/// Capacity semantics:
+/// - `total_liquidity` is the current amount allocated to this pool.
+/// - `max_capacity` is the hard upper bound for `total_liquidity`.
+/// - During `allocate`/`rebalance`, allocations that would exceed `max_capacity`
+///   fail with [`Error::PoolCapacityExceeded`].
 pub struct Pool {
     pub pool_id: u32,
     pub risk_level: RiskLevel,
@@ -304,25 +320,52 @@ impl AllocationStrategiesContract {
 
     /// Allocate funds according to strategy
     ///
+    /// # Security Model & Authentication Guarantees
+    /// This function implements a robust authentication model to prevent caller spoofing:
+    /// 
+    /// **SDK Guarantees (Soroban):**
+    /// - `caller.require_auth()` cryptographically verifies the caller's identity
+    /// - The SDK ensures the `caller` address matches the transaction signer
+    /// - Authentication failures are handled at the protocol level
+    /// - Replay attacks are prevented through transaction sequencing
+    ///
+    /// **Contract-Level Protections:**
+    /// - Caller authorization is verified before any state changes
+    /// - Allocation ownership is tracked and enforced
+    /// - Commitment balance validation prevents unauthorized allocations
+    /// - Reentrancy protection prevents recursive attacks
+    ///
     /// # Formal Verification
     /// **Preconditions:**
     /// - Contract is initialized
     /// - `amount > 0`
     /// - `reentrancy_guard == false`
     /// - No existing allocation for `commitment_id`
+    /// - `caller` is cryptographically authenticated via SDK
     ///
     /// **Postconditions:**
     /// - `get_allocation(commitment_id).total_allocated == amount`
     /// - For all pools P: `P.total_liquidity <= P.max_capacity`
     /// - `reentrancy_guard == false`
+    /// - `AllocationOwner(commitment_id) == caller`
+    ///
+    /// **Rounding / determinism:**
+    /// - All allocations use integer arithmetic with deterministic remainder handling.
+    /// - When capacity prevents fully satisfying the requested `amount`, the call
+    ///   fails with [`Error::PoolCapacityExceeded`].
     ///
     /// **Invariants Maintained:**
-    /// - INV-4: Reentrancy guard invariant
-    /// - Pool capacity never exceeded
+    /// - INV-1: Only authenticated callers can allocate
+    /// - INV-2: Allocation ownership matches authenticated caller
+    /// - INV-3: Reentrancy guard invariant
+    /// - INV-4: Pool capacity never exceeded
     ///
     /// **Security Properties:**
-    /// - SP-1: Reentrancy protection
-    /// - SP-3: Arithmetic safety (overflow checks)
+    /// - SP-1: Caller authentication via SDK guarantees
+    /// - SP-2: Allocation ownership enforcement
+    /// - SP-3: Reentrancy protection
+    /// - SP-4: Arithmetic safety (overflow checks)
+    /// - SP-5: Commitment balance validation
     pub fn allocate(
         env: Env,
         caller: Address,
@@ -330,7 +373,15 @@ impl AllocationStrategiesContract {
         amount: i128,
         strategy: Strategy,
     ) -> Result<AllocationSummary, Error> {
+        // CRITICAL: Authenticate caller first - this prevents spoofing attacks
+        // SDK Guarantee: require_auth() cryptographically verifies the caller's identity
+        // at the protocol level, ensuring the address matches the transaction signer
         caller.require_auth();
+        
+        // Additional validation: ensure caller is a valid address (non-zero)
+        if caller.is_zero() {
+            return Err(Error::Unauthorized);
+        }
         Self::require_initialized(&env)?;
         Self::require_no_reentrancy(&env)?;
 
@@ -442,6 +493,11 @@ impl AllocationStrategiesContract {
         // Verify total matches requested amount
         if total_allocated != amount {
             Self::set_reentrancy_guard(&env, false);
+            // Under-allocation should be treated as a capacity failure; over-allocation
+            // indicates a logic/arithmetic bug.
+            if total_allocated < amount {
+                return Err(Error::PoolCapacityExceeded);
+            }
             return Err(Error::ArithmeticOverflow);
         }
 
@@ -936,10 +992,9 @@ impl AllocationStrategiesContract {
 
         match strategy {
             Strategy::Safe => {
-                let amount_per_pool = total_amount / pool_count as i128;
-                for pool in pools.iter() {
-                    allocation_map.set(pool.pool_id, amount_per_pool);
-                }
+                // Safe uses the entire eligible set (already filtered by `RiskLevel::Low`
+                // in `select_pools`). Allocation must be deterministic with correct remainder handling.
+                Self::distribute_to_pools(env, &mut allocation_map, pools, total_amount)?;
             }
             Strategy::Balanced => {
                 let mut low_risk_pools = Vec::new(env);
@@ -954,7 +1009,9 @@ impl AllocationStrategiesContract {
                     }
                 }
 
-                // Safe percentage calculations with checked operations
+                // Deterministic remainder handling:
+                // - compute floors for the first two categories
+                // - assign the remaining units to the last category
                 let low_amount = total_amount
                     .checked_mul(40)
                     .and_then(|x| x.checked_div(100))
@@ -966,11 +1023,16 @@ impl AllocationStrategiesContract {
                     .ok_or(Error::ArithmeticOverflow)?;
 
                 let high_amount = total_amount
-                    .checked_mul(20)
-                    .and_then(|x| x.checked_div(100))
+                    .checked_sub(low_amount)
+                    .and_then(|x| x.checked_sub(medium_amount))
                     .ok_or(Error::ArithmeticOverflow)?;
 
-                Self::distribute_to_pools(env, &mut allocation_map, &low_risk_pools, low_amount)?;
+                Self::distribute_to_pools(
+                    env,
+                    &mut allocation_map,
+                    &low_risk_pools,
+                    low_amount,
+                )?;
                 Self::distribute_to_pools(
                     env,
                     &mut allocation_map,
@@ -991,14 +1053,16 @@ impl AllocationStrategiesContract {
                     }
                 }
 
-                let high_amount = total_amount
-                    .checked_mul(70)
-                    .and_then(|x| x.checked_div(100))
-                    .ok_or(Error::ArithmeticOverflow)?;
-
+                // Deterministic remainder handling:
+                // - compute floor for the first category (medium)
+                // - assign remaining units to the last category (high)
                 let medium_amount = total_amount
                     .checked_mul(30)
                     .and_then(|x| x.checked_div(100))
+                    .ok_or(Error::ArithmeticOverflow)?;
+
+                let high_amount = total_amount
+                    .checked_sub(medium_amount)
                     .ok_or(Error::ArithmeticOverflow)?;
 
                 Self::distribute_to_pools(env, &mut allocation_map, &high_risk_pools, high_amount)?;
@@ -1015,32 +1079,112 @@ impl AllocationStrategiesContract {
     }
 
     fn distribute_to_pools(
-        _env: &Env,
+        env: &Env,
         allocation_map: &mut Map<u32, i128>,
         pools: &Vec<Pool>,
         amount: i128,
     ) -> Result<(), Error> {
         let pool_count = pools.len();
-        if pool_count == 0 {
+        if amount == 0 {
             return Ok(());
         }
 
-        let amount_per_pool = amount / pool_count as i128;
+        // If the strategy requires allocating a positive amount into an empty risk-group,
+        // we treat this as an inability to satisfy the request.
+        if pool_count == 0 {
+            return Err(Error::PoolCapacityExceeded);
+        }
 
+        // Capacity check for the eligible set:
+        // if the sum of remaining capacities cannot satisfy `amount`, fail fast.
+        let mut total_remaining_capacity: i128 = 0;
         for pool in pools.iter() {
             let available_capacity = pool
                 .max_capacity
                 .checked_sub(pool.total_liquidity)
                 .ok_or(Error::ArithmeticOverflow)?;
+            if available_capacity < 0 {
+                return Err(Error::PoolCapacityExceeded);
+            }
+            total_remaining_capacity = total_remaining_capacity
+                .checked_add(available_capacity)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
 
-            let alloc_amount = if amount_per_pool > available_capacity {
+        if total_remaining_capacity < amount {
+            return Err(Error::PoolCapacityExceeded);
+        }
+
+        // Base allocation with deterministic remainder.
+        let base = amount / pool_count as i128;
+        let remainder = amount % pool_count as i128;
+
+        let mut allocations = Vec::<i128>::new(env);
+        let mut leftover_capacity = Vec::<i128>::new(env);
+
+        let mut allocated_total: i128 = 0;
+        for (i, pool) in pools.iter().enumerate() {
+            let available_capacity = pool
+                .max_capacity
+                .checked_sub(pool.total_liquidity)
+                .ok_or(Error::ArithmeticOverflow)?;
+
+            // target_i sums to `amount` across all pools (before capping).
+            let target = base + if (i as i128) < remainder { 1 } else { 0 };
+
+            let alloc = if target > available_capacity {
                 available_capacity
             } else {
-                amount_per_pool
+                target
             };
 
-            if alloc_amount > 0 {
-                allocation_map.set(pool.pool_id, alloc_amount);
+            allocated_total = allocated_total
+                .checked_add(alloc)
+                .ok_or(Error::ArithmeticOverflow)?;
+
+            allocations.push_back(alloc);
+            leftover_capacity.push_back(available_capacity - alloc);
+        }
+
+        // Redistribute any shortfall caused by per-pool caps, filling pools in deterministic registry order.
+        let mut shortfall = amount
+            .checked_sub(allocated_total)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if shortfall > 0 {
+            for i in 0..pool_count {
+                if shortfall == 0 {
+                    break;
+                }
+
+                let pool = pools.get(i).unwrap();
+                let prev = allocations.get(i).unwrap();
+                let left = leftover_capacity.get(i).unwrap();
+
+                let extra = if shortfall > left { left } else { shortfall };
+                let new_alloc = prev.checked_add(extra).ok_or(Error::ArithmeticOverflow)?;
+                let new_left = left.checked_sub(extra).ok_or(Error::ArithmeticOverflow)?;
+
+                allocations.set(i, new_alloc);
+                leftover_capacity.set(i, new_left);
+                shortfall = shortfall
+                    .checked_sub(extra)
+                    .ok_or(Error::ArithmeticOverflow)?;
+
+                // We don't write to the allocation_map yet; we finalize below.
+                let _ = pool;
+            }
+        }
+
+        // Final safety: any remaining shortfall indicates a logic/capacity bug.
+        if shortfall != 0 {
+            return Err(Error::PoolCapacityExceeded);
+        }
+
+        for i in 0..pool_count {
+            let pool_id = pools.get(i).unwrap().pool_id;
+            let alloc = allocations.get(i).unwrap();
+            if alloc > 0 {
+                allocation_map.set(pool_id, alloc);
             }
         }
 
