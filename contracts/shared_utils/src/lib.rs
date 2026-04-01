@@ -27,7 +27,7 @@ pub mod storage;
 pub mod time;
 pub mod validation;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests;
 
 // Re-export all public items from each utility module
