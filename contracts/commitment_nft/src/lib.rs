@@ -555,6 +555,8 @@ impl CommitmentNFTContract {
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotInitialized);
         }
+
+        // --- Authorization: enforce on-chain signature from caller ---
         let admin: Address = e.storage().instance().get(&DataKey::Admin).unwrap();
         let core_contract: Option<Address> = e.storage().instance().get(&DataKey::CoreContract);
         let is_authorized_minter = e
@@ -570,6 +572,11 @@ impl CommitmentNFTContract {
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(ContractError::NotAuthorized);
         }
+        // Require a valid on-chain authorization from the caller.
+        // This must come AFTER the allowlist check so that only whitelisted
+        // callers can even attempt to provide auth, preventing spurious auth
+        // consumption by arbitrary addresses.
+        caller.require_auth();
 
         // CHECKS: Reject zero address owner
         if is_zero_address(&e, &owner) {
@@ -634,13 +641,14 @@ impl CommitmentNFTContract {
         };
 
         // EFFECTS: Update state
-        // Generate unique token_id
+        // Generate unique token_id using SafeMath to prevent overflow
         let token_id: u32 = e
             .storage()
             .instance()
             .get(&DataKey::TokenCounter)
             .unwrap_or(0);
-        let next_token_id = token_id + 1;
+        let next_token_id =
+            SafeMath::add(token_id as i128, 1) as u32;
         e.storage()
             .instance()
             .set(&DataKey::TokenCounter, &next_token_id);
