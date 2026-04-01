@@ -1,6 +1,6 @@
 # Known Limitations
 
-- commitment_core::generate_commitment_id returns a constant prefix ("commitment_") and does not guarantee uniqueness.
+- commitment*core::generate_commitment_id returns a constant prefix ("commitment*") and does not guarantee uniqueness.
 - commitment_core::update_value emits an event but does not persist the new value.
 - commitment_core state-changing functions (create_commitment, settle, early_exit, allocate, update_value) do not enforce `require_auth`.
 - commitment_nft::mint does not enforce an authorized minter list (DataKey::AuthorizedMinter is unused).
