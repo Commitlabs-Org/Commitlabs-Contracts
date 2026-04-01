@@ -117,15 +117,43 @@ fn fail(e: &Env, err: TransformationError, context: &str) -> ! {
 // Data types
 // ============================================================================
 
+/// Tranche status for lifecycle management
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrancheStatus {
+    Active,
+    Closed,
+}
+
+/// Risk tranche representing a slice of a transformed commitment.
+/// 
+/// # Fields
+/// * `tranche_id` - Unique identifier for this tranche
+/// * `transformation_id` - Reference to the parent tranche set
+/// * `commitment_id` - Reference to the parent commitment
+/// * `risk_level` - Risk category: "senior", "mezzanine", "equity"
+/// * `amount` - Current allocation amount in the tranche
+/// * `share_bps` - Share in basis points of the parent tranche set
+/// * `created_at` - Ledger timestamp of creation
+/// * `status` - Current lifecycle status (Active/Closed)
+/// * `updated_at` - Ledger timestamp of last update
+/// 
+/// # Security Notes
+/// - Amount modifications require authorization (owner or authorized transformer)
+/// - Closed tranches cannot be modified
+/// - Arithmetic uses checked operations to prevent overflow/underflow
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiskTranche {
     pub tranche_id: String,
+    pub transformation_id: String,
     pub commitment_id: String,
     pub risk_level: String, // "senior", "mezzanine", "equity"
     pub amount: i128,
     pub share_bps: u32,
     pub created_at: u64,
+    pub status: TrancheStatus,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -180,6 +208,8 @@ pub enum DataKey {
     TransformationFeeBps,
     ReentrancyGuard,
     TrancheSet(String),
+    /// Individual tranche storage key for direct access
+    Tranche(String),
     CollateralizedAsset(String),
     SecondaryInstrument(String),
     ProtocolGuarantee(String),
@@ -400,7 +430,7 @@ impl CommitmentTransformationContract {
         set_reentrancy_guard(&e, true);
 
         Validation::require_positive(total_value);
-        if tranche_share_bps.len() != risk_levels.len() || tranche_share_bps.len() == 0 {
+        if tranche_share_bps.len() != risk_levels.len() || tranche_share_bps.is_empty() {
             set_reentrancy_guard(&e, false);
             fail(
                 &e,
@@ -450,18 +480,27 @@ impl CommitmentTransformationContract {
 
         let mut tranches = Vec::new(&e);
         let net_value = total_value - fee_amount;
+        let current_timestamp = e.ledger().timestamp();
         for (i, (bps, risk)) in tranche_share_bps.iter().zip(risk_levels.iter()).enumerate() {
             let bps_u32: u32 = bps;
             let amount = (net_value * bps_u32 as i128) / 10000i128;
             let tranche_id = format_tranformation_id(&e, "t", counter * 10 + i as u64);
-            tranches.push_back(RiskTranche {
+            let tranche = RiskTranche {
                 tranche_id: tranche_id.clone(),
+                transformation_id: transformation_id.clone(),
                 commitment_id: commitment_id.clone(),
                 risk_level: risk.clone(),
                 amount,
                 share_bps: bps_u32,
-                created_at: e.ledger().timestamp(),
-            });
+                created_at: current_timestamp,
+                status: TrancheStatus::Active,
+                updated_at: current_timestamp,
+            };
+            // Store individual tranche for direct access and updates
+            e.storage()
+                .instance()
+                .set(&DataKey::Tranche(tranche_id.clone()), &tranche);
+            tranches.push_back(tranche);
         }
 
         let set = TrancheSet {

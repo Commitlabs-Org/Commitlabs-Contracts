@@ -365,7 +365,10 @@ fn test_set_fee_recipient() {
 fn test_set_fee_recipient_zero_address() {
     let (e, admin, _, _, _, client) = setup_test();
 
-    let zero_str = String::from_str(&e, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero_str = String::from_str(
+        &e,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
     let zero_addr = Address::from_string(&zero_str);
 
     client.set_fee_recipient(&admin, &zero_addr);

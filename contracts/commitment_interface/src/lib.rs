@@ -437,19 +437,19 @@ mod tests {
         // Validation category (1-99)
         assert_eq!(category::VALIDATION_START, 1);
         assert_eq!(category::VALIDATION_END, 99);
-        
+
         // Authorization category (100-199)
         assert_eq!(category::AUTH_START, 100);
         assert_eq!(category::AUTH_END, 199);
-        
+
         // State category (200-299)
         assert_eq!(category::STATE_START, 200);
         assert_eq!(category::STATE_END, 299);
-        
+
         // Resource category (300-399)
         assert_eq!(category::RESOURCE_START, 300);
         assert_eq!(category::RESOURCE_END, 399);
-        
+
         // System category (400-499)
         assert_eq!(category::SYSTEM_START, 400);
         assert_eq!(category::SYSTEM_END, 499);
@@ -458,22 +458,48 @@ mod tests {
     #[test]
     fn test_error_codes_in_valid_ranges() {
         // Verify all error codes fall within their expected category ranges
-        let validation_errors = [Error::InvalidAmount, Error::InvalidDuration, Error::InvalidPercent, Error::InvalidType, Error::OutOfRange, Error::EmptyString];
+        let validation_errors = [
+            Error::InvalidAmount,
+            Error::InvalidDuration,
+            Error::InvalidPercent,
+            Error::InvalidType,
+            Error::OutOfRange,
+            Error::EmptyString,
+        ];
         for err in validation_errors.iter() {
-            assert!(err.code() >= category::VALIDATION_START && err.code() <= category::VALIDATION_END);
+            assert!(
+                err.code() >= category::VALIDATION_START && err.code() <= category::VALIDATION_END
+            );
         }
 
-        let auth_errors = [Error::Unauthorized, Error::NotOwner, Error::NotAdmin, Error::NotAuthorizedContract];
+        let auth_errors = [
+            Error::Unauthorized,
+            Error::NotOwner,
+            Error::NotAdmin,
+            Error::NotAuthorizedContract,
+        ];
         for err in auth_errors.iter() {
             assert!(err.code() >= category::AUTH_START && err.code() <= category::AUTH_END);
         }
 
-        let state_errors = [Error::AlreadyInitialized, Error::NotInitialized, Error::WrongState, Error::AlreadyProcessed, Error::ReentrancyDetected, Error::NotActive];
+        let state_errors = [
+            Error::AlreadyInitialized,
+            Error::NotInitialized,
+            Error::WrongState,
+            Error::AlreadyProcessed,
+            Error::ReentrancyDetected,
+            Error::NotActive,
+        ];
         for err in state_errors.iter() {
             assert!(err.code() >= category::STATE_START && err.code() <= category::STATE_END);
         }
 
-        let resource_errors = [Error::NotFound, Error::InsufficientBalance, Error::InsufficientValue, Error::TransferFailed];
+        let resource_errors = [
+            Error::NotFound,
+            Error::InsufficientBalance,
+            Error::InsufficientValue,
+            Error::TransferFailed,
+        ];
         for err in resource_errors.iter() {
             assert!(err.code() >= category::RESOURCE_START && err.code() <= category::RESOURCE_END);
         }
