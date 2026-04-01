@@ -56,3 +56,46 @@ pub struct Commitment {
     /// Lifecycle status such as `active`, `settled`, `violated`, or `early_exit`.
     pub status: String,
 }
+
+/// Event payload emitted by the live core contract when a commitment is created.
+///
+/// # Security
+/// Consumers should treat this as observational data only. The authoritative
+/// state still lives in `get_commitment`, because later lifecycle transitions
+/// may change `current_value` or `status`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CommitmentCreatedEvent {
+    /// Unique on-chain identifier such as `c_0`.
+    pub commitment_id: String,
+    /// Commitment owner.
+    pub owner: Address,
+    /// Initial committed amount.
+    pub amount: i128,
+    /// Token contract address for the committed asset.
+    pub asset_address: Address,
+    /// Associated NFT token id minted by `commitment_nft`.
+    pub nft_token_id: u32,
+    /// Policy and risk settings fixed at creation time.
+    pub rules: CommitmentRules,
+    /// Ledger timestamp when the event was emitted.
+    pub timestamp: u64,
+}
+
+/// Event payload emitted by the live core contract when a commitment is settled.
+///
+/// # Security
+/// This payload reflects a completed state transition that also performs
+/// token/NFT cross-contract interactions in the live contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CommitmentSettledEvent {
+    /// Unique on-chain identifier such as `c_0`.
+    pub commitment_id: String,
+    /// Commitment owner receiving the settlement.
+    pub owner: Address,
+    /// Amount returned to the owner on settlement.
+    pub settlement_amount: i128,
+    /// Ledger timestamp when the event was emitted.
+    pub timestamp: u64,
+}

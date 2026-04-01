@@ -107,7 +107,7 @@ impl Events {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as TestAddress;

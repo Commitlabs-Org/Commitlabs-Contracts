@@ -2,7 +2,8 @@
 
 This guide documents the interface-only ABI exported by `commitment_interface`.
 As of interface version `2`, it mirrors the live `commitment_core` commitment
-schema so downstream bindings can detect drift before deployment.
+schema, key read-only getters, and event payload types so downstream bindings
+can detect drift before deployment.
 
 ---
 
@@ -23,8 +24,13 @@ commitment contracts on the Soroban network.
 | `initialize` | `env: Env, admin: Address, nft_contract: Address` | `Result<(), Error>` | Initializes admin and linked NFT contract. |
 | `create_commitment` | `env: Env, owner: Address, amount: i128, asset_address: Address, rules: CommitmentRules` | `Result<String, Error>` | Creates a commitment and returns its string id. |
 | `get_commitment` | `env: Env, commitment_id: String` | `Result<Commitment, Error>` | Fetches the full live commitment record. |
+| `list_commitments_by_owner` | `env: Env, owner: Address` | `Result<Vec<String>, Error>` | Alias for owner-indexed commitment lookup used by UIs and indexers. |
 | `get_owner_commitments` | `env: Env, owner: Address` | `Result<Vec<String>, Error>` | Lists commitment ids owned by an address. |
 | `get_total_commitments` | `env: Env` | `Result<u64, Error>` | Reads the global commitment counter. |
+| `get_total_value_locked` | `env: Env` | `Result<i128, Error>` | Reads total value locked across active commitments. |
+| `get_commitments_created_between` | `env: Env, from_ts: u64, to_ts: u64` | `Result<Vec<String>, Error>` | Reads commitment ids created in an inclusive time range. |
+| `get_admin` | `env: Env` | `Result<Address, Error>` | Reads the configured core-contract admin. |
+| `get_nft_contract` | `env: Env` | `Result<Address, Error>` | Reads the linked NFT contract address. |
 | `settle` | `env: Env, commitment_id: String` | `Result<(), Error>` | Settles an expired commitment. |
 | `early_exit` | `env: Env, commitment_id: String, caller: Address` | `Result<(), Error>` | Exits an active commitment early. |
 
@@ -51,6 +57,23 @@ pub struct Commitment {
     pub expires_at: u64,
     pub current_value: i128,
     pub status: String,
+}
+
+pub struct CommitmentCreatedEvent {
+    pub commitment_id: String,
+    pub owner: Address,
+    pub amount: i128,
+    pub asset_address: Address,
+    pub nft_token_id: u32,
+    pub rules: CommitmentRules,
+    pub timestamp: u64,
+}
+
+pub struct CommitmentSettledEvent {
+    pub commitment_id: String,
+    pub owner: Address,
+    pub settlement_amount: i128,
+    pub timestamp: u64,
 }
 ```
 
@@ -116,6 +139,11 @@ To keep the interface aligned with live contracts:
    ```bash
    cargo test -p commitment_interface
    ```
+
+   These tests compare source-defined `CommitmentRules`, `Commitment`,
+   `CommitmentCreatedEvent`, and `CommitmentSettledEvent` structs against
+   `commitment_core`, and verify the live core contract still exports the
+   expected public signatures mirrored by this ABI crate.
 
 3. Build WASM if bindings need regeneration:
    ```bash
