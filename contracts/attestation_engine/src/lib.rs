@@ -1,4 +1,10 @@
 #![no_std]
+//! Attestation recording and health-metric aggregation for commitments tracked in
+//! `commitment_core`.
+//!
+//! The engine trusts `commitment_core` as the canonical source for commitment
+//! existence and lifecycle state, while it derives fee totals and volatility
+//! exposure from recorded attestation history.
 use shared_utils::{BatchError, BatchMode, BatchProcessor, BatchResultVoid, Pausable, RateLimiter};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
@@ -159,6 +165,14 @@ pub struct HealthMetrics {
     pub volatility_exposure: i128,
     pub last_attestation: u64,
     pub compliance_score: u32, // 0-100
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AttestationMetricAggregate {
+    fees_generated: i128,
+    latest_drawdown_percent: Option<i128>,
+    volatility_exposure: i128,
+    last_attestation: u64,
 }
 
 #[contract]
@@ -580,7 +594,11 @@ impl AttestationEngineContract {
     // Health Metrics Update
     // ========================================================================
 
-    /// Update health metrics after an attestation
+    /// Update cached health metrics after an attestation.
+    ///
+    /// Recomputes aggregate fee and volatility fields from the stored
+    /// attestation history so cached metrics stay aligned with read-time
+    /// aggregation.
     fn update_health_metrics(e: &Env, commitment_id: &String, attestation: &Attestation) {
         // Get or create health metrics
         let key = DataKey::HealthMetrics(commitment_id.clone());
@@ -599,38 +617,33 @@ impl AttestationEngineContract {
                     compliance_score: 100,
                 });
 
-        // Update last_attestation timestamp
-        metrics.last_attestation = attestation.timestamp;
+        let attestation_key = DataKey::Attestations(commitment_id.clone());
+        let attestations: Vec<Attestation> = e
+            .storage()
+            .persistent()
+            .get(&attestation_key)
+            .unwrap_or_else(|| Vec::new(e));
+        let aggregates = Self::aggregate_attestation_metrics(e, &attestations);
 
-        // Update type-specific metrics
+        metrics.last_attestation = aggregates.last_attestation;
+        metrics.fees_generated = aggregates.fees_generated;
+        metrics.volatility_exposure = aggregates.volatility_exposure;
+        if let Some(drawdown_percent) = aggregates.latest_drawdown_percent {
+            metrics.drawdown_percent = drawdown_percent;
+        }
+
+        // Update type-specific metrics that depend on the latest attestation.
         let fee_generation = String::from_str(e, "fee_generation");
-        let drawdown_type = String::from_str(e, "drawdown");
         let violation = String::from_str(e, "violation");
 
         if attestation.attestation_type == fee_generation {
-            // Add to fees_generated
             let fee_amount_key = String::from_str(e, "fee_amount");
             if let Some(fee_str) = attestation.data.get(fee_amount_key) {
-                // Parse fee amount from string
                 if let Some(fee_amount) = Self::parse_i128_from_string(e, &fee_str) {
-                    metrics.fees_generated = metrics
-                        .fees_generated
-                        .checked_add(fee_amount)
-                        .unwrap_or(metrics.fees_generated);
-
-                    // Update global total fees analytics
                     let total_fees: i128 =
                         e.storage().instance().get(&DataKey::TotalFees).unwrap_or(0);
                     let new_total = total_fees.checked_add(fee_amount).unwrap_or(total_fees);
                     e.storage().instance().set(&DataKey::TotalFees, &new_total);
-                }
-            }
-        } else if attestation.attestation_type == drawdown_type {
-            // Update drawdown_percent
-            let drawdown_percent_key = String::from_str(e, "drawdown_percent");
-            if let Some(drawdown_str) = attestation.data.get(drawdown_percent_key) {
-                if let Some(drawdown_val) = Self::parse_i128_from_string(e, &drawdown_str) {
-                    metrics.drawdown_percent = drawdown_val;
                 }
             }
         } else if attestation.attestation_type == violation {
@@ -662,6 +675,74 @@ impl AttestationEngineContract {
 
         // Store updated metrics
         e.storage().persistent().set(&key, &metrics);
+    }
+
+    fn aggregate_attestation_metrics(
+        e: &Env,
+        attestations: &Vec<Attestation>,
+    ) -> AttestationMetricAggregate {
+        let fee_type = String::from_str(e, "fee_generation");
+        let drawdown_type = String::from_str(e, "drawdown");
+        let fee_amount_key = String::from_str(e, "fee_amount");
+        let drawdown_percent_key = String::from_str(e, "drawdown_percent");
+
+        let mut fees_generated = 0i128;
+        let mut latest_drawdown_percent = None;
+        let mut previous_drawdown_percent = None;
+        let mut volatility_exposure = 0i128;
+        let mut last_attestation = 0u64;
+
+        for attestation in attestations.iter() {
+            if attestation.timestamp > last_attestation {
+                last_attestation = attestation.timestamp;
+            }
+
+            if attestation.attestation_type == fee_type {
+                if let Some(fee_str) = attestation.data.get(fee_amount_key.clone()) {
+                    if let Some(fee_amount) = Self::parse_i128_from_string(e, &fee_str) {
+                        fees_generated = fees_generated
+                            .checked_add(fee_amount)
+                            .unwrap_or(fees_generated);
+                    }
+                }
+                continue;
+            }
+
+            if attestation.attestation_type == drawdown_type {
+                if let Some(drawdown_str) = attestation.data.get(drawdown_percent_key.clone()) {
+                    if let Some(drawdown_percent) = Self::parse_i128_from_string(e, &drawdown_str)
+                    {
+                        if let Some(previous) = previous_drawdown_percent {
+                            if let Some(delta) =
+                                Self::absolute_difference(drawdown_percent, previous)
+                            {
+                                volatility_exposure = volatility_exposure
+                                    .checked_add(delta)
+                                    .unwrap_or(volatility_exposure);
+                            }
+                        }
+
+                        previous_drawdown_percent = Some(drawdown_percent);
+                        latest_drawdown_percent = Some(drawdown_percent);
+                    }
+                }
+            }
+        }
+
+        AttestationMetricAggregate {
+            fees_generated,
+            latest_drawdown_percent,
+            volatility_exposure,
+            last_attestation,
+        }
+    }
+
+    fn absolute_difference(left: i128, right: i128) -> Option<i128> {
+        if left >= right {
+            left.checked_sub(right)
+        } else {
+            right.checked_sub(left)
+        }
     }
 
     /// Parse i128 from String (optimized implementation)
@@ -1016,22 +1097,7 @@ impl AttestationEngineContract {
         };
 
         let attestations = Self::get_attestations(e.clone(), commitment_id.clone());
-        let fee_key = String::from_str(&e, "fee_amount");
-        let fee_type = String::from_str(&e, "fee_generation");
-        let mut fees_generated: i128 = 0;
-        let mut last_attestation: u64 = 0;
-        for att in attestations.iter() {
-            if att.timestamp > last_attestation {
-                last_attestation = att.timestamp;
-            }
-            if att.attestation_type == fee_type {
-                if let Some(fee_str) = att.data.get(fee_key.clone()) {
-                    if let Some(v) = Self::parse_i128_from_string(&e, &fee_str) {
-                        fees_generated = fees_generated.checked_add(v).unwrap_or(fees_generated);
-                    }
-                }
-            }
-        }
+        let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
 
         let compliance_score = Self::calculate_compliance_score(e.clone(), commitment_id.clone());
 
@@ -1039,10 +1105,12 @@ impl AttestationEngineContract {
             commitment_id,
             current_value,
             initial_value,
-            drawdown_percent,
-            fees_generated,
-            volatility_exposure: 0,
-            last_attestation,
+            drawdown_percent: aggregates
+                .latest_drawdown_percent
+                .unwrap_or(drawdown_percent),
+            fees_generated: aggregates.fees_generated,
+            volatility_exposure: aggregates.volatility_exposure,
+            last_attestation: aggregates.last_attestation,
             compliance_score,
         }
     }
@@ -1271,24 +1339,19 @@ impl AttestationEngineContract {
         String::from_str(e, core::str::from_utf8(&result_buf[..len]).unwrap_or("0"))
     }
 
-    /// Calculate compliance score (0-100)
+    /// Calculate a compliance score in the range 0-100.
     ///
-    /// # Formal Verification
-    /// **Preconditions:**
-    /// - `commitment_id` exists
+    /// # Parameters
+    /// - `commitment_id`: Commitment identifier whose attestations should be
+    ///   evaluated.
     ///
-    /// **Postconditions:**
-    /// - Returns value in range [0, 100]
-    /// - Score decreases with violations
-    /// - Score decreases if drawdown exceeds threshold
-    /// - Pure function (no state changes)
+    /// # Returns
+    /// - Score clamped to the inclusive range 0-100.
     ///
-    /// **Invariants Maintained:**
-    /// - Score always in valid range [0, 100]
-    ///
-    /// **Security Properties:**
-    /// - SP-4: State consistency (read-only)
-    /// - SP-3: Arithmetic safety
+    /// # Security
+    /// - Read-only function.
+    /// - Uses checked arithmetic for fee and drawdown adjustments.
+    /// - Ignores malformed numeric attestation payloads instead of panicking.
     pub fn calculate_compliance_score(e: Env, commitment_id: String) -> u32 {
         // First check if we have stored metrics with a compliance score
         let metrics_key = DataKey::HealthMetrics(commitment_id.clone());
@@ -1315,6 +1378,7 @@ impl AttestationEngineContract {
 
         // Get all attestations
         let attestations = Self::get_attestations(e.clone(), commitment_id.clone());
+    let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
 
         // Base score: 100
         let mut score: i32 = 100;
@@ -1334,43 +1398,29 @@ impl AttestationEngineContract {
         let initial_value = commitment.amount;
         let current_value = commitment.current_value;
         let max_loss_percent = commitment.rules.max_loss_percent as i128;
+        let commitment_drawdown_percent = if initial_value > 0 {
+            let diff = initial_value.checked_sub(current_value).unwrap_or(0);
+            diff.checked_mul(100)
+                .unwrap_or(0)
+                .checked_div(initial_value)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let effective_drawdown_percent = aggregates
+            .latest_drawdown_percent
+            .unwrap_or(commitment_drawdown_percent);
 
-        if initial_value > 0 {
-            let drawdown_percent = {
-                let diff = initial_value.checked_sub(current_value).unwrap_or(0);
-                diff.checked_mul(100)
-                    .unwrap_or(0)
-                    .checked_div(initial_value)
-                    .unwrap_or(0)
-            };
-
-            if drawdown_percent > max_loss_percent {
-                let over_threshold = drawdown_percent.checked_sub(max_loss_percent).unwrap_or(0);
-                score = score.checked_sub(over_threshold as i32).unwrap_or(0);
-            }
+        if effective_drawdown_percent > max_loss_percent {
+            let over_threshold = effective_drawdown_percent
+                .checked_sub(max_loss_percent)
+                .unwrap_or(0);
+            score = score.checked_sub(over_threshold as i32).unwrap_or(0);
         }
 
         // Calculate fee generation vs expectations: +1 per % of expected fees
         let min_fee_threshold = commitment.rules.min_fee_threshold;
-        // Get fees from health metrics (which sums from attestations)
-        // We'll calculate this from the attestations directly
-        let total_fees: i128 = 0;
-        let fee_key = String::from_str(&e, "fee_amount");
-
-        for att in attestations.iter() {
-            if att.attestation_type == String::from_str(&e, "fee_generation") {
-                // Extract fee from data map
-                // Since Map<String, String> stores strings, we need to parse
-                // For this implementation, we'll use a simplified approach:
-                // If fee_amount exists in data, we'll try to extract it
-                // In production, fees should be stored as i128 in a separate field
-                if let Some(_fee_str) = att.data.get(fee_key.clone()) {
-                    // Parse would be needed here - for now, we'll use 0
-                    // This is acceptable as fee tracking requires proper implementation
-                    // of the attest() function to store fees correctly
-                }
-            }
-        }
+        let total_fees = aggregates.fees_generated;
 
         // Only add fee bonus if we have fees and a threshold
         if min_fee_threshold > 0 && total_fees > 0 {
