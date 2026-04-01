@@ -83,6 +83,39 @@ fn test_set_transformation_fee() {
 }
 
 #[test]
+fn test_set_transformation_fee_accepts_boundaries() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, _) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+
+    client.initialize(&admin, &core);
+    client.set_transformation_fee(&admin, &0);
+    assert_eq!(client.get_transformation_fee_bps(), 0);
+
+    client.set_transformation_fee(&admin, &10_000);
+    assert_eq!(client.get_transformation_fee_bps(), 10_000);
+}
+
+#[test]
+fn test_set_transformation_fee_rejects_above_max_and_preserves_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, _) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+
+    client.initialize(&admin, &core);
+    client.set_transformation_fee(&admin, &250);
+
+    let result = client.try_set_transformation_fee(&admin, &10_001);
+
+    assert!(result.is_err());
+    assert_eq!(client.get_transformation_fee_bps(), 250);
+}
+
+#[test]
 fn test_set_authorized_transformer() {
     let e = Env::default();
     e.mock_all_auths();
