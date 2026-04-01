@@ -47,7 +47,7 @@ pub fn net_after_fee_bps(amount: i128, bps: u32) -> i128 {
     amount.checked_sub(fee).expect("Fees: underflow")
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 
