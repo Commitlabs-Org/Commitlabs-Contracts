@@ -568,6 +568,21 @@ impl CommitmentCoreContract {
         // Net amount locked in commitment (after fee deduction)
         let net_amount = amount - creation_fee;
 
+        // Collect creation fee if configured
+        let creation_fee_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::CreationFeeBps)
+            .unwrap_or(0);
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
+
+        // Net amount locked in commitment (after fee deduction)
+        let net_amount = amount - creation_fee;
+
         let commitment_id = Self::generate_commitment_id(&e, current_total);
 
         // Calculate creation fee first
