@@ -578,3 +578,119 @@ fn test_queue_action_rejects_timestamp_overflow() {
     let result = client.try_queue_action(&ActionType::ParameterChange, &target, &data, &delay);
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
 }
+#[test]
+fn test_non_admin_cannot_queue_action() {
+    let (env, admin, target) = create_test_env();
+    let attacker = Address::generate(&env);
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let data = String::from_str(&env, "attack");
+
+    env.mock_auths(&[(
+        attacker.clone(),
+        soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "queue_action",
+            args: (ActionType::ParameterChange, target.clone(), data.clone(), 86400).into_val(&env),
+            sub_invokes: &[],
+        },
+    )]);
+
+    let result = client.try_queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+#[test]
+fn test_bypass_attempt_execute_immediately() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "attack");
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    let result = client.try_execute_action(&action_id);
+
+    assert_eq!(result, Err(Ok(Error::DelayNotMet)));
+}
+#[test]
+fn test_bypass_attempt_double_execute() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "double_execute");
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    env.ledger().with_mut(|li| li.timestamp += 86401);
+
+    client.execute_action(&action_id);
+
+    let result = client.try_execute_action(&action_id);
+
+    assert_eq!(result, Err(Ok(Error::ActionAlreadyExecuted)));
+}
+#[test]
+fn test_bypass_attempt_cancel_after_execute() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "cancel_after_execute");
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &86400);
+
+    env.ledger().with_mut(|li| li.timestamp += 86401);
+
+    client.execute_action(&action_id);
+
+    let result = client.try_cancel_action(&action_id);
+
+    assert_eq!(result, Err(Ok(Error::CannotCancelExecutedAction)));
+}
+#[test]
+fn test_execute_exact_timestamp_boundary() {
+    let (env, admin, target) = create_test_env();
+
+    let contract_id = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let data = String::from_str(&env, "boundary");
+
+    let delay = 86400;
+
+    let action_id =
+        client.queue_action(&ActionType::ParameterChange, &target, &data, &delay);
+
+    env.ledger().with_mut(|li| li.timestamp += delay);
+
+    client.execute_action(&action_id);
+
+    let action = client.get_action(&action_id);
+
+    assert!(action.executed);
+}

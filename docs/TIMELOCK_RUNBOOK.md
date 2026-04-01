@@ -84,11 +84,12 @@ Operational guidance:
 
 ## Edge cases operators should know
 
-- Actions become executable at exactly `executable_at`; they do not need to wait an extra ledger tick.
-- Execution remains open forever after the delay unless the action is cancelled.
-- Cancelled actions can never be executed.
-- Executed actions can never be cancelled.
-- Queueing fails if the chosen delay is below the action minimum or above the 30-day cap.
+- **Clock skew assumptions**: Soroban ledger timestamps are monotonic and provided by consensus. The timelock treats the ledger timestamp as the canonical clock. Delays are relative to the ledger time at the moment of `queue_action`.
+- **Precision**: Timestamps are in seconds. Because ledgers close at discrete intervals, an action scheduled for time $T$ becomes executable in the first ledger where $T_{ledger} \ge T$.
+- **Zero/Short delay**: Not permitted. Every action type has a minimum delay defined by `get_delay()` (minimum 1 day).
+- **Max delay**: Hard capped at 30 days (`MAX_DELAY`) to prevent governance deadlock or operator error resulting in extreme lock periods.
+- **Execution Window**: Execution remains open indefinitely after the delay unless explicitly cancelled by the admin.
+- **Immutability**: Executed actions cannot be cancelled, and cancelled actions cannot be executed.
 
 ## Security notes
 
