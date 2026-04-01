@@ -446,11 +446,11 @@ impl CommitmentCoreContract {
             owner: owner.clone(),
             nft_token_id: 0,
             rules: rules.clone(),
-            amount: net_amount,
+            amount: amount,
             asset_address: asset_address.clone(),
             created_at: TimeUtils::now(&e),
             expires_at,
-            current_value: net_amount,
+            current_value: amount,
             status: String::from_str(&e, "active"),
         };
 

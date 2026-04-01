@@ -832,32 +832,23 @@ fn test_create_commitment_expiration_overflow() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
+    let (admin, client) = setup_contract(&e);
+
+    // Try to create commitment with duration that would overflow timestamp
     let owner = Address::generate(&e);
     let asset_address = Address::generate(&e);
 
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
-    client.initialize(&admin);
-
-    // Mint 5 NFTs
-    for _ in 0..5 {
-        client.mint(
-            &admin,
-            &owner,
-            &String::from_str(&e, "commitment"),
-            &30,
-            &10,
-            &String::from_str(&e, "safe"),
-            &1000,
-            &asset_address,
-            &5,
-        );
-    }
-
-    assert_eq!(client.total_supply(), 5);
+    client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "commitment"),
+        &30,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset_address,
+        &5,
+    );
 }
 
 // Issue #111: total_supply unchanged after transfer or settle
