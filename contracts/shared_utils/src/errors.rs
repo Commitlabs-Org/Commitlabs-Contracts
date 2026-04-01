@@ -84,9 +84,10 @@ impl ErrorHelper {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
+    use crate::error_codes::{code, message_for_code};
 
     #[test]
     fn test_require() {
@@ -95,9 +96,42 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "This should panic")]
     fn test_require_fails() {
         let env = Env::default();
         ErrorHelper::require(&env, false, "This should panic");
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid amount: must be greater than zero")]
+    fn test_require_fails_with_error_code_message_invalid_amount() {
+        let env = Env::default();
+        ErrorHelper::require(&env, false, message_for_code(code::INVALID_AMOUNT));
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: caller not allowed")]
+    fn test_require_fails_with_error_code_message_unauthorized() {
+        let env = Env::default();
+        ErrorHelper::require(&env, false, message_for_code(code::UNAUTHORIZED));
+    }
+
+    #[test]
+    #[should_panic(expected = "Value out of allowed range")]
+    fn test_panic_with_log_uses_exact_message_for_code() {
+        let env = Env::default();
+        ErrorHelper::panic_with_log(&env, message_for_code(code::OUT_OF_RANGE));
+    }
+
+    #[test]
+    #[should_panic(expected = "[validation] Invalid percent: must be between 0 and 100")]
+    fn test_require_with_context_formats_expected_panic() {
+        let env = Env::default();
+        ErrorHelper::require_with_context(
+            &env,
+            false,
+            "validation",
+            message_for_code(code::INVALID_PERCENT),
+        );
     }
 }

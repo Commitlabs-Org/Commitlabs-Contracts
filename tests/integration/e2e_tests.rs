@@ -306,12 +306,12 @@ fn test_e2e_multiple_users_concurrent_commitments() {
     let user1_commits = harness
         .env
         .as_contract(&harness.contracts.commitment_core, || {
-            CommitmentCoreContract::get_owner_commitments(harness.env.clone(), user1.clone())
+            CommitmentCoreContract::get_owner_commitments(harness.env.clone(), user1.clone(), 0, 50)
         });
     let user2_commits = harness
         .env
         .as_contract(&harness.contracts.commitment_core, || {
-            CommitmentCoreContract::get_owner_commitments(harness.env.clone(), user2.clone())
+            CommitmentCoreContract::get_owner_commitments(harness.env.clone(), user2.clone(), 0, 50)
         });
     assert_eq!(user1_commits.len(), 1);
     assert_eq!(user2_commits.len(), 1);
