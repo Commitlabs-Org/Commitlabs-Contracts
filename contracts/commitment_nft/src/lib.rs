@@ -231,6 +231,7 @@ impl CommitmentNFTContract {
     ///
     /// The recommended deployment pattern is to invoke `initialize` in the same
     /// transaction as the contract upload, leaving no window for front-running.
+    /// See `docs/DEPLOYMENT_CHECKLIST.md` for the full operational checklist.
     ///
     /// This function may only be called once. Any subsequent call returns
     /// [`ContractError::AlreadyInitialized`].
