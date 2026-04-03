@@ -16,6 +16,7 @@ attestation_engine = { path = "../../contracts/attestation_engine" }
 price_oracle = { path = "../../contracts/price_oracle" }
 allocation_logic = { path = "../../contracts/allocation_logic" }
 mock_oracle = { path = "../../contracts/mock_oracle" }
+shared_utils = { path = "../../contracts/shared_utils" }
 
 [lib]
 crate-type = ["rlib"]
