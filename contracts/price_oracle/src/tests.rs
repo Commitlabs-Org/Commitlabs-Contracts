@@ -423,10 +423,9 @@ fn test_set_admin() {
     assert_eq!(client.get_admin(), another_admin);
 }
 
-/// Test require_admin panic path (unauthorized caller without result handling)
+/// Test require_admin returns error for unauthorized caller
 #[test]
-#[should_panic(expected = "Unauthorized: admin only")]
-fn test_require_admin_panic() {
+fn test_require_admin_error() {
     let e = Env::default();
     e.mock_all_auths();
     let admin = Address::generate(&e);
@@ -439,8 +438,11 @@ fn test_require_admin_panic() {
         PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
     });
 
-    // This will trigger the panic path in require_admin (not the result-returning version)
-    client.add_oracle(&attacker, &oracle);
+    // Attacker cannot add oracle - returns error
+    assert_eq!(
+        client.try_add_oracle(&attacker, &oracle),
+        Err(Ok(OracleError::Unauthorized))
+    );
 }
 
 /// Test legacy staleness key is preserved when it exists

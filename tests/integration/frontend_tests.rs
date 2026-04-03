@@ -129,7 +129,7 @@ fn test_frontend_view_user_commitments() {
     let user_commitments = harness
         .env
         .as_contract(&harness.contracts.commitment_core, || {
-            CommitmentCoreContract::get_owner_commitments(harness.env.clone(), user.clone())
+            CommitmentCoreContract::get_owner_commitments(harness.env.clone(), user.clone(), 0, 50)
         });
 
     // Verify user has 3 commitments
