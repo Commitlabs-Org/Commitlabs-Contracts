@@ -38,4 +38,10 @@ pub use batch::{
     BatchResultString, BatchResultVoid, DetailedBatchError, RollbackHelper, StateSnapshot,
 };
 pub use emergency::EmergencyControl;
+pub use error_codes::emit_error_event;
+pub use math::SafeMath;
+pub use pausable::Pausable;
+pub use rate_limiting::RateLimiter;
+pub use time::TimeUtils;
+pub use validation::Validation;
 

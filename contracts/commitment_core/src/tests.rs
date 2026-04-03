@@ -676,7 +676,7 @@ fn test_create_commitment_expiration_overflow() {
     };
 
     e.as_contract(&contract_id, || {
-        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, token_address, rules);
+        CommitmentCoreContract::create_commitment(e.clone(), owner, 1000, asset_address, rules);
     });
 }
 
@@ -1058,7 +1058,7 @@ fn test_get_owner_commitments_not_initialized_returns_empty() {
     let owner = Address::generate(&e);
 
     let commitments = e.as_contract(&contract_id, || {
-        CommitmentCoreContract::get_owner_commitments(e.clone(), owner.clone())
+        CommitmentCoreContract::list_commitments_by_owner(e.clone(), owner.clone())
     });
     assert_eq!(commitments.len(), 0);
 }
@@ -1178,7 +1178,7 @@ fn test_create_commitment_updates_storage_layout() {
 
     let created_id = client.create_commitment(&owner, &amount, &asset_address, &rules);
     let commitment = client.get_commitment(&created_id);
-    let owner_commitments = client.get_owner_commitments(&owner);
+    let owner_commitments = client.list_commitments_by_owner(&owner);
 
     let total_commitments = e.as_contract(&contract_id, || {
         e.storage()
@@ -1250,7 +1250,7 @@ fn test_create_commitment_validation_failures_do_not_mutate_storage() {
 
     assert_eq!(client.get_total_commitments(), 0);
     assert_eq!(client.get_total_value_locked(), 0);
-    assert_eq!(client.get_owner_commitments(&owner).len(), 0);
+    assert_eq!(client.list_commitments_by_owner(&owner).len(), 0);
     assert_eq!(
         client.get_commitments_created_between(&0, &u64::MAX).len(),
         0
@@ -1626,34 +1626,10 @@ fn test_check_violations_zero_amount() {
 #[test]
 fn test_create_commitment_event() {
     let e = Env::default();
-    let contract_id = e.register_contract(None, CommitmentCoreContract);
-    let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    let _owner = Address::generate(&e);
-    let admin = Address::generate(&e);
-    let nft_contract = Address::generate(&e);
-
-    client.initialize(&admin, &nft_contract);
-
-    let _rules = CommitmentRules {
-        duration_days: 30,
-        max_loss_percent: 10,
-        commitment_type: String::from_str(&e, "safe"),
-        early_exit_penalty: 15,
-        min_fee_threshold: 100,
-        grace_period_days: 0,
-    };
-
-    // Note: This might panic if mock token transfers are not set up, but we are testing events.
-    // However, create_commitment calls transfer_assets.
-    // We need to mock the token contract or use a test token.
-    // For simplicity, we might skip this test if it's too complex to mock everything here,
-    // OR we assume the user has set up mocks (which they haven't in this file).
-    // But wait, create_commitment calls `transfer_assets` which calls `token::Client::transfer`.
-    // If we don't have a real token contract, this will fail.
-    // `origin/master` tests use `create_test_commitment` helper which bypasses `create_commitment` logic.
-    // So `origin/master` tests don't test `create_commitment` fully?
-    // `test_create_commitment_valid` calls `validate_rules` directly.
-    // It seems `origin/master` avoids calling `create_commitment` because of dependencies.
+    e.mock_all_auths_allowing_non_root_auth();
+    let amount = 1_000i128;
+    let (contract_id, client, owner, asset_address, _nft_contract, _token_client, rules) =
+        setup_create_commitment_fixture(&e, amount);
 
     let created_id = client.create_commitment(&owner, &amount, &asset_address, &rules);
     let created_symbol = symbol_short!("Created").into_val(&e);
@@ -1670,8 +1646,8 @@ fn test_create_commitment_event() {
         .expect("created event should be emitted");
 
     assert_eq!(created_event.1.len(), 3);
-    assert!(created_event.1[1].shallow_eq(&created_id.clone().into_val(&e)));
-    assert!(created_event.1[2].shallow_eq(&owner.clone().into_val(&e)));
+    assert!(created_event.1.get(1).unwrap().shallow_eq(&created_id.clone().into_val(&e)));
+    assert!(created_event.1.get(2).unwrap().shallow_eq(&owner.clone().into_val(&e)));
     assert!(created_event
         .2
         .shallow_eq(&(amount, rules.clone(), 1u32, e.ledger().timestamp()).into_val(&e)));
@@ -2025,7 +2001,7 @@ fn test_settle_success_expired() {
     assert_eq!(tvl, 0);
 
     let owner_commitments = e.as_contract(&contract_id, || {
-        CommitmentCoreContract::get_owner_commitments(e.clone(), owner.clone())
+        CommitmentCoreContract::list_commitments_by_owner(e.clone(), owner.clone())
     });
     assert_eq!(owner_commitments.len(), 0);
 }
@@ -2420,7 +2396,7 @@ fn test_tvl_consistency_sequence() {
     assert_eq!(client.get_total_value_locked(), 1000);
 
     // 2. Update Value -> TVL adjusts
-    client.update_value(&id, &1200);
+    client.update_value(&admin, &id, &1200);
     assert_eq!(client.get_total_value_locked(), 1200);
 
     // 3. Allocate -> TVL decreases
@@ -3108,7 +3084,7 @@ fn test_owner_multiple_commitments_creation() {
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
 
     // Verify owner has 3 commitments
-    let owner_commitments = client.get_owner_commitments(&owner);
+    let owner_commitments = client.list_commitments_by_owner(&owner);
     assert_eq!(owner_commitments.len(), 3);
 }
 
@@ -3203,7 +3179,7 @@ fn test_owner_multiple_commitments_settle_one() {
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
 
     // Verify owner still has 3 commitments in list
-    let owner_commitments = client.get_owner_commitments(&owner);
+    let owner_commitments = client.list_commitments_by_owner(&owner);
     assert_eq!(owner_commitments.len(), 3);
 
     // Verify settled commitment status changed
@@ -3266,4 +3242,139 @@ fn test_role_management() {
     assert!(client.is_allocator(&alloc_contract));
     assert!(client.is_allocator(&admin));
     assert!(client.is_operator(&admin)); // Admin holds all roles implicitly
+}
+
+// ============================================================
+// Commitment ID generation and uniqueness tests
+// ============================================================
+
+/// Two successive `create_commitment` calls produce distinct `commitment_id`s.
+#[test]
+fn test_commitment_id_uniqueness_across_two_creates() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+    // mint 10x so the owner can fund at least 5 creates at `amount` each
+    let amount = 100i128;
+    let (_, client, owner, asset_address, _, _, rules) =
+        setup_create_commitment_fixture(&e, 5 * amount);
+
+    let id1 = client.create_commitment(&owner, &amount, &asset_address, &rules);
+    let id2 = client.create_commitment(&owner, &amount, &asset_address, &rules);
+
+    assert_ne!(id1, id2);
+}
+
+/// Each generated ID follows the `COMMIT_<n>` format.
+#[test]
+fn test_commitment_id_format_is_commit_prefix() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+    // mint 20x so the owner can fund 5 creates
+    let amount = 100i128;
+    let (_, client, owner, asset_address, _, _, rules) =
+        setup_create_commitment_fixture(&e, 10 * amount);
+
+    for expected_n in 0u64..5u64 {
+        let id = client.create_commitment(&owner, &amount, &asset_address, &rules);
+        // Build the expected string "COMMIT_<n>" using the same no_std approach
+        let mut buf = [0u8; 28];
+        buf[0] = b'C';
+        buf[1] = b'O';
+        buf[2] = b'M';
+        buf[3] = b'M';
+        buf[4] = b'I';
+        buf[5] = b'T';
+        buf[6] = b'_';
+        let mut n = expected_n;
+        let mut i = 7usize;
+        if n == 0 {
+            buf[i] = b'0';
+            i += 1;
+        } else {
+            let mut digits = [0u8; 20];
+            let mut count = 0usize;
+            while n > 0 {
+                digits[count] = (n % 10) as u8 + b'0';
+                n /= 10;
+                count += 1;
+            }
+            for j in 0..count {
+                buf[i] = digits[count - 1 - j];
+                i += 1;
+            }
+        }
+        let expected =
+            String::from_str(&e, core::str::from_utf8(&buf[..i]).unwrap());
+        assert_eq!(id, expected, "commitment #{expected_n} had unexpected id");
+    }
+}
+
+/// `commitment_id_exists` returns `false` before creation and `true` after.
+#[test]
+fn test_commitment_id_exists_before_and_after_create() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+    let amount = 100i128;
+    let (_, client, owner, asset_address, _, _, rules) =
+        setup_create_commitment_fixture(&e, amount);
+
+    let phantom = String::from_str(&e, "COMMIT_0");
+    assert!(!client.commitment_id_exists(&phantom));
+
+    let id = client.create_commitment(&owner, &amount, &asset_address, &rules);
+    assert_eq!(id, phantom);
+    assert!(client.commitment_id_exists(&id));
+}
+
+/// `commitment_id_exists` returns `false` for an ID that was never created.
+#[test]
+fn test_commitment_id_exists_nonexistent_returns_false() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+    let amount = 1_000i128;
+    let (_, client, _, _, _, _, _) = setup_create_commitment_fixture(&e, amount);
+
+    assert!(!client.commitment_id_exists(&String::from_str(&e, "COMMIT_999")));
+}
+
+/// Counter monotonically advances: n-th commitment gets ID `COMMIT_n`.
+#[test]
+fn test_commitment_ids_are_monotonically_increasing() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+    let amount = 100i128;
+    // mint 10x to fund 3 creates
+    let (_, client, owner, asset_address, _, _, rules) =
+        setup_create_commitment_fixture(&e, 5 * amount);
+
+    let id0 = client.create_commitment(&owner, &amount, &asset_address, &rules);
+    let id1 = client.create_commitment(&owner, &amount, &asset_address, &rules);
+    let id2 = client.create_commitment(&owner, &amount, &asset_address, &rules);
+
+    assert_eq!(id0, String::from_str(&e, "COMMIT_0"));
+    assert_eq!(id1, String::from_str(&e, "COMMIT_1"));
+    assert_eq!(id2, String::from_str(&e, "COMMIT_2"));
+
+    // All three must be distinct
+    assert_ne!(id0, id1);
+    assert_ne!(id1, id2);
+    assert_ne!(id0, id2);
+}
+
+/// The commitment stored under each generated ID is retrievable and matches the inputs.
+#[test]
+fn test_get_commitment_returns_correct_record_for_generated_id() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+    let amount = 100i128;
+    let (_, client, owner, asset_address, _, _, rules) =
+        setup_create_commitment_fixture(&e, amount);
+
+    let id = client.create_commitment(&owner, &amount, &asset_address, &rules);
+    let c = client.get_commitment(&id);
+
+    assert_eq!(c.commitment_id, id);
+    assert_eq!(c.owner, owner);
+    assert_eq!(c.asset_address, asset_address);
+    assert_eq!(c.status, String::from_str(&e, "active"));
 }
