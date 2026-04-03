@@ -254,7 +254,7 @@ fn test_attestation_engine_verifies_commitment_exists() {
             )
         });
 
-    assert!(result.success);
+    assert!(result.is_ok());
 
     // Verify attestation was stored
     let attestations = harness
@@ -388,7 +388,7 @@ fn test_attest_by_verifier_succeeds() {
             )
         });
 
-    assert!(result.success);
+    assert!(result.is_ok());
 
     let attestations = harness
         .env
@@ -424,7 +424,7 @@ fn test_attest_after_verifier_removed_fails() {
         is_compliant: true,
     };
     let params_vec1 = Vec::from_array(&harness.env, [params1]);
-    harness
+    let result1 = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
             AttestationEngineContract::batch_attest(
@@ -433,8 +433,8 @@ fn test_attest_after_verifier_removed_fails() {
                 params_vec1,
                 BatchMode::Atomic,
             )
-        })
-        .unwrap();
+        });
+    assert!(result1.success);
 
     // Admin removes verifier from whitelist
     harness
@@ -507,7 +507,7 @@ fn test_attestation_succeeds_after_commitment_created() {
                 BatchMode::Atomic,
             )
         });
-    assert!(result_before.is_err());
+    assert!(!result_before.success);
 
     // Create commitment in core contract
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
@@ -542,7 +542,7 @@ fn test_attestation_succeeds_after_commitment_created() {
                 BatchMode::Atomic,
             )
         });
-    assert!(result_after.is_ok());
+    assert!(result_after.success);
 
     // Verify attestation was stored
     let attestations = harness
@@ -906,7 +906,7 @@ fn test_allocation_logic_pool_interaction() {
             )
         });
 
-    assert!(result.success);
+    assert!(result.is_ok());
     let summary = result.unwrap();
 
     // Verify allocation was made
@@ -975,7 +975,7 @@ fn test_allocation_rebalance_cross_pool() {
             )
         });
 
-    assert!(result.success);
+    assert!(result.is_ok());
     let rebalanced = result.unwrap();
 
     // Verify total remains the same
