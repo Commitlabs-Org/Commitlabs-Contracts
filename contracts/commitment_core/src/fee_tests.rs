@@ -64,10 +64,10 @@ fn create_token_contract<'a>(
 /// `TokenClient::new(&e, &token_address)`.
 fn setup_test() -> (
     Env,
-    Address,  // admin
-    Address,  // contract_id
-    Address,  // user
-    Address,  // token_address
+    Address, // admin
+    Address, // contract_id
+    Address, // user
+    Address, // token_address
     CommitmentCoreContractClient<'static>,
 ) {
     let e = Env::default();
@@ -124,7 +124,12 @@ fn create_commitment_direct(
 }
 
 /// Trigger an early exit directly via `e.as_contract`.
-fn early_exit_direct(e: &Env, contract_id: &Address, commitment_id: &soroban_sdk::String, caller: &Address) {
+fn early_exit_direct(
+    e: &Env,
+    contract_id: &Address,
+    commitment_id: &soroban_sdk::String,
+    caller: &Address,
+) {
     e.as_contract(contract_id, || {
         CommitmentCoreContract::early_exit(e.clone(), commitment_id.clone(), caller.clone());
     });
@@ -179,7 +184,8 @@ fn test_create_commitment_with_zero_fee() {
     let amount = 1_000_000i128;
     let rules = default_rules(&e);
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     // Verify commitment amount is full amount (no fee deducted)
     let commitment = client.get_commitment(&commitment_id);
@@ -203,7 +209,8 @@ fn test_create_commitment_with_creation_fee() {
     let expected_net = amount - expected_fee;
     let rules = default_rules(&e);
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     // Verify commitment amount is net amount (after fee)
     let commitment = client.get_commitment(&commitment_id);
@@ -230,7 +237,8 @@ fn test_create_commitment_with_max_fee() {
     let expected_net = 0i128;
     let rules = default_rules(&e);
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     // Verify commitment amount is 0 (all went to fees)
     let commitment = client.get_commitment(&commitment_id);
@@ -254,7 +262,8 @@ fn test_create_commitment_fee_rounds_down() {
     let expected_net = amount;
     let rules = default_rules(&e);
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     let commitment = client.get_commitment(&commitment_id);
     assert_eq!(commitment.amount, expected_net);
@@ -298,7 +307,8 @@ fn test_early_exit_penalty_retained_as_fee() {
     let mut rules = default_rules(&e);
     rules.early_exit_penalty = 10; // 10% penalty
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     // Early exit
     early_exit_direct(&e, &contract_id, &commitment_id, &user);
@@ -329,7 +339,8 @@ fn test_early_exit_with_creation_fee_and_penalty() {
     let mut rules = default_rules(&e);
     rules.early_exit_penalty = 10; // 10% penalty
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     // Early exit
     early_exit_direct(&e, &contract_id, &commitment_id, &user);
@@ -576,7 +587,8 @@ fn test_fee_collection_with_settle() {
 
     let rules = default_rules(&e);
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     // Settle commitment
     e.ledger()
@@ -607,7 +619,8 @@ fn test_complete_fee_lifecycle() {
     let mut rules = default_rules(&e);
     rules.early_exit_penalty = 10; // 10%
 
-    let commitment_id = create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, amount, &token_address, &rules);
 
     // 3. Early exit with penalty
     early_exit_direct(&e, &contract_id, &commitment_id, &user);

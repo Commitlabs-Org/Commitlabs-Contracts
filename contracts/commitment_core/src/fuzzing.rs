@@ -117,7 +117,11 @@ pub fn observe_amount(amount: i128, fee_bps: u32) -> AmountObservation {
     }
 }
 
-pub fn observe_commitment_input(commitment_id: &[u8], amount: i128, fee_bps: u32) -> CommitmentInputObservation {
+pub fn observe_commitment_input(
+    commitment_id: &[u8],
+    amount: i128,
+    fee_bps: u32,
+) -> CommitmentInputObservation {
     CommitmentInputObservation {
         id_shape: classify_generated_commitment_id_bytes(commitment_id),
         amount: observe_amount(amount, fee_bps),

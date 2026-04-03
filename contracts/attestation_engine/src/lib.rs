@@ -74,34 +74,34 @@ pub enum DataKey {
     /// Reentrancy guard
     ReentrancyGuard,
     /// Global analytics: total attestations recorded across all commitments
-    /// 
+    ///
     /// Tracks the cumulative count of all attestations recorded in the protocol.
     /// This counter is incremented for every successful attestation operation
     /// regardless of attestation type or compliance status.
-    /// 
+    ///
     /// Type: u64 counter
     /// Storage: Instance storage
     /// Default: 0 (initialized during contract deployment or migration)
     /// Security: Public read, atomic increments during attestation operations
     TotalAttestations,
     /// Global analytics: total violation-type or non-compliant attestations
-    /// 
+    ///
     /// Tracks the cumulative count of violation attestations and non-compliant
     /// attestations recorded across all commitments. This includes:
     /// - Explicit violation-type attestations
     /// - Non-compliant attestations of any type
-    /// 
+    ///
     /// Type: u64 counter
     /// Storage: Instance storage
     /// Default: 0 (initialized during contract deployment or migration)
     /// Security: Public read, atomic increments during attestation operations
     TotalViolations,
     /// Global analytics: total fees generated across all commitments
-    /// 
+    ///
     /// Tracks the cumulative total of fees generated from fee_generation
     /// attestations across all commitments. Only updated when fee_amount
     /// is present in attestation data.
-    /// 
+    ///
     /// Type: i128 accumulator
     /// Storage: Instance storage
     /// Default: 0 (initialized during contract deployment or migration)
@@ -109,11 +109,11 @@ pub enum DataKey {
     /// Currency: Native token units (same as fee amounts)
     TotalFees,
     /// Per-verifier analytics: attestation count by verifier address
-    /// 
+    ///
     /// Tracks the total number of attestations recorded by each specific
     /// verifier address. Enables per-verifier performance monitoring and
     /// activity tracking across the protocol.
-    /// 
+    ///
     /// Type: u64 counter per verifier address
     /// Storage: Instance storage with Address key
     /// Default: 0 (implicit, no storage entry means 0 attestations)
@@ -757,8 +757,7 @@ impl AttestationEngineContract {
 
             if attestation.attestation_type == drawdown_type {
                 if let Some(drawdown_str) = attestation.data.get(drawdown_percent_key.clone()) {
-                    if let Some(drawdown_percent) = Self::parse_i128_from_string(e, &drawdown_str)
-                    {
+                    if let Some(drawdown_percent) = Self::parse_i128_from_string(e, &drawdown_str) {
                         if let Some(previous) = previous_drawdown_percent {
                             if let Some(delta) =
                                 Self::absolute_difference(drawdown_percent, previous)
@@ -1011,9 +1010,7 @@ impl AttestationEngineContract {
                 .set(&DataKey::TotalViolations, &(total_viol + 1));
         }
 
-        e.storage()
-            .instance()
-            .set(&verifier_key, &(ver_count + 1));
+        e.storage().instance().set(&verifier_key, &(ver_count + 1));
 
         // 12. Emit event
         e.events().publish(
@@ -1027,7 +1024,6 @@ impl AttestationEngineContract {
 
         Ok(())
     }
-
 
     /// Get all attestations for a commitment
     pub fn get_attestations(e: Env, commitment_id: String) -> Vec<Attestation> {
@@ -1092,18 +1088,18 @@ impl AttestationEngineContract {
     /// ```rust
     /// // Get first page of 50 attestations
     /// let page1 = AttestationEngineContract::get_attestations_page(
-    ///     env, 
-    ///     "commitment_123".into(), 
-    ///     0, 
+    ///     env,
+    ///     "commitment_123".into(),
+    ///     0,
     ///     50
     /// );
-    /// 
+    ///
     /// // Get second page using next_offset
     /// if page1.next_offset > 0 {
     ///     let page2 = AttestationEngineContract::get_attestations_page(
-    ///         env, 
-    ///         "commitment_123".into(), 
-    ///         page1.next_offset, 
+    ///         env,
+    ///         "commitment_123".into(),
+    ///         page1.next_offset,
     ///         50
     ///     );
     /// }
@@ -1209,7 +1205,7 @@ impl AttestationEngineContract {
     /// # Examples
     /// ```rust
     /// let attestation_count = AttestationEngineContract::get_attestation_count(
-    ///     env, 
+    ///     env,
     ///     "commitment_123".into()
     /// );
     /// ```
@@ -1441,7 +1437,6 @@ impl AttestationEngineContract {
             String::from_str(&e, "drawdown"),
             data,
             is_compliant,
-            false,
         )?;
 
         if !is_compliant {
@@ -1462,7 +1457,6 @@ impl AttestationEngineContract {
                 String::from_str(&e, "violation"),
                 violation_data,
                 false,
-                false,
             )?;
 
             e.events().publish(
@@ -1479,7 +1473,6 @@ impl AttestationEngineContract {
         e.storage().instance().remove(&DataKey::ReentrancyGuard);
         Ok(())
     }
-
 
     /// Convert i128 to String (helper function)
     fn i128_to_string(e: &Env, value: i128) -> String {
@@ -1559,7 +1552,7 @@ impl AttestationEngineContract {
 
         // Get all attestations
         let attestations = Self::get_attestations(e.clone(), commitment_id.clone());
-    let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
+        let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
 
         // Base score: 100
         let mut score: i32 = 100;
@@ -1674,7 +1667,7 @@ impl AttestationEngineContract {
     ///
     /// # Trust Boundaries
     /// - Caller: Any address (public function)
-    /// - Storage Reads: 
+    /// - Storage Reads:
     ///   - Local: TotalAttestations, TotalViolations, TotalFees, CoreContract
     ///   - External: Calls commitment_core.get_total_commitments()
     /// - Storage Writes: None
@@ -1690,7 +1683,7 @@ impl AttestationEngineContract {
     ///
     /// # Examples
     /// ```rust
-    /// let (commitments, attestations, violations, fees) = 
+    /// let (commitments, attestations, violations, fees) =
     ///     AttestationEngineContract::get_protocol_statistics(env);
     /// ```
     ///
@@ -1779,7 +1772,7 @@ impl AttestationEngineContract {
     /// # Examples
     /// ```rust
     /// let verifier_count = AttestationEngineContract::get_verifier_statistics(
-    ///     env, 
+    ///     env,
     ///     verifier_address
     /// );
     /// ```

@@ -199,7 +199,10 @@ fn invariant_tvl_equals_sum_of_seeded_amounts() {
     let tvl = e.as_contract(&contract_id, || {
         CommitmentCoreContract::get_total_value_locked(e.clone())
     });
-    assert_eq!(tvl, expected_tvl, "TVL must equal sum of all seeded amounts");
+    assert_eq!(
+        tvl, expected_tvl,
+        "TVL must equal sum of all seeded amounts"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -234,11 +237,7 @@ fn invariant_commitment_id_prefix() {
     for i in [0u64, 1, 9, 10, 99, 100, 999, 1_000, u32::MAX as u64] {
         let id = CommitmentCoreContract::generate_commitment_id(&e, i);
         // The first two bytes of the underlying string must be 'c' and '_'
-        assert!(
-            id.len() >= 2,
-            "ID too short for counter {}",
-            i
-        );
+        assert!(id.len() >= 2, "ID too short for counter {}", i);
         // Verify prefix by comparing against known prefix string
         let c_prefix = String::from_str(&e, "c_");
         // Compare first two chars: build "c_X" and check id starts with "c_"
@@ -294,12 +293,25 @@ fn invariant_check_violations_false_when_healthy() {
     });
 
     // amount=10_000, current_value=9_000 → 10% loss < 20% max_loss; not expired
-    seed_commitment(&e, &contract_id, "c_0", &owner, 10_000, 9_000, 20, 30, "active");
+    seed_commitment(
+        &e,
+        &contract_id,
+        "c_0",
+        &owner,
+        10_000,
+        9_000,
+        20,
+        30,
+        "active",
+    );
 
     let violated = e.as_contract(&contract_id, || {
         CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, "c_0"))
     });
-    assert!(!violated, "Healthy commitment must not be flagged as violated");
+    assert!(
+        !violated,
+        "Healthy commitment must not be flagged as violated"
+    );
 }
 
 /// Invariant: check_violations returns true when loss exceeds max_loss_percent.
@@ -314,12 +326,25 @@ fn invariant_check_violations_true_on_loss_exceeded() {
     });
 
     // amount=10_000, current_value=7_000 → 30% loss > 20% max_loss
-    seed_commitment(&e, &contract_id, "c_0", &owner, 10_000, 7_000, 20, 30, "active");
+    seed_commitment(
+        &e,
+        &contract_id,
+        "c_0",
+        &owner,
+        10_000,
+        7_000,
+        20,
+        30,
+        "active",
+    );
 
     let violated = e.as_contract(&contract_id, || {
         CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, "c_0"))
     });
-    assert!(violated, "Loss-exceeded commitment must be flagged as violated");
+    assert!(
+        violated,
+        "Loss-exceeded commitment must be flagged as violated"
+    );
 }
 
 /// Invariant: check_violations returns true when commitment is expired.
@@ -334,7 +359,17 @@ fn invariant_check_violations_true_on_expiry() {
     });
 
     // Seed with 1-day duration, then advance time past expiry
-    seed_commitment(&e, &contract_id, "c_0", &owner, 10_000, 10_000, 20, 1, "active");
+    seed_commitment(
+        &e,
+        &contract_id,
+        "c_0",
+        &owner,
+        10_000,
+        10_000,
+        20,
+        1,
+        "active",
+    );
 
     e.ledger().with_mut(|l| {
         l.timestamp += 86_401; // 1 day + 1 second
@@ -367,7 +402,10 @@ fn invariant_check_violations_false_for_settled_commitment() {
     let violated = e.as_contract(&contract_id, || {
         CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, "c_0"))
     });
-    assert!(!violated, "Settled commitment must never be flagged as violated");
+    assert!(
+        !violated,
+        "Settled commitment must never be flagged as violated"
+    );
 }
 
 /// Invariant: check_violations returns false for early_exit commitments.
@@ -381,7 +419,17 @@ fn invariant_check_violations_false_for_early_exit_commitment() {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft.clone());
     });
 
-    seed_commitment(&e, &contract_id, "c_0", &owner, 10_000, 0, 20, 1, "early_exit");
+    seed_commitment(
+        &e,
+        &contract_id,
+        "c_0",
+        &owner,
+        10_000,
+        0,
+        20,
+        1,
+        "early_exit",
+    );
     e.ledger().with_mut(|l| {
         l.timestamp += 86_401;
     });
@@ -389,7 +437,10 @@ fn invariant_check_violations_false_for_early_exit_commitment() {
     let violated = e.as_contract(&contract_id, || {
         CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, "c_0"))
     });
-    assert!(!violated, "Early-exit commitment must never be flagged as violated");
+    assert!(
+        !violated,
+        "Early-exit commitment must never be flagged as violated"
+    );
 }
 
 /// Invariant: zero-amount commitment never triggers a division-by-zero in loss calculation.
@@ -432,7 +483,17 @@ fn invariant_settle_post_conditions() {
     });
 
     let amount = 5_000i128;
-    seed_commitment(&e, &contract_id, "c_0", &owner, amount, amount, 20, 1, "active");
+    seed_commitment(
+        &e,
+        &contract_id,
+        "c_0",
+        &owner,
+        amount,
+        amount,
+        20,
+        1,
+        "active",
+    );
     e.as_contract(&contract_id, || {
         e.storage()
             .instance()
@@ -458,7 +519,11 @@ fn invariant_settle_post_conditions() {
             .unwrap_or(0);
         e.storage().instance().set(
             &DataKey::TotalValueLocked,
-            &(if tvl > settlement_amount { tvl - settlement_amount } else { 0 }),
+            &(if tvl > settlement_amount {
+                tvl - settlement_amount
+            } else {
+                0
+            }),
         );
     });
 
@@ -466,7 +531,11 @@ fn invariant_settle_post_conditions() {
     let c = e.as_contract(&contract_id, || {
         CommitmentCoreContract::get_commitment(e.clone(), String::from_str(&e, "c_0"))
     });
-    assert_eq!(c.status, String::from_str(&e, "settled"), "Status must be 'settled'");
+    assert_eq!(
+        c.status,
+        String::from_str(&e, "settled"),
+        "Status must be 'settled'"
+    );
 
     let tvl = e.as_contract(&contract_id, || {
         CommitmentCoreContract::get_total_value_locked(e.clone())
@@ -571,10 +640,7 @@ fn invariant_loss_percent_consistent_with_violation_threshold() {
     // Use a cleaner example: 10_000 → 7_900 = 21% loss
     let loss_above = SafeMath::loss_percent(10_000, 7_900); // 21% loss
     assert_eq!(loss_above, 21);
-    assert!(
-        loss_above > 20,
-        "Loss above threshold must be a violation"
-    );
+    assert!(loss_above > 20, "Loss above threshold must be a violation");
 
     // Zero current_value: 100% loss
     let loss_total = SafeMath::loss_percent(10_000, 0);
@@ -661,24 +727,50 @@ fn invariant_get_violation_details_consistent_with_check_violations() {
     });
 
     // Case 1: healthy
-    seed_commitment(&e, &contract_id, "c_0", &owner, 10_000, 9_000, 20, 30, "active");
+    seed_commitment(
+        &e,
+        &contract_id,
+        "c_0",
+        &owner,
+        10_000,
+        9_000,
+        20,
+        30,
+        "active",
+    );
     let (has_v, _, _, _, _) = e.as_contract(&contract_id, || {
         CommitmentCoreContract::get_violation_details(e.clone(), String::from_str(&e, "c_0"))
     });
     let check_v = e.as_contract(&contract_id, || {
         CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, "c_0"))
     });
-    assert_eq!(has_v, check_v, "get_violation_details must agree with check_violations (healthy)");
+    assert_eq!(
+        has_v, check_v,
+        "get_violation_details must agree with check_violations (healthy)"
+    );
 
     // Case 2: loss exceeded
-    seed_commitment(&e, &contract_id, "c_1", &owner, 10_000, 7_000, 20, 30, "active");
+    seed_commitment(
+        &e,
+        &contract_id,
+        "c_1",
+        &owner,
+        10_000,
+        7_000,
+        20,
+        30,
+        "active",
+    );
     let (has_v2, loss_v2, _, lp2, _) = e.as_contract(&contract_id, || {
         CommitmentCoreContract::get_violation_details(e.clone(), String::from_str(&e, "c_1"))
     });
     let check_v2 = e.as_contract(&contract_id, || {
         CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, "c_1"))
     });
-    assert_eq!(has_v2, check_v2, "get_violation_details must agree with check_violations (loss)");
+    assert_eq!(
+        has_v2, check_v2,
+        "get_violation_details must agree with check_violations (loss)"
+    );
     assert!(loss_v2, "loss_violated flag must be true");
     assert_eq!(lp2, 30, "loss_percent must be 30 for 7000/10000");
 }

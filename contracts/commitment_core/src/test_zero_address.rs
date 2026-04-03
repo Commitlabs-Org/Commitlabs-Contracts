@@ -2,10 +2,7 @@
 extern crate std;
 
 use crate::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, String,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 fn generate_zero_address(env: &Env) -> Address {
     Address::from_string(&String::from_str(
@@ -30,7 +27,10 @@ fn test_create_commitment_zero_owner_fails() {
 
     let zero_owner = generate_zero_address(&env);
     let amount: i128 = 100_000_000;
-    let asset_address = Address::from_string(&String::from_str(&env, "GBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCR"));
+    let asset_address = Address::from_string(&String::from_str(
+        &env,
+        "GBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCRBCR",
+    ));
 
     let rules = CommitmentRules {
         duration_days: 30,
