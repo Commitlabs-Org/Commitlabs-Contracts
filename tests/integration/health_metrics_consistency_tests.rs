@@ -328,7 +328,7 @@ fn test_record_drawdown_compliance_check() {
     assert_eq!(attestations.len(), 1);
     assert_eq!(
         attestations.get(0).unwrap().attestation_type,
-        String::from_str(&harness.env, "drawdown")
+        SorobanString::from_str(&harness.env, "drawdown")
     );
     assert!(attestations.get(0).unwrap().is_compliant);
 
@@ -420,11 +420,11 @@ fn test_record_drawdown_non_compliant() {
     assert_eq!(attestations.len(), 2);
     assert_eq!(
         attestations.get(0).unwrap().attestation_type,
-        String::from_str(&harness.env, "drawdown")
+        SorobanString::from_str(&harness.env, "drawdown")
     );
     assert_eq!(
         attestations.get(1).unwrap().attestation_type,
-        String::from_str(&harness.env, "violation")
+        SorobanString::from_str(&harness.env, "violation")
     );
     assert!(!attestations.get(0).unwrap().is_compliant);
     assert!(!attestations.get(1).unwrap().is_compliant);
@@ -433,11 +433,11 @@ fn test_record_drawdown_non_compliant() {
         .get(1)
         .unwrap()
         .data
-        .get(String::from_str(&harness.env, "violation_type"))
+        .get(SorobanString::from_str(&harness.env, "violation_type"))
         .unwrap();
     assert_eq!(
         violation_type,
-        String::from_str(&harness.env, "max_loss_exceeded")
+        SorobanString::from_str(&harness.env, "max_loss_exceeded")
     );
 
     // Both attestations are tracked as violations by analytics
@@ -638,21 +638,22 @@ fn test_compliance_score_with_violation_attestation() {
     // Record a violation attestation
     let mut data = Map::new(&harness.env);
     data.set(
-        String::from_str(&harness.env, "violation_type"),
-        String::from_str(&harness.env, "protocol_breach"),
+        SorobanString::from_str(&harness.env, "violation_type"),
+        SorobanString::from_str(&harness.env, "protocol_breach"),
     );
     data.set(
-        String::from_str(&harness.env, "severity"),
-        String::from_str(&harness.env, "high"),
+        SorobanString::from_str(&harness.env, "severity"),
+        SorobanString::from_str(&harness.env, "high"),
     );
 
     let params = AttestParams {
         commitment_id: commitment_id.clone(),
-        attestation_type: String::from_str(&harness.env, "violation"),
+        attestation_type: SorobanString::from_str(&harness.env, "violation"),
         data: data.clone(),
         is_compliant: false,
     };
-    let params_vec = Vec::from_array(&harness.env, [params]);
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
 
     harness
         .env
@@ -661,7 +662,7 @@ fn test_compliance_score_with_violation_attestation() {
                 harness.env.clone(),
                 verifier.clone(),
                 params_vec,
-                BatchMode::AllOrNothing,
+                BatchMode::Atomic,
             )
         });
 
