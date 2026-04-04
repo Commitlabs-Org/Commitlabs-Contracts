@@ -378,6 +378,10 @@ impl AllocationStrategiesContract {
         // at the protocol level, ensuring the address matches the transaction signer
         caller.require_auth();
         
+        // Additional validation: ensure caller is a valid address (non-zero)
+        if caller.is_zero() {
+            return Err(Error::Unauthorized);
+        }
         Self::require_initialized(&env)?;
         Self::require_no_reentrancy(&env)?;
 

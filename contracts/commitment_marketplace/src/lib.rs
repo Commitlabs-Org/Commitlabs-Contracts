@@ -422,7 +422,7 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
+        if let Err(err) = require_allowed_payment_token(&e, &listing.payment_token) {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
