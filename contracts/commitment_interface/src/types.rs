@@ -82,6 +82,32 @@ pub struct CommitmentCreatedEvent {
     pub timestamp: u64,
 }
 
+/// NFT metadata stored alongside a CommitmentNFT token.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitmentMetadata {
+    pub commitment_id: String,
+    pub duration_days: u32,
+    pub max_loss_percent: u32,
+    pub commitment_type: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub initial_amount: i128,
+    pub asset_address: Address,
+    pub early_exit_penalty: u32,
+}
+
+/// The Commitment NFT structure.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitmentNFT {
+    pub owner: Address,
+    pub token_id: u32,
+    pub metadata: CommitmentMetadata,
+    pub is_active: bool,
+    pub early_exit_penalty: u32,
+}
+
 /// Event payload emitted by the live core contract when a commitment is settled.
 ///
 /// # Security

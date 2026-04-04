@@ -1441,7 +1441,6 @@ impl AttestationEngineContract {
             String::from_str(&e, "drawdown"),
             data,
             is_compliant,
-            false,
         )?;
 
         if !is_compliant {
@@ -1461,7 +1460,6 @@ impl AttestationEngineContract {
                 commitment_id.clone(),
                 String::from_str(&e, "violation"),
                 violation_data,
-                false,
                 false,
             )?;
 

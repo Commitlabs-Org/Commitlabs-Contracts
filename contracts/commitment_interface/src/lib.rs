@@ -253,6 +253,7 @@ mod tests {
     extern crate alloc;
 
     use super::INTERFACE_VERSION;
+    use crate::error::{category, Error};
     use alloc::{
         string::{String, ToString},
         vec::Vec,
@@ -406,7 +407,7 @@ mod tests {
             "pub fn create_commitment( e: Env, owner: Address, amount: i128, asset_address: Address, rules: CommitmentRules, ) -> String",
             "pub fn get_commitment(e: Env, commitment_id: String) -> Commitment",
             "pub fn list_commitments_by_owner(e: Env, owner: Address) -> Vec<String>",
-            "pub fn get_owner_commitments(e: Env, owner: Address) -> Vec<String>",
+            "pub fn get_owner_commitments(e: Env, owner: Address, offset: u32, limit: u32) -> Vec<String>",
             "pub fn get_total_commitments(e: Env) -> u64",
             "pub fn get_total_value_locked(e: Env) -> i128",
             "pub fn get_commitments_created_between(e: Env, from_ts: u64, to_ts: u64) -> Vec<String>",
