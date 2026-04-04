@@ -1,7 +1,7 @@
 # Known Limitations
 
-- commitment*core::generate_commitment_id returns a constant prefix ("commitment*") and does not guarantee uniqueness.
-- commitment_core::update_value emits an event but does not persist the new value.
+- ~~commitment_core::generate_commitment_id returns a constant prefix ("commitment_") and does not guarantee uniqueness.~~ **Fixed**: IDs are now generated as `COMMIT_<counter>` using a monotonically increasing `TotalCommitments` counter. A duplicate-ID guard (`DuplicateCommitmentId` error) is enforced before every write. A `commitment_id_exists()` query function is exposed for off-chain validation.
+- ~~commitment_core::update_value emits an event but does not persist the new value.~~ **Fixed**: `update_value` now persists `current_value` and status to storage before emitting the event.
 - commitment_core state-changing functions (create_commitment, settle, early_exit, allocate, update_value) do not enforce `require_auth`.
 - commitment_nft::mint does not enforce an authorized minter list (DataKey::AuthorizedMinter is unused).
 - commitment_nft::settle is not restricted to the core contract.

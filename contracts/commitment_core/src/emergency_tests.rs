@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
-    testutils::{Address as _, Events},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, IntoVal, String,
 };
@@ -83,28 +83,32 @@ fn test_emergency_mode_toggle_emits_events() {
     assert!(!client.is_emergency_mode());
 
     let events = e.events().all();
-    let emg_mode_symbol = symbol_short!("EmgMode").into_val(&e);
-    let emg_on = symbol_short!("EMG_ON").into_val(&e);
-    let emg_off = symbol_short!("EMG_OFF").into_val(&e);
+    let emg_mode_symbol: soroban_sdk::Val = symbol_short!("EmgMode").into_val(&e);
+    let emg_on: soroban_sdk::Val = symbol_short!("EMG_ON").into_val(&e);
+    let emg_off: soroban_sdk::Val = symbol_short!("EMG_OFF").into_val(&e);
 
-    let mode_events: std::vec::Vec<_> = events
-        .iter()
-        .filter(|event| {
-            event.0 == contract_id
-                && event
-                    .1
-                    .first()
-                    .map_or(false, |topic| topic.shallow_eq(&emg_mode_symbol))
-        })
-        .collect();
-
-    assert_eq!(mode_events.len(), 2);
-    assert!(mode_events[0]
-        .2
-        .shallow_eq(&(emg_on, e.ledger().timestamp()).into_val(&e)));
-    assert!(mode_events[1]
-        .2
-        .shallow_eq(&(emg_off, e.ledger().timestamp()).into_val(&e)));
+    let mut mode_event_count = 0u32;
+    let mut found_on = false;
+    let mut found_off = false;
+    for event in events.iter() {
+        let is_emg = event.0 == contract_id
+            && event
+                .1
+                .first()
+                .map_or(false, |topic| topic.shallow_eq(&emg_mode_symbol));
+        if is_emg {
+            mode_event_count += 1;
+            if event.2.shallow_eq(&(emg_on.clone(), e.ledger().timestamp()).into_val(&e)) {
+                found_on = true;
+            }
+            if event.2.shallow_eq(&(emg_off.clone(), e.ledger().timestamp()).into_val(&e)) {
+                found_off = true;
+            }
+        }
+    }
+    assert_eq!(mode_event_count, 2);
+    assert!(found_on, "EMG_ON event not found");
+    assert!(found_off, "EMG_OFF event not found");
 }
 
 #[test]
@@ -134,7 +138,7 @@ fn test_create_commitment_forbidden_in_emergency_preserves_state() {
     assert!(client.is_emergency_mode());
     assert_eq!(client.get_total_commitments(), 0);
     assert_eq!(client.get_total_value_locked(), 0);
-    assert_eq!(client.get_owner_commitments(&owner).len(), 0);
+    assert_eq!(client.list_commitments_by_owner(&owner).len(), 0);
     assert_eq!(
         client.get_commitments_created_between(&0, &u64::MAX).len(),
         0
