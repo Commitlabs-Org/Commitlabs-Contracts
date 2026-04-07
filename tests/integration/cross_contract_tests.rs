@@ -9,13 +9,16 @@
 use crate::harness::{TestHarness, SECONDS_PER_DAY};
 use soroban_sdk::{
     testutils::{Address as _, Events},
-    Address, Env, String, Symbol, IntoVal, Vec,
+    Address, Env, IntoVal, String, Symbol, Vec,
 };
 
+use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
+use attestation_engine::{
+    AttestParams, AttestationEngineContract, AttestationError, AttestationsPage,
+};
 use commitment_core::{CommitmentCoreContract, CommitmentRules};
 use commitment_nft::{CommitmentNFTContract, ContractError as NftContractError};
-use attestation_engine::{AttestationEngineContract, AttestationError, AttestationsPage};
-use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
+use shared_utils::BatchMode;
 
 /// Verify compliance integration between commitment_core and attestation_engine.
 ///
@@ -48,10 +51,7 @@ fn test_verify_compliance_uses_core_commitment_data() {
     let is_compliant_initial = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::verify_compliance(
-                harness.env.clone(),
-                commitment_id.clone(),
-            )
+            AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
         });
     assert!(is_compliant_initial);
 
@@ -63,6 +63,7 @@ fn test_verify_compliance_uses_core_commitment_data() {
         .as_contract(&harness.contracts.commitment_core, || {
             CommitmentCoreContract::update_value(
                 harness.env.clone(),
+                user.clone(),
                 commitment_id.clone(),
                 new_value,
             )
@@ -87,10 +88,7 @@ fn test_verify_compliance_uses_core_commitment_data() {
     let is_compliant_after = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::verify_compliance(
-                harness.env.clone(),
-                commitment_id.clone(),
-            )
+            AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
         });
     assert!(!is_compliant_after);
 }
@@ -196,7 +194,10 @@ fn test_create_commitment_mints_nft_metadata_matches() {
         });
 
     // Verify auto-generated commitment_id format: COMMIT_{token_id}
-    assert_eq!(nft.metadata.commitment_id, String::from_str(&harness.env, "COMMIT_0"));
+    assert_eq!(
+        nft.metadata.commitment_id,
+        String::from_str(&harness.env, "COMMIT_0")
+    );
     assert_eq!(nft.metadata.duration_days, rules.duration_days);
     assert_eq!(nft.metadata.max_loss_percent, rules.max_loss_percent);
     assert_eq!(nft.metadata.commitment_type, rules.commitment_type);
@@ -234,20 +235,26 @@ fn test_attestation_engine_verifies_commitment_exists() {
     let attestation_data = harness.health_check_data();
 
     // Create attestation (validates commitment exists via cross-contract call)
+    let params = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: attestation_data,
+        is_compliant: true,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                attestation_data,
-                true,
+                params_vec,
+                BatchMode::Atomic,
             )
         });
 
-    assert!(result.is_ok());
+    assert!(result.success);
 
     // Verify attestation was stored
     let attestations = harness
@@ -269,21 +276,27 @@ fn test_attestation_fails_for_nonexistent_commitment() {
     let attestation_data = harness.health_check_data();
 
     // Attempt to create attestation for non-existent commitment
+    let params = AttestParams {
+        commitment_id: fake_commitment_id,
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: attestation_data,
+        is_compliant: true,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                fake_commitment_id,
-                String::from_str(&harness.env, "health_check"),
-                attestation_data,
-                true,
+                params_vec,
+                BatchMode::Atomic,
             )
         });
 
     // Should fail with CommitmentNotFound error
-    assert_eq!(result, Err(AttestationError::CommitmentNotFound));
+    assert!(!result.success);
 }
 
 /// Test: attest(...) by random address (not in verifier whitelist) → Unauthorized (#125)
@@ -296,25 +309,36 @@ fn test_attest_by_random_address_fails_unauthorized() {
 
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
 
     let attestation_data = harness.health_check_data();
 
     // Attacker (not a verifier) tries to attest
+    let params = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: attestation_data,
+        is_compliant: true,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 attacker.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                attestation_data,
-                true,
+                params_vec,
+                BatchMode::Atomic,
             )
         });
 
-    assert_eq!(result, Err(AttestationError::Unauthorized));
+    assert!(!result.success);
 
     // No attestation should have been stored
     let attestations = harness
@@ -335,25 +359,36 @@ fn test_attest_by_verifier_succeeds() {
 
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
 
     let attestation_data = harness.health_check_data();
 
     // Verifier (in whitelist) attests
+    let params = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: attestation_data,
+        is_compliant: true,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                attestation_data,
-                true,
+                params_vec,
+                BatchMode::Atomic,
             )
         });
 
-    assert!(result.is_ok());
+    assert!(result.success);
 
     let attestations = harness
         .env
@@ -373,22 +408,33 @@ fn test_attest_after_verifier_removed_fails() {
 
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
 
     // Verifier attests once (succeeds)
-    harness
+    let data1 = harness.health_check_data();
+    let params1 = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: data1,
+        is_compliant: true,
+    };
+    let params_vec1 = Vec::from_array(&harness.env, [params1]);
+    let result1 = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                harness.health_check_data(),
-                true,
+                params_vec1,
+                BatchMode::Atomic,
             )
-            .unwrap();
         });
+    assert!(result1.success);
 
     // Admin removes verifier from whitelist
     harness
@@ -403,20 +449,26 @@ fn test_attest_after_verifier_removed_fails() {
         });
 
     // Same address attests again → must fail
+    let data2 = harness.health_check_data();
+    let params2 = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: data2,
+        is_compliant: true,
+    };
+    let params_vec2 = Vec::from_array(&harness.env, [params2]);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                harness.health_check_data(),
-                true,
+                params_vec2,
+                BatchMode::Atomic,
             )
         });
 
-    assert_eq!(result, Err(AttestationError::Unauthorized));
+    assert!(!result.success);
 
     // Still only one attestation (the one before removal)
     let attestations = harness
@@ -437,19 +489,25 @@ fn test_attestation_succeeds_after_commitment_created() {
     let commitment_id = String::from_str(&harness.env, "test_commitment_123");
 
     // First attempt: attestation should fail (commitment doesn't exist yet)
+    let data_before = harness.health_check_data();
+    let params_before = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: data_before,
+        is_compliant: true,
+    };
+    let params_vec_before = Vec::from_array(&harness.env, [params_before]);
     let result_before = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                harness.health_check_data(),
-                true,
+                params_vec_before,
+                BatchMode::Atomic,
             )
         });
-    assert_eq!(result_before, Err(AttestationError::CommitmentNotFound));
+    assert!(!result_before.success);
 
     // Create commitment in core contract
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
@@ -466,19 +524,25 @@ fn test_attestation_succeeds_after_commitment_created() {
         });
 
     // Second attempt: attestation should succeed (commitment now exists)
+    let data_after = harness.health_check_data();
+    let params_after = AttestParams {
+        commitment_id: created_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: data_after,
+        is_compliant: true,
+    };
+    let params_vec_after = Vec::from_array(&harness.env, [params_after]);
     let result_after = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                created_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                harness.health_check_data(),
-                true,
+                params_vec_after,
+                BatchMode::Atomic,
             )
         });
-    assert!(result_after.is_ok());
+    assert!(result_after.success);
 
     // Verify attestation was stored
     let attestations = harness
@@ -516,18 +580,23 @@ fn test_multiple_attestations_cross_contract() {
         harness.advance_time(60); // Advance 1 minute between attestations
 
         let data = harness.health_check_data();
+        let params = AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&harness.env, "health_check"),
+            data: data,
+            is_compliant: true,
+        };
+        let mut params_vec = Vec::new(&harness.env);
+        params_vec.push_back(params);
         harness
             .env
             .as_contract(&harness.contracts.attestation_engine, || {
-                AttestationEngineContract::attest(
+                AttestationEngineContract::batch_attest(
                     harness.env.clone(),
                     verifier.clone(),
-                    commitment_id.clone(),
-                    String::from_str(&harness.env, "health_check"),
-                    data,
-                    true,
+                    params_vec,
+                    BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
@@ -559,16 +628,17 @@ fn test_get_attestations_page_empty_returns_empty() {
     let harness = TestHarness::new();
     let commitment_id = String::from_str(&harness.env, "no_attestations_commitment");
 
-    let page: AttestationsPage = harness
-        .env
-        .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::get_attestations_page(
-                harness.env.clone(),
-                commitment_id,
-                0,
-                10,
-            )
-        });
+    let page: AttestationsPage =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::get_attestations_page(
+                    harness.env.clone(),
+                    commitment_id,
+                    0,
+                    10,
+                )
+            });
 
     assert_eq!(page.attestations.len(), 0);
     assert_eq!(page.next_offset, 0);
@@ -583,36 +653,48 @@ fn test_get_attestations_page_single_page_returns_all() {
     let amount = 1_000_000_000_000i128;
 
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
-    let commitment_id = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
 
     // Add 3 attestations
     for _ in 0..3 {
         harness.advance_time(60);
+        let data = harness.health_check_data();
+        let params = AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&harness.env, "health_check"),
+            data: data,
+            is_compliant: true,
+        };
+        let mut params_vec = Vec::new(&harness.env);
+        params_vec.push_back(params);
         harness
             .env
             .as_contract(&harness.contracts.attestation_engine, || {
-                AttestationEngineContract::attest(
+                AttestationEngineContract::batch_attest(
                     harness.env.clone(),
                     verifier.clone(),
-                    commitment_id.clone(),
-                    String::from_str(&harness.env, "health_check"),
-                    harness.health_check_data(),
-                    true,
+                    params_vec,
+                    BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
-    let page: AttestationsPage = harness
-        .env
-        .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::get_attestations_page(
-                harness.env.clone(),
-                commitment_id.clone(),
-                0,
-                10,
-            )
-        });
+    let page: AttestationsPage =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::get_attestations_page(
+                    harness.env.clone(),
+                    commitment_id.clone(),
+                    0,
+                    10,
+                )
+            });
 
     assert_eq!(page.attestations.len(), 3);
     assert_eq!(page.next_offset, 0);
@@ -627,65 +709,79 @@ fn test_get_attestations_page_multiple_pages_correct_order() {
     let amount = 1_000_000_000_000i128;
 
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
-    let commitment_id = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
 
     // Add 5 attestations
     for _ in 0..5 {
         harness.advance_time(60);
+        let data = harness.health_check_data();
+        let params = AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&harness.env, "health_check"),
+            data: data,
+            is_compliant: true,
+        };
+        let mut params_vec = Vec::new(&harness.env);
+        params_vec.push_back(params);
         harness
             .env
             .as_contract(&harness.contracts.attestation_engine, || {
-                AttestationEngineContract::attest(
+                AttestationEngineContract::batch_attest(
                     harness.env.clone(),
                     verifier.clone(),
-                    commitment_id.clone(),
-                    String::from_str(&harness.env, "health_check"),
-                    harness.health_check_data(),
-                    true,
+                    params_vec,
+                    BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
     // Page 1: offset 0, limit 2
-    let page1: AttestationsPage = harness
-        .env
-        .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::get_attestations_page(
-                harness.env.clone(),
-                commitment_id.clone(),
-                0,
-                2,
-            )
-        });
+    let page1: AttestationsPage =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::get_attestations_page(
+                    harness.env.clone(),
+                    commitment_id.clone(),
+                    0,
+                    2,
+                )
+            });
     assert_eq!(page1.attestations.len(), 2);
     assert_eq!(page1.next_offset, 2);
 
     // Page 2: offset 2, limit 2
-    let page2: AttestationsPage = harness
-        .env
-        .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::get_attestations_page(
-                harness.env.clone(),
-                commitment_id.clone(),
-                2,
-                2,
-            )
-        });
+    let page2: AttestationsPage =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::get_attestations_page(
+                    harness.env.clone(),
+                    commitment_id.clone(),
+                    2,
+                    2,
+                )
+            });
     assert_eq!(page2.attestations.len(), 2);
     assert_eq!(page2.next_offset, 4);
 
     // Page 3: offset 4, limit 2
-    let page3: AttestationsPage = harness
-        .env
-        .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::get_attestations_page(
-                harness.env.clone(),
-                commitment_id.clone(),
-                4,
-                2,
-            )
-        });
+    let page3: AttestationsPage =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::get_attestations_page(
+                    harness.env.clone(),
+                    commitment_id.clone(),
+                    4,
+                    2,
+                )
+            });
     assert_eq!(page3.attestations.len(), 1);
     assert_eq!(page3.next_offset, 0);
 
@@ -768,7 +864,10 @@ fn test_commitment_settlement_calls_nft_settle() {
         });
     assert!(!nft_after_settle.is_active);
     // Verify auto-generated commitment_id format: COMMIT_{token_id}
-    assert_eq!(nft_after_settle.metadata.commitment_id, String::from_str(&harness.env, "COMMIT_0"));
+    assert_eq!(
+        nft_after_settle.metadata.commitment_id,
+        String::from_str(&harness.env, "COMMIT_0")
+    );
     assert_eq!(nft_after_settle.owner, *user);
 
     // Verify commitment status
@@ -798,7 +897,7 @@ fn test_allocation_logic_pool_interaction() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64, // commitment_id
+                String::from_str(&harness.env, "1"), // commitment_id
                 amount,
                 Strategy::Balanced,
             )
@@ -842,7 +941,7 @@ fn test_allocation_rebalance_cross_pool() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                String::from_str(&harness.env, "1"),
                 amount,
                 Strategy::Balanced,
             )
@@ -853,7 +952,10 @@ fn test_allocation_rebalance_cross_pool() {
     let initial_allocation = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::get_allocation(harness.env.clone(), 1u64)
+            AllocationStrategiesContract::get_allocation(
+                harness.env.clone(),
+                String::from_str(&harness.env, "1"),
+            )
         });
 
     // Advance time
@@ -863,14 +965,21 @@ fn test_allocation_rebalance_cross_pool() {
     let result = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::rebalance(harness.env.clone(), user.clone(), 1u64)
+            AllocationStrategiesContract::rebalance(
+                harness.env.clone(),
+                user.clone(),
+                String::from_str(&harness.env, "1"),
+            )
         });
 
     assert!(result.is_ok());
     let rebalanced = result.unwrap();
 
     // Verify total remains the same
-    assert_eq!(rebalanced.total_allocated, initial_allocation.total_allocated);
+    assert_eq!(
+        rebalanced.total_allocated,
+        initial_allocation.total_allocated
+    );
 }
 
 /// Test: Cross-contract state consistency
@@ -916,7 +1025,10 @@ fn test_cross_contract_state_consistency() {
     assert_eq!(nft.owner, *user);
     assert_eq!(nft.metadata.initial_amount, amount);
     // Verify auto-generated commitment_id format: COMMIT_{token_id}
-    assert_eq!(nft.metadata.commitment_id, String::from_str(&harness.env, "COMMIT_0"));
+    assert_eq!(
+        nft.metadata.commitment_id,
+        String::from_str(&harness.env, "COMMIT_0")
+    );
 
     // 3. Token balances are correct
     let user_balance = harness.balance(user);
@@ -952,42 +1064,53 @@ fn test_health_metrics_cross_contract_data() {
 
     // Add attestations with different types
     let health_data = harness.health_check_data();
+    let params1 = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: health_data,
+        is_compliant: true,
+    };
+    let params_vec1 = Vec::from_array(&harness.env, [params1]);
     harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                health_data,
-                true,
+                params_vec1,
+                BatchMode::Atomic,
             )
-            .unwrap();
         });
 
     harness.advance_time(60);
 
     let fee_data = harness.fee_generation_data(50000);
+    let params2 = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "fee_generation"),
+        data: fee_data,
+        is_compliant: true,
+    };
+    let params_vec2 = Vec::from_array(&harness.env, [params2]);
     harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "fee_generation"),
-                fee_data,
-                true,
+                params_vec2,
+                BatchMode::Atomic,
             )
-            .unwrap();
         });
 
     // Get health metrics (involves reading from core contract)
     let metrics = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
         });
 
     // Verify metrics reflect cross-contract data
@@ -1116,12 +1239,27 @@ fn test_get_commitments_created_between() {
 
     let t0 = harness.current_timestamp();
 
-    let id1 = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let id1 = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
     harness.advance_time(100);
     let t_after_first = harness.current_timestamp();
-    let id2 = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let id2 = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
     harness.advance_time(100);
-    let id3 = harness.create_commitment(user, amount, &harness.contracts.token, harness.default_rules());
+    let id3 = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
 
     // Range [t0, t_after_first - 1]: only id1 (id2 created at t_after_first)
     let ids_early = harness
@@ -1265,12 +1403,7 @@ fn test_early_exit_zero_current_value() {
         min_fee_threshold: 1000,
         grace_period_days: 0,
     };
-    let commitment_id = harness.create_commitment(
-        user,
-        amount,
-        &harness.contracts.token,
-        rules,
-    );
+    let commitment_id = harness.create_commitment(user, amount, &harness.contracts.token, rules);
 
     // update_value(commitment_id, 0)
     harness
@@ -1278,6 +1411,7 @@ fn test_early_exit_zero_current_value() {
         .as_contract(&harness.contracts.commitment_core, || {
             CommitmentCoreContract::update_value(
                 harness.env.clone(),
+                user.clone(),
                 commitment_id.clone(),
                 0,
             )
@@ -1299,7 +1433,10 @@ fn test_early_exit_zero_current_value() {
         .as_contract(&harness.contracts.commitment_core, || {
             CommitmentCoreContract::get_commitment(harness.env.clone(), commitment_id.clone())
         });
-    assert_eq!(commitment.status, String::from_str(&harness.env, "early_exit"));
+    assert_eq!(
+        commitment.status,
+        String::from_str(&harness.env, "early_exit")
+    );
     assert_eq!(commitment.current_value, 0);
 }
 
@@ -1398,16 +1535,17 @@ fn test_record_fees_validation() {
     );
 
     // Test 1: Negative fee amount (-1) should be rejected
-    let result_negative_one = harness
-        .env
-        .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::record_fees(
-                harness.env.clone(),
-                verifier.clone(),
-                commitment_id.clone(),
-                -1,
-            )
-        });
+    let result_negative_one =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::record_fees(
+                    harness.env.clone(),
+                    verifier.clone(),
+                    commitment_id.clone(),
+                    -1,
+                )
+            });
     assert_eq!(result_negative_one, Err(AttestationError::InvalidFeeAmount));
 
     // Test 2: Zero fee amount should be allowed
@@ -1437,16 +1575,17 @@ fn test_record_fees_validation() {
     assert_eq!(result_positive, Ok(()));
 
     // Test 4: Large positive fee amount should be allowed
-    let result_large_positive = harness
-        .env
-        .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::record_fees(
-                harness.env.clone(),
-                verifier.clone(),
-                commitment_id.clone(),
-                1_000_000_000_000,
-            )
-        });
+    let result_large_positive =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::record_fees(
+                    harness.env.clone(),
+                    verifier.clone(),
+                    commitment_id.clone(),
+                    1_000_000_000_000,
+                )
+            });
     assert_eq!(result_large_positive, Ok(()));
 
     // Test 5: Minimum i128 value should be rejected

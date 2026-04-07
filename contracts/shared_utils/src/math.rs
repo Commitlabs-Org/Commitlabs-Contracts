@@ -128,6 +128,22 @@ impl SafeMath {
         Self::sub(value, penalty_amount)
     }
 
+    /// Calculate percentage change between two values: ((current - old) * 100) / old
+    ///
+    /// # Arguments
+    /// * `old_value` - The old/original value
+    /// * `new_value` - The new/current value
+    ///
+    /// # Returns
+    /// The percentage change as i128. Positive for gains, negative for losses.
+    pub fn calculate_percentage_change(old_value: i128, new_value: i128) -> i128 {
+        if old_value == 0 {
+            panic!("Math: cannot calculate percentage change from zero old value");
+        }
+        let diff = Self::sub(new_value, old_value);
+        Self::percent_from(diff, old_value)
+    }
+
     /// Calculate the penalty amount: (value * penalty_percent / 100)
     ///
     /// # Arguments

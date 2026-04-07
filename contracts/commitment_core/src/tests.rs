@@ -75,9 +75,15 @@ mod instrumented_nft {
         }
 
         pub fn settle(e: Env, caller: Address, token_id: u32) {
-            e.storage().instance().set(&symbol_short!("set_call"), &true);
-            e.storage().instance().set(&symbol_short!("set_tid"), &token_id);
-            e.storage().instance().set(&symbol_short!("set_clr"), &caller);
+            e.storage()
+                .instance()
+                .set(&symbol_short!("set_call"), &true);
+            e.storage()
+                .instance()
+                .set(&symbol_short!("set_tid"), &token_id);
+            e.storage()
+                .instance()
+                .set(&symbol_short!("set_clr"), &caller);
         }
 
         pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
@@ -1728,10 +1734,20 @@ fn test_update_value_unauthorized_fails() {
 
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
-        let commitment =
-            create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, e.ledger().timestamp());
+        let commitment = create_test_commitment(
+            &e,
+            "test_id",
+            &owner,
+            1000,
+            1000,
+            10,
+            30,
+            e.ledger().timestamp(),
+        );
         set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &1000i128);
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -1875,7 +1891,12 @@ fn test_create_commitment_rate_limit_exempt_owner() {
             1,
         );
         // Exempt the owner from rate limits
-        CommitmentCoreContract::set_rate_limit_exempt(e.clone(), admin.clone(), owner.clone(), true);
+        CommitmentCoreContract::set_rate_limit_exempt(
+            e.clone(),
+            admin.clone(),
+            owner.clone(),
+            true,
+        );
     });
 
     let rules = test_rules(&e);
@@ -1992,17 +2013,22 @@ fn test_settle_success_expired() {
         amount,
         10,
         duration_days,
-        created_at
+        created_at,
     );
     commitment.asset_address = asset_address.clone();
     store_commitment(&e, &contract_id, &commitment);
 
     // Update TVL as create_commitment would
     e.as_contract(&contract_id, || {
-        e.storage().instance().set(&DataKey::TotalValueLocked, &amount);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &amount);
         let mut owner_commitments = Vec::new(&e);
         owner_commitments.push_back(String::from_str(&e, commitment_id));
-        e.storage().instance().set(&DataKey::OwnerCommitments(owner.clone()), &owner_commitments);
+        e.storage().instance().set(
+            &DataKey::OwnerCommitments(owner.clone()),
+            &owner_commitments,
+        );
     });
 
     e.ledger().with_mut(|l| {
@@ -2065,7 +2091,7 @@ fn test_settle_nft_coordination() {
         amount,
         10,
         duration_days,
-        created_at
+        created_at,
     );
     commitment.nft_token_id = nft_token_id;
     commitment.asset_address = asset_address.clone();
@@ -2081,9 +2107,21 @@ fn test_settle_nft_coordination() {
 
     // Check if InstrumentedNftContract::settle was called correctly
     let (is_called, called_tid, called_clr) = e.as_contract(&nft_contract, || {
-        let is_called: bool = e.storage().instance().get(&symbol_short!("set_call")).unwrap_or(false);
-        let called_tid: u32 = e.storage().instance().get(&symbol_short!("set_tid")).unwrap_or(0);
-        let called_clr: Address = e.storage().instance().get(&symbol_short!("set_clr")).unwrap();
+        let is_called: bool = e
+            .storage()
+            .instance()
+            .get(&symbol_short!("set_call"))
+            .unwrap_or(false);
+        let called_tid: u32 = e
+            .storage()
+            .instance()
+            .get(&symbol_short!("set_tid"))
+            .unwrap_or(0);
+        let called_clr: Address = e
+            .storage()
+            .instance()
+            .get(&symbol_short!("set_clr"))
+            .unwrap();
         (is_called, called_tid, called_clr)
     });
 
@@ -2130,7 +2168,7 @@ fn test_settle_asset_transfers() {
         amount,
         10,
         duration_days,
-        created_at
+        created_at,
     );
     commitment.asset_address = asset_address.clone();
     store_commitment(&e, &contract_id, &commitment);
@@ -2466,7 +2504,15 @@ fn setup_test_context() -> (
     client.initialize(&admin, &nft_contract);
     client.set_fee_recipient(&admin, &admin);
 
-    (e, admin, nft_contract, user, token_address, token_client, client)
+    (
+        e,
+        admin,
+        nft_contract,
+        user,
+        token_address,
+        token_client,
+        client,
+    )
 }
 
 /// Helper function to create a test commitment with custom penalty
@@ -2958,7 +3004,9 @@ fn test_update_value_authorized_updater_succeeds() {
         CommitmentCoreContract::add_updater(e.clone(), admin.clone(), updater.clone());
         let commitment = create_test_commitment(&e, "test_id", &owner, 1000, 1000, 10, 30, 1000);
         set_commitment(&e, &commitment);
-        e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &1000i128);
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
@@ -2994,10 +3042,9 @@ fn test_update_value_no_violation() {
     // Verify ValueUpdated event was emitted
     let events = e.events().all();
     let val_upd_symbol = symbol_short!("ValUpd").into_val(&e);
-    let has_val_upd = events.iter().any(|ev| {
-        ev.1.first()
-            .is_some_and(|t| t.shallow_eq(&val_upd_symbol))
-    });
+    let has_val_upd = events
+        .iter()
+        .any(|ev| ev.1.first().is_some_and(|t| t.shallow_eq(&val_upd_symbol)));
     assert!(has_val_upd, "ValueUpdated event should be emitted");
 }
 
@@ -3029,10 +3076,9 @@ fn test_update_value_triggers_violation() {
     // Verify ViolationDetected event was emitted
     let events = e.events().all();
     let violated_symbol = symbol_short!("Violated").into_val(&e);
-    let has_violation = events.iter().any(|ev| {
-        ev.1.first()
-            .is_some_and(|t| t.shallow_eq(&violated_symbol))
-    });
+    let has_violation = events
+        .iter()
+        .any(|ev| ev.1.first().is_some_and(|t| t.shallow_eq(&violated_symbol)));
     assert!(has_violation, "ViolationDetected event should be emitted");
 }
 

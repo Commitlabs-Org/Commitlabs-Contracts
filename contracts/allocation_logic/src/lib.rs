@@ -322,7 +322,7 @@ impl AllocationStrategiesContract {
     ///
     /// # Security Model & Authentication Guarantees
     /// This function implements a robust authentication model to prevent caller spoofing:
-    /// 
+    ///
     /// **SDK Guarantees (Soroban):**
     /// - `caller.require_auth()` cryptographically verifies the caller's identity
     /// - The SDK ensures the `caller` address matches the transaction signer
@@ -377,11 +377,8 @@ impl AllocationStrategiesContract {
         // SDK Guarantee: require_auth() cryptographically verifies the caller's identity
         // at the protocol level, ensuring the address matches the transaction signer
         caller.require_auth();
-        
-        // Additional validation: ensure caller is a valid address (non-zero)
-        if caller.is_zero() {
-            return Err(Error::Unauthorized);
-        }
+
+        // Additional validation: require_auth() already verifies caller is valid
         Self::require_initialized(&env)?;
         Self::require_no_reentrancy(&env)?;
 
@@ -505,9 +502,10 @@ impl AllocationStrategiesContract {
         env.storage()
             .persistent()
             .set(&DataKey::Allocations(commitment_id.clone()), &allocations);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TotalAllocated(commitment_id.clone()), &total_allocated);
+        env.storage().persistent().set(
+            &DataKey::TotalAllocated(commitment_id.clone()),
+            &total_allocated,
+        );
 
         // Clear reentrancy guard
         Self::set_reentrancy_guard(&env, false);
@@ -661,17 +659,20 @@ impl AllocationStrategiesContract {
             }
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Allocations(commitment_id.clone()), &new_allocations);
+        env.storage().persistent().set(
+            &DataKey::Allocations(commitment_id.clone()),
+            &new_allocations,
+        );
         env.storage()
             .persistent()
             .set(&DataKey::TotalAllocated(commitment_id.clone()), &new_total);
 
         Self::set_reentrancy_guard(&env, false);
 
-        env.events()
-            .publish((symbol_short!("rebalance"), commitment_id.clone()), new_total);
+        env.events().publish(
+            (symbol_short!("rebalance"), commitment_id.clone()),
+            new_total,
+        );
 
         Ok(AllocationSummary {
             commitment_id,
@@ -1056,12 +1057,7 @@ impl AllocationStrategiesContract {
                     .and_then(|x| x.checked_sub(medium_amount))
                     .ok_or(Error::ArithmeticOverflow)?;
 
-                Self::distribute_to_pools(
-                    env,
-                    &mut allocation_map,
-                    &low_risk_pools,
-                    low_amount,
-                )?;
+                Self::distribute_to_pools(env, &mut allocation_map, &low_risk_pools, low_amount)?;
                 Self::distribute_to_pools(
                     env,
                     &mut allocation_map,

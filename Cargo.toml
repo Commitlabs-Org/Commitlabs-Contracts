@@ -20,6 +20,10 @@ exclude = [
 ]
 resolver = "2"
 
+# Enable wasm_js feature for getrandom on wasm targets
+[workspace.dependencies]
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true

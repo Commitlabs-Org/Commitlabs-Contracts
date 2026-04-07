@@ -9,14 +9,15 @@
 use crate::harness::{TestHarness, DEFAULT_USER_BALANCE, SECONDS_PER_DAY};
 use soroban_sdk::{
     testutils::{Address as _, Events},
-    Address, Env, String,
+    Address, Env, String, Vec,
 };
 
+use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
+use attestation_engine::{AttestParams, AttestationEngineContract};
 use commitment_core::{CommitmentCoreContract, CommitmentRules};
 use commitment_nft::CommitmentNFTContract;
-use attestation_engine::AttestationEngineContract;
-use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
 use mock_oracle::MockOracleContract;
+use shared_utils::BatchMode;
 
 /// Test: Complete commitment lifecycle (create -> monitor -> settle)
 #[test]
@@ -88,18 +89,23 @@ fn test_e2e_complete_commitment_lifecycle() {
 
         // Verifier submits health check attestation
         let health_data = harness.health_check_data();
+        let params = AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&harness.env, "health_check"),
+            data: health_data,
+            is_compliant: true,
+        };
+        let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+        params_vec.push_back(params);
         harness
             .env
             .as_contract(&harness.contracts.attestation_engine, || {
-                AttestationEngineContract::attest(
+                AttestationEngineContract::batch_attest(
                     harness.env.clone(),
                     verifier.clone(),
-                    commitment_id.clone(),
-                    String::from_str(&harness.env, "health_check"),
-                    health_data,
-                    true,
+                    params_vec,
+                    BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
@@ -184,7 +190,7 @@ fn test_e2e_early_exit_with_penalty() {
         commitment_type: String::from_str(&harness.env, "aggressive"),
         early_exit_penalty,
         min_fee_threshold: 500,
-            grace_period_days: 0,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness
@@ -209,7 +215,11 @@ fn test_e2e_early_exit_with_penalty() {
     harness
         .env
         .as_contract(&harness.contracts.commitment_core, || {
-            CommitmentCoreContract::early_exit(harness.env.clone(), commitment_id.clone(), user.clone())
+            CommitmentCoreContract::early_exit(
+                harness.env.clone(),
+                commitment_id.clone(),
+                user.clone(),
+            )
         });
 
     // Verify status
@@ -229,10 +239,7 @@ fn test_e2e_early_exit_with_penalty() {
     let balance_after_exit = harness.balance(user);
 
     assert_eq!(balance_after_exit - balance_before_exit, expected_return);
-    assert_eq!(
-        balance_after_exit,
-        initial_balance - expected_penalty
-    );
+    assert_eq!(balance_after_exit, initial_balance - expected_penalty);
 }
 
 /// Test: Multiple users creating commitments simultaneously
@@ -349,7 +356,7 @@ fn test_e2e_commitment_with_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                String::from_str(&harness.env, "1"),
                 amount,
                 Strategy::Balanced,
             )
@@ -363,7 +370,10 @@ fn test_e2e_commitment_with_allocation() {
     let allocation = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::get_allocation(harness.env.clone(), 1u64)
+            AllocationStrategiesContract::get_allocation(
+                harness.env.clone(),
+                String::from_str(&harness.env, "1"),
+            )
         });
     assert_eq!(allocation.strategy, Strategy::Balanced);
     assert!(allocation.allocations.len() > 0);
@@ -406,18 +416,23 @@ fn test_e2e_violation_detection_flow() {
 
     // Submit violation attestation
     let violation_data = harness.violation_data("loss_exceeded", "high");
+    let params = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "violation"),
+        data: violation_data,
+        is_compliant: false, // Not compliant
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "violation"),
-                violation_data,
-                false, // Not compliant
+                params_vec,
+                BatchMode::Atomic,
             )
-            .unwrap();
         });
 
     // Verify attestation recorded
@@ -433,7 +448,10 @@ fn test_e2e_violation_detection_flow() {
     let metrics = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
         });
 
     // Compliance score should have decreased
@@ -553,18 +571,23 @@ fn test_e2e_fee_generation_tracking() {
         harness.advance_days(1);
 
         let fee_data = harness.fee_generation_data(*fee);
+        let params = AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&harness.env, "fee_generation"),
+            data: fee_data,
+            is_compliant: true,
+        };
+        let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+        params_vec.push_back(params);
         harness
             .env
             .as_contract(&harness.contracts.attestation_engine, || {
-                AttestationEngineContract::attest(
+                AttestationEngineContract::batch_attest(
                     harness.env.clone(),
                     verifier.clone(),
-                    commitment_id.clone(),
-                    String::from_str(&harness.env, "fee_generation"),
-                    fee_data,
-                    true,
+                    params_vec,
+                    BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
@@ -618,12 +641,10 @@ fn test_e2e_oracle_price_monitoring() {
         harness.set_oracle_price(&harness.contracts.token, price, 8);
 
         // Read price
-        let read_price = harness
-            .env
-            .as_contract(&harness.contracts.mock_oracle, || {
-                MockOracleContract::get_price(harness.env.clone(), harness.contracts.token.clone())
-                    .unwrap()
-            });
+        let read_price = harness.env.as_contract(&harness.contracts.mock_oracle, || {
+            MockOracleContract::get_price(harness.env.clone(), harness.contracts.token.clone())
+                .unwrap()
+        });
         assert_eq!(read_price, price);
     }
 }
@@ -645,7 +666,7 @@ fn test_e2e_allocation_rebalancing_flow() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                String::from_str(&harness.env, "1"),
                 amount,
                 Strategy::Balanced,
             )
@@ -662,7 +683,11 @@ fn test_e2e_allocation_rebalancing_flow() {
     let rebalance_result = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::rebalance(harness.env.clone(), user.clone(), 1u64)
+            AllocationStrategiesContract::rebalance(
+                harness.env.clone(),
+                user.clone(),
+                String::from_str(&harness.env, "1"),
+            )
         });
     assert!(rebalance_result.is_ok());
 
@@ -673,7 +698,10 @@ fn test_e2e_allocation_rebalancing_flow() {
     let final_allocation = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::get_allocation(harness.env.clone(), 1u64)
+            AllocationStrategiesContract::get_allocation(
+                harness.env.clone(),
+                String::from_str(&harness.env, "1"),
+            )
         });
     assert_eq!(final_allocation.total_allocated, amount);
 }

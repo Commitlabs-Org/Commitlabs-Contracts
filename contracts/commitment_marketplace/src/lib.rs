@@ -1,4 +1,3 @@
-
 //! # Commitment Marketplace Contract
 //!
 //! Soroban smart contract for NFT marketplace operations (listings, offers, auctions) with reentrancy guard and fee logic.
@@ -12,7 +11,7 @@
 //! - See [`MarketplaceError`] for all error codes.
 //!
 //! ## Storage
-//! 
+//!
 //! - See [`DataKey`] for all storage keys mutated by each entry point.
 //!
 //! ## Audit Notes
@@ -21,11 +20,11 @@
 
 #![no_std]
 
+use shared_utils::math::SafeMath;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
-use shared_utils::math::SafeMath;
 
 // ============================================================================
 // Error Types
@@ -189,10 +188,7 @@ fn is_allowed_payment_token(e: &Env, payment_token: &Address) -> bool {
         .unwrap_or(false)
 }
 
-fn require_allowed_payment_token(
-    e: &Env,
-    payment_token: &Address,
-) -> Result<(), MarketplaceError> {
+fn require_allowed_payment_token(e: &Env, payment_token: &Address) -> Result<(), MarketplaceError> {
     if !is_allowed_payment_token(e, payment_token) {
         return Err(MarketplaceError::PaymentTokenNotAllowed);
     }
@@ -422,7 +418,7 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        if let Err(err) = require_allowed_payment_token(&e, &listing.payment_token) {
+        if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
@@ -611,8 +607,10 @@ impl CommitmentMarketplace {
 
         // Calculate fee and seller proceeds safely using basis points (bps)
         let fee_basis_points_i128: i128 = fee_basis_points as i128;
-        let marketplace_fee =
-            SafeMath::div(SafeMath::mul(listing.price, fee_basis_points_i128), 10_000_i128);
+        let marketplace_fee = SafeMath::div(
+            SafeMath::mul(listing.price, fee_basis_points_i128),
+            10_000_i128,
+        );
         let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
 
         // EFFECTS
@@ -1036,7 +1034,9 @@ impl CommitmentMarketplace {
         // EFFECTS
         let started_at = e.ledger().timestamp();
         let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             MarketplaceError::InvalidDuration
         })?;
 
@@ -1286,8 +1286,10 @@ impl CommitmentMarketplace {
                 fee_basis_points
             };
             let fee_bps_i128 = fee_bps as i128;
-            let marketplace_fee =
-                SafeMath::div(SafeMath::mul(auction.current_bid, fee_bps_i128), 10_000_i128);
+            let marketplace_fee = SafeMath::div(
+                SafeMath::mul(auction.current_bid, fee_bps_i128),
+                10_000_i128,
+            );
             let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);

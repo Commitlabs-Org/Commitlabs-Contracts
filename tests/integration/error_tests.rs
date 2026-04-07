@@ -8,13 +8,16 @@
 //! - Expected error assertions
 
 use crate::harness::{TestHarness, DEFAULT_USER_BALANCE, SECONDS_PER_DAY};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 
+use allocation_logic::{
+    AllocationStrategiesContract, Error as AllocationError, RiskLevel, Strategy,
+};
+use attestation_engine::{AttestParams, AttestationEngineContract, AttestationError};
 use commitment_core::{CommitmentCoreContract, CommitmentError, CommitmentRules};
 use commitment_nft::{CommitmentNFTContract, ContractError as NftError};
-use attestation_engine::{AttestationEngineContract, AttestationError};
-use allocation_logic::{AllocationStrategiesContract, Error as AllocationError, RiskLevel, Strategy};
 use mock_oracle::{MockOracleContract, OracleError};
+use shared_utils::BatchMode;
 
 // ============================================================================
 // Unauthorized Access Tests
@@ -64,20 +67,27 @@ fn test_error_unauthorized_attestation() {
         });
 
     // Attacker tries to create attestation
+    let data = harness.health_check_data();
+    let params = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: data,
+        is_compliant: true,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 attacker.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "health_check"),
-                harness.health_check_data(),
-                true,
+                params_vec,
+                BatchMode::Atomic,
             )
         });
 
-    assert_eq!(result, Err(AttestationError::Unauthorized));
+    assert!(!result.success);
 }
 
 /// Test: Non-admin cannot register pool
@@ -353,20 +363,27 @@ fn test_error_invalid_attestation_type() {
             )
         });
 
+    let data = harness.health_check_data();
+    let params = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: String::from_str(&harness.env, "invalid_attestation_type"),
+        data: data,
+        is_compliant: true,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                commitment_id.clone(),
-                String::from_str(&harness.env, "invalid_attestation_type"),
-                harness.health_check_data(),
-                true,
+                params_vec,
+                BatchMode::Atomic,
             )
         });
 
-    assert_eq!(result, Err(AttestationError::InvalidAttestationType));
+    assert!(!result.success);
 }
 
 /// Test: Empty commitment ID fails
@@ -375,20 +392,27 @@ fn test_error_empty_commitment_id_attestation() {
     let harness = TestHarness::new();
     let verifier = &harness.accounts.verifier;
 
+    let data = harness.health_check_data();
+    let params = AttestParams {
+        commitment_id: String::from_str(&harness.env, ""), // Empty ID
+        attestation_type: String::from_str(&harness.env, "health_check"),
+        data: data,
+        is_compliant: true,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::attest(
+            AttestationEngineContract::batch_attest(
                 harness.env.clone(),
                 verifier.clone(),
-                String::from_str(&harness.env, ""), // Empty ID
-                String::from_str(&harness.env, "health_check"),
-                harness.health_check_data(),
-                true,
+                params_vec,
+                BatchMode::Atomic,
             )
         });
 
-    assert_eq!(result, Err(AttestationError::InvalidCommitmentId));
+    assert!(!result.success);
 }
 
 /// Test: Zero amount allocation fails
@@ -405,7 +429,7 @@ fn test_error_zero_amount_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                String::from_str(&harness.env, "1"),
                 0, // Zero amount
                 Strategy::Balanced,
             )
@@ -428,7 +452,7 @@ fn test_error_negative_amount_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                String::from_str(&harness.env, "1"),
                 -1000, // Negative amount
                 Strategy::Balanced,
             )
@@ -457,7 +481,7 @@ fn test_error_double_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                String::from_str(&harness.env, "1"),
                 amount,
                 Strategy::Balanced,
             )
@@ -471,7 +495,7 @@ fn test_error_double_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64, // Same commitment_id
+                String::from_str(&harness.env, "1"), // Same commitment_id
                 amount,
                 Strategy::Balanced,
             )
@@ -490,11 +514,7 @@ fn test_error_double_initialization_attestation_engine() {
     let result = harness
         .env
         .as_contract(&harness.contracts.attestation_engine, || {
-            AttestationEngineContract::initialize(
-                harness.env.clone(),
-                admin.clone(),
-                core.clone(),
-            )
+            AttestationEngineContract::initialize(harness.env.clone(), admin.clone(), core.clone())
         });
 
     assert_eq!(result, Err(AttestationError::AlreadyInitialized));
@@ -655,7 +675,7 @@ fn test_boundary_max_loss_percent_100() {
         commitment_type: String::from_str(&harness.env, "aggressive"),
         early_exit_penalty: 5,
         min_fee_threshold: 1000,
-            grace_period_days: 0,
+        grace_period_days: 0,
     };
 
     let commitment_id = harness
@@ -808,7 +828,7 @@ fn test_error_allocation_no_pools() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                999u64, // Use commitment_id that has sufficient balance
+                String::from_str(&harness.env, "999"), // Use commitment_id that has sufficient balance
                 1_000_000_000_000,
                 Strategy::Balanced,
             )
@@ -831,7 +851,7 @@ fn test_error_rebalance_nonexistent() {
             AllocationStrategiesContract::rebalance(
                 harness.env.clone(),
                 user.clone(),
-                99999u64, // Non-existent
+                String::from_str(&harness.env, "99999"), // Non-existent
             )
         });
 

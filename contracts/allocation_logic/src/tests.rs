@@ -1,11 +1,11 @@
 // Comprehensive Security-Focused Tests for Allocation Logic (Design Spike: String IDs)
 use crate::{
-    AllocationStrategiesContract, AllocationStrategiesContractClient, RiskLevel, Strategy,
-    Commitment, CommitmentRules,
+    AllocationStrategiesContract, AllocationStrategiesContractClient, Commitment, CommitmentRules,
+    RiskLevel, Strategy,
 };
 use soroban_sdk::{
-    contract, contractimpl, testutils::Address as _, testutils::Ledger, Address, Env, Map, String,
-    Symbol, Vec, IntoVal,
+    contract, contractimpl, testutils::Address as _, testutils::Ledger, Address, Env, IntoVal, Map,
+    String, Symbol, Vec,
 };
 
 // ============================================================================
@@ -19,15 +19,19 @@ pub struct MockCommitmentCore;
 impl MockCommitmentCore {
     pub fn get_commitment(e: Env, commitment_id: String) -> Commitment {
         let key = Symbol::new(&e, "commitments");
-        let commitments: Map<String, Commitment> = e.storage().instance().get(&key).unwrap_or(Map::new(&e));
-        
-        commitments.get(commitment_id).expect("Commitment not found in mock")
+        let commitments: Map<String, Commitment> =
+            e.storage().instance().get(&key).unwrap_or(Map::new(&e));
+
+        commitments
+            .get(commitment_id)
+            .expect("Commitment not found in mock")
     }
 
     pub fn set_commitment(e: Env, commitment: Commitment) {
         let key = Symbol::new(&e, "commitments");
-        let mut commitments: Map<String, Commitment> = e.storage().instance().get(&key).unwrap_or(Map::new(&e));
-        
+        let mut commitments: Map<String, Commitment> =
+            e.storage().instance().get(&key).unwrap_or(Map::new(&e));
+
         commitments.set(commitment.commitment_id.clone(), commitment);
         e.storage().instance().set(&key, &commitments);
     }
@@ -39,10 +43,10 @@ impl MockCommitmentCore {
 
 fn create_contract(env: &Env) -> (Address, Address, AllocationStrategiesContractClient<'_>) {
     let admin = Address::generate(env);
-    
+
     // Register and setup Mock Commitment Core
     let mock_core_id = env.register_contract(None, MockCommitmentCore);
-    
+
     let contract_id = env.register_contract(None, AllocationStrategiesContract);
     let client = AllocationStrategiesContractClient::new(env, &contract_id);
 
@@ -53,7 +57,7 @@ fn create_contract(env: &Env) -> (Address, Address, AllocationStrategiesContract
 
 fn create_mock_commitment(env: &Env, core_id: &Address, id: &str, amount: i128, status: &str) {
     let mock_client = MockCommitmentCoreClient::new(env, core_id);
-    
+
     let rules = CommitmentRules {
         duration_days: 30,
         max_loss_percent: 20,
@@ -62,7 +66,7 @@ fn create_mock_commitment(env: &Env, core_id: &Address, id: &str, amount: i128, 
         min_fee_threshold: 0,
         grace_period_days: 3,
     };
-    
+
     let commitment = Commitment {
         commitment_id: String::from_str(env, id),
         owner: Address::generate(env),
@@ -75,7 +79,7 @@ fn create_mock_commitment(env: &Env, core_id: &Address, id: &str, amount: i128, 
         current_value: amount,
         status: String::from_str(env, status),
     };
-    
+
     mock_client.set_commitment(&commitment);
 }
 
@@ -211,12 +215,12 @@ fn test_rebalance_summary_correctness() {
 
     // Create initial allocation
     let initial_summary = client.allocate(&user, &commitment_id, &amount, &strategy);
-    
+
     // Verify initial summary correctness
     assert_eq!(initial_summary.commitment_id, commitment_id);
     assert_eq!(initial_summary.strategy, strategy);
     assert_eq!(initial_summary.total_allocated, amount);
-    
+
     // Verify allocation amounts sum to total
     let mut sum_from_allocations = 0i128;
     for allocation in initial_summary.allocations.iter() {
@@ -248,7 +252,10 @@ fn test_rebalance_summary_correctness() {
     assert_eq!(stored_summary.commitment_id, commitment_id);
     assert_eq!(stored_summary.strategy, strategy);
     assert_eq!(stored_summary.total_allocated, amount);
-    assert_eq!(stored_summary.allocations.len(), rebalanced_summary.allocations.len());
+    assert_eq!(
+        stored_summary.allocations.len(),
+        rebalanced_summary.allocations.len()
+    );
 }
 
 #[test]
@@ -273,14 +280,14 @@ fn test_rebalance_with_pool_status_changes() {
 
     // Rebalance should adapt to active pools only
     let rebalanced_summary = client.rebalance(&user, &commitment_id);
-    
+
     // Strategy should be maintained
     assert_eq!(rebalanced_summary.strategy, Strategy::Balanced);
     assert_eq!(rebalanced_summary.commitment_id, commitment_id);
-    
+
     // Total should remain the same
     assert_eq!(rebalanced_summary.total_allocated, amount);
-    
+
     // Allocations should only use active pools
     for allocation in rebalanced_summary.allocations.iter() {
         let pool = client.get_pool(&allocation.pool_id);
@@ -367,7 +374,7 @@ fn test_rebalance_summary_timestamp_updates() {
 
     // Rebalance should update timestamps
     let rebalanced_summary = client.rebalance(&user, &commitment_id);
-    
+
     // All allocations should have new timestamps
     for allocation in rebalanced_summary.allocations.iter() {
         assert_eq!(allocation.timestamp, 2000);
@@ -385,11 +392,11 @@ fn test_rebalance_edge_case_zero_allocation() {
     env.mock_all_auths();
 
     let (admin, _, client) = create_contract(&env);
-    
+
     // Register only pools that will be deactivated
     client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
     client.register_pool(&admin, &1, &RiskLevel::Medium, &1000, &800_000_000);
-    
+
     // Deactivate all pools
     client.update_pool_status(&admin, &0, &false);
     client.update_pool_status(&admin, &1, &false);
@@ -411,7 +418,7 @@ fn test_rebalance_with_capacity_constraints() {
     env.mock_all_auths();
 
     let (admin, _, client) = create_contract(&env);
-    
+
     // Register pools with limited capacity
     client.register_pool(&admin, &0, &RiskLevel::Low, &500, &50_000_000); // Limited capacity
     client.register_pool(&admin, &1, &RiskLevel::Low, &600, &1_000_000_000); // Large capacity
@@ -430,11 +437,11 @@ fn test_rebalance_with_capacity_constraints() {
 
     // Rebalance should handle capacity constraints correctly
     let rebalanced_summary = client.rebalance(&user, &commitment_id);
-    
+
     // Summary should remain correct
     assert_eq!(rebalanced_summary.total_allocated, amount);
     assert_eq!(rebalanced_summary.strategy, Strategy::Safe);
-    
+
     // Verify allocations respect capacity
     let pool0 = client.get_pool(&0);
     let pool1 = client.get_pool(&1);
@@ -489,7 +496,7 @@ fn test_safe_strategy_allocation() {
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "commit_1");
     let amount = 100_000_000i128;
-    
+
     create_mock_commitment(&env, &core_id, "commit_1", amount, "active");
 
     let summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
@@ -516,9 +523,9 @@ fn test_balanced_strategy_allocation() {
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "commit_2");
     let amount = 100_000_000i128;
-    
+
     create_mock_commitment(&env, &core_id, "commit_2", amount, "active");
-    
+
     let summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Balanced);
 
     assert_eq!(summary.strategy, Strategy::Balanced);
@@ -536,7 +543,7 @@ fn test_aggressive_strategy_allocation() {
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "commit_3");
     let amount = 100_000_000i128;
-    
+
     create_mock_commitment(&env, &core_id, "commit_3", amount, "active");
 
     let summary = client.allocate(&user, &commitment_id, &amount, &Strategy::Aggressive);
@@ -561,7 +568,7 @@ fn test_get_allocation() {
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "commit_4");
     let amount = 50_000_000i128;
-    
+
     create_mock_commitment(&env, &core_id, "commit_4", amount, "active");
 
     client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
@@ -584,7 +591,7 @@ fn test_rebalance() {
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "commit_5");
     let amount = 100_000_000i128;
-    
+
     create_mock_commitment(&env, &core_id, "commit_5", amount, "active");
 
     // Initial allocation
@@ -615,7 +622,7 @@ fn test_pool_liquidity_tracking() {
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "commit_6");
     let amount = 100_000_000i128;
-    
+
     create_mock_commitment(&env, &core_id, "commit_6", amount, "active");
 
     // Check initial liquidity
@@ -643,17 +650,27 @@ fn test_allocation_rate_limit_enforced() {
     client.set_rate_limit(&admin, &fn_symbol, &60u64, &1u32);
 
     let user = Address::generate(&env);
-    
+
     setup_test_pools(&env, &client, &admin);
-    
+
     create_mock_commitment(&env, &core_id, "c1", 10_000_000, "active");
     create_mock_commitment(&env, &core_id, "c2", 10_000_000, "active");
 
     // First allocation should succeed
-    client.allocate(&user, &String::from_str(&env, "c1"), &10_000_000, &Strategy::Balanced);
+    client.allocate(
+        &user,
+        &String::from_str(&env, "c1"),
+        &10_000_000,
+        &Strategy::Balanced,
+    );
 
     // Second allocation should panic due to rate limit
-    client.allocate(&user, &String::from_str(&env, "c2"), &10_000_000, &Strategy::Balanced);
+    client.allocate(
+        &user,
+        &String::from_str(&env, "c2"),
+        &10_000_000,
+        &Strategy::Balanced,
+    );
 }
 
 #[test]
@@ -669,13 +686,18 @@ fn test_rebalance_rate_limit_enforced() {
     client.set_rate_limit(&admin, &fn_symbol, &60u64, &1u32);
 
     let user = Address::generate(&env);
-    
+
     setup_test_pools(&env, &client, &admin);
-    
+
     create_mock_commitment(&env, &core_id, "c1", 10_000_000, "active");
 
     // First allocate
-    client.allocate(&user, &String::from_str(&env, "c1"), &10_000_000, &Strategy::Balanced);
+    client.allocate(
+        &user,
+        &String::from_str(&env, "c1"),
+        &10_000_000,
+        &Strategy::Balanced,
+    );
 
     // First rebalance should succeed
     client.rebalance(&user, &String::from_str(&env, "c1"));
@@ -696,20 +718,35 @@ fn test_allocation_rate_limit_exempt() {
     client.set_rate_limit(&admin, &fn_symbol, &60u64, &1u32);
 
     let user = Address::generate(&env);
-    
+
     // Set user as exempt from rate limits
     client.set_rate_limit_exempt(&admin, &user, &true);
-    
+
     setup_test_pools(&env, &client, &admin);
-    
+
     create_mock_commitment(&env, &core_id, "c1", 10_000_000, "active");
     create_mock_commitment(&env, &core_id, "c2", 10_000_000, "active");
     create_mock_commitment(&env, &core_id, "c3", 10_000_000, "active");
 
     // Multiple allocations should succeed for exempt user
-    client.allocate(&user, &String::from_str(&env, "c1"), &10_000_000, &Strategy::Balanced);
-    client.allocate(&user, &String::from_str(&env, "c2"), &10_000_000, &Strategy::Balanced);
-    client.allocate(&user, &String::from_str(&env, "c3"), &10_000_000, &Strategy::Balanced);
+    client.allocate(
+        &user,
+        &String::from_str(&env, "c1"),
+        &10_000_000,
+        &Strategy::Balanced,
+    );
+    client.allocate(
+        &user,
+        &String::from_str(&env, "c2"),
+        &10_000_000,
+        &Strategy::Balanced,
+    );
+    client.allocate(
+        &user,
+        &String::from_str(&env, "c3"),
+        &10_000_000,
+        &Strategy::Balanced,
+    );
 }
 
 #[test]
@@ -724,16 +761,21 @@ fn test_rebalance_rate_limit_exempt() {
     client.set_rate_limit(&admin, &fn_symbol, &60u64, &1u32);
 
     let user = Address::generate(&env);
-    
+
     // Set user as exempt from rate limits
     client.set_rate_limit_exempt(&admin, &user, &true);
-    
+
     setup_test_pools(&env, &client, &admin);
-    
+
     create_mock_commitment(&env, &core_id, "c1", 10_000_000, "active");
 
     // First allocate
-    client.allocate(&user, &String::from_str(&env, "c1"), &10_000_000, &Strategy::Balanced);
+    client.allocate(
+        &user,
+        &String::from_str(&env, "c1"),
+        &10_000_000,
+        &Strategy::Balanced,
+    );
 
     // Multiple rebalances should succeed for exempt user
     client.rebalance(&user, &String::from_str(&env, "c1"));
@@ -756,7 +798,7 @@ fn test_allocation_nonexistent_commitment_fails() {
 
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "missing_commitment");
-    
+
     // Attempt to allocate for a commitment that was never created in core
     client.allocate(&user, &commitment_id, &100_000, &Strategy::Safe);
 }
@@ -772,7 +814,7 @@ fn test_allocation_inactive_commitment_fails() {
 
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "settled_commitment");
-    
+
     // Create commitment with "settled" status
     create_mock_commitment(&env, &core_id, "settled_commitment", 100_000_000, "settled");
 
@@ -791,7 +833,7 @@ fn test_allocation_exceeds_commitment_balance_fails() {
 
     let user = Address::generate(&env);
     let commitment_id = String::from_str(&env, "low_balance_commit");
-    
+
     // Commitment has 50M balance
     create_mock_commitment(&env, &core_id, "low_balance_commit", 50_000_000, "active");
 
@@ -956,7 +998,7 @@ fn test_register_pool_duplicate_id_rejected() {
 
     // Register first pool
     client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
-    
+
     // Attempt to register pool with same ID
     client.register_pool(&admin, &0, &RiskLevel::Medium, &1000, &800_000_000);
 }
@@ -1022,7 +1064,7 @@ fn test_register_pool_reentrancy_protection() {
 
     // Test that reentrancy guard is properly handled during pool registration
     client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
-    
+
     // Verify pool was created successfully
     let pool = client.get_pool(&0);
     assert_eq!(pool.pool_id, 0);
@@ -1063,7 +1105,7 @@ fn test_register_pool_timestamps_set() {
     client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
 
     let pool = client.get_pool(&0);
-    
+
     // Verify timestamps are set correctly
     assert!(pool.created_at > 0);
     assert!(pool.updated_at > 0);
@@ -1080,7 +1122,7 @@ fn test_register_pool_default_values() {
     client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
 
     let pool = client.get_pool(&0);
-    
+
     // Verify default values are set correctly
     assert_eq!(pool.total_liquidity, 0);
     assert!(pool.active);
@@ -1100,7 +1142,7 @@ fn test_register_pool_event_emission() {
     // This test verifies that the function executes without panicking
     // Event emission testing would require more sophisticated event capture mechanisms
     client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
-    
+
     let pool = client.get_pool(&0);
     assert_eq!(pool.pool_id, 0);
 }

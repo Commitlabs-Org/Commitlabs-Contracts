@@ -8,10 +8,8 @@ use crate::{
     CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules,
 };
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env, String,
+    contract, contractimpl, testutils::Address as _, token::StellarAssetClient, Address, Env,
+    String,
 };
 
 #[contract]

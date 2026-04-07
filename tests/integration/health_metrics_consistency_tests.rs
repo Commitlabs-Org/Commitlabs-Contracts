@@ -3,12 +3,16 @@
 
 #![cfg(test)]
 
-use crate::harness::{ TestHarness, SECONDS_PER_DAY };
-use soroban_sdk::{ testutils::{ Address as _, Events, Ledger }, Address, Env, IntoVal, Map, String, Symbol };
+use crate::harness::{TestHarness, SECONDS_PER_DAY};
+use soroban_sdk::{
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, IntoVal, Map, String as SorobanString, Symbol, Vec,
+};
 
-use attestation_engine::AttestationEngineContract;
-use commitment_core::{ CommitmentCoreContract, CommitmentRules };
+use attestation_engine::{AttestParams, AttestationEngineContract};
+use commitment_core::{CommitmentCoreContract, CommitmentRules};
 use commitment_nft::CommitmentNFTContract;
+use shared_utils::BatchMode;
 
 // ============================================
 // Fee Aggregation Tests
@@ -24,48 +28,61 @@ fn test_multiple_record_fees_cumulative_sum() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record multiple fees
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            10_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                10_0000000,
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            20_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                20_0000000,
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            5_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                5_0000000,
+            )
+        });
 
     // Verify cumulative sum: 10 + 20 + 5 = 35
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
     assert_eq!(metrics.fees_generated, 35_0000000);
 }
 
@@ -79,29 +96,38 @@ fn test_record_fees_zero_amount() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record zero fee
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            0
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                0,
+            )
+        });
 
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
     assert_eq!(metrics.fees_generated, 0);
 }
 
@@ -115,41 +141,52 @@ fn test_record_fees_large_amounts() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record large fees to test overflow protection
     let large_fee1 = i128::MAX / 4;
     let large_fee2 = i128::MAX / 4;
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            large_fee1
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                large_fee1,
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            large_fee2
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                large_fee2,
+            )
+        });
 
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     // Should handle large numbers without overflow
     assert!(metrics.fees_generated > 0);
@@ -169,48 +206,64 @@ fn test_multiple_record_drawdown_latest_value() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record multiple drawdowns
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            5
-        ).unwrap()
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                5,
+            )
+            .unwrap()
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            10
-        ).unwrap()
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                10,
+            )
+            .unwrap()
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            3
-        ).unwrap()
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                3,
+            )
+            .unwrap()
+        });
 
     // Verify latest drawdown value is stored (not cumulative)
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
     assert_eq!(metrics.drawdown_percent, 3);
 }
 
@@ -224,25 +277,29 @@ fn test_record_drawdown_compliance_check() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record compliant drawdown (within 10% threshold)
-    let result = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            5
-        )
-    });
+    let result = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                5,
+            )
+        });
 
     // Check if record_drawdown succeeded
     match result {
@@ -250,36 +307,46 @@ fn test_record_drawdown_compliance_check() {
         Err(e) => println!("record_drawdown failed: {:?}", e),
     }
 
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     assert_eq!(metrics.drawdown_percent, 5);
     assert_eq!(metrics.compliance_score, 100);
 
     // Only drawdown attestation should be recorded for compliant path
-    let attestations = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_attestations(harness.env.clone(), commitment_id.clone())
-    });
+    let attestations = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_attestations(harness.env.clone(), commitment_id.clone())
+        });
     assert_eq!(attestations.len(), 1);
     assert_eq!(
         attestations.get(0).unwrap().attestation_type,
-        String::from_str(&harness.env, "drawdown")
+        SorobanString::from_str(&harness.env, "drawdown")
     );
     assert!(attestations.get(0).unwrap().is_compliant);
 
     // No violation should be counted
-    let (_, total_attestations, total_violations, _) = harness.env.as_contract(
-        &harness.contracts.attestation_engine,
-        || AttestationEngineContract::get_protocol_statistics(harness.env.clone())
-    );
+    let (_, total_attestations, total_violations, _) = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_protocol_statistics(harness.env.clone())
+        });
     assert_eq!(total_attestations, 1);
     assert_eq!(total_violations, 0);
 
     // Verify compliance is still true
-    let is_compliant = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
-    });
+    let is_compliant = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
+        });
     assert!(is_compliant);
 
     // Drawdown event emitted, violation event not emitted
@@ -287,10 +354,12 @@ fn test_record_drawdown_compliance_check() {
     let drawdown_symbol = Symbol::new(&harness.env, "DrawdownRecorded").into_val(&harness.env);
     let violation_symbol = Symbol::new(&harness.env, "ViolationRecorded").into_val(&harness.env);
     let has_drawdown_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
+        ev.1.first()
+            .map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
     });
     let has_violation_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&violation_symbol))
+        ev.1.first()
+            .map_or(false, |topic| topic.shallow_eq(&violation_symbol))
     });
     assert!(has_drawdown_event);
     assert!(!has_violation_event);
@@ -306,44 +375,56 @@ fn test_record_drawdown_non_compliant() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record non-compliant drawdown (exceeds 10% threshold)
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            15
-        ).unwrap()
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                15,
+            )
+            .unwrap()
+        });
 
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
     assert_eq!(metrics.drawdown_percent, 15);
     assert!(metrics.compliance_score < 100);
 
     // Exceeding max_loss should record drawdown + violation attestations
-    let attestations = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_attestations(harness.env.clone(), commitment_id.clone())
-    });
+    let attestations = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_attestations(harness.env.clone(), commitment_id.clone())
+        });
     assert_eq!(attestations.len(), 2);
     assert_eq!(
         attestations.get(0).unwrap().attestation_type,
-        String::from_str(&harness.env, "drawdown")
+        SorobanString::from_str(&harness.env, "drawdown")
     );
     assert_eq!(
         attestations.get(1).unwrap().attestation_type,
-        String::from_str(&harness.env, "violation")
+        SorobanString::from_str(&harness.env, "violation")
     );
     assert!(!attestations.get(0).unwrap().is_compliant);
     assert!(!attestations.get(1).unwrap().is_compliant);
@@ -352,22 +433,28 @@ fn test_record_drawdown_non_compliant() {
         .get(1)
         .unwrap()
         .data
-        .get(String::from_str(&harness.env, "violation_type"))
+        .get(SorobanString::from_str(&harness.env, "violation_type"))
         .unwrap();
-    assert_eq!(violation_type, String::from_str(&harness.env, "max_loss_exceeded"));
+    assert_eq!(
+        violation_type,
+        SorobanString::from_str(&harness.env, "max_loss_exceeded")
+    );
 
     // Both attestations are tracked as violations by analytics
-    let (_, total_attestations, total_violations, _) = harness.env.as_contract(
-        &harness.contracts.attestation_engine,
-        || AttestationEngineContract::get_protocol_statistics(harness.env.clone())
-    );
+    let (_, total_attestations, total_violations, _) = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_protocol_statistics(harness.env.clone())
+        });
     assert_eq!(total_attestations, 2);
     assert_eq!(total_violations, 2);
 
     // Verify compliance is false
-    let is_compliant = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
-    });
+    let is_compliant = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::verify_compliance(harness.env.clone(), commitment_id.clone())
+        });
     assert!(!is_compliant);
 
     // Both drawdown and violation events should be emitted
@@ -375,10 +462,12 @@ fn test_record_drawdown_non_compliant() {
     let drawdown_symbol = Symbol::new(&harness.env, "DrawdownRecorded").into_val(&harness.env);
     let violation_symbol = Symbol::new(&harness.env, "ViolationRecorded").into_val(&harness.env);
     let has_drawdown_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
+        ev.1.first()
+            .map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
     });
     let has_violation_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&violation_symbol))
+        ev.1.first()
+            .map_or(false, |topic| topic.shallow_eq(&violation_symbol))
     });
     assert!(has_drawdown_event);
     assert!(has_violation_event);
@@ -398,35 +487,49 @@ fn test_compliance_score_updates_after_fees() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Initial compliance score should be 100
-    let initial_metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let initial_metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
     assert_eq!(initial_metrics.compliance_score, 100);
 
     // Record fees (compliant action)
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            10_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                10_0000000,
+            )
+        });
 
-    let metrics_after_fees = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics_after_fees = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     // Compliance score should increase or stay the same for compliant fee generation
     assert!(metrics_after_fees.compliance_score >= 100);
@@ -443,58 +546,66 @@ fn test_compliance_score_updates_after_drawdown() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record compliant drawdown
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            5
-        ).unwrap()
-    });
-
-    let metrics_after_compliant = harness.env.as_contract(
-        &harness.contracts.attestation_engine,
-        || {
-            AttestationEngineContract::get_health_metrics(
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
                 harness.env.clone(),
-                commitment_id.clone()
+                verifier.clone(),
+                commitment_id.clone(),
+                5,
             )
-        }
-    );
+            .unwrap()
+        });
+
+    let metrics_after_compliant =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::get_health_metrics(
+                    harness.env.clone(),
+                    commitment_id.clone(),
+                )
+            });
 
     // Should maintain high compliance score for compliant drawdown
     assert!(metrics_after_compliant.compliance_score >= 90);
 
     // Record non-compliant drawdown
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            15
-        ).unwrap()
-    });
-
-    let metrics_after_non_compliant = harness.env.as_contract(
-        &harness.contracts.attestation_engine,
-        || {
-            AttestationEngineContract::get_health_metrics(
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
                 harness.env.clone(),
-                commitment_id.clone()
+                verifier.clone(),
+                commitment_id.clone(),
+                15,
             )
-        }
-    );
+            .unwrap()
+        });
+
+    let metrics_after_non_compliant =
+        harness
+            .env
+            .as_contract(&harness.contracts.attestation_engine, || {
+                AttestationEngineContract::get_health_metrics(
+                    harness.env.clone(),
+                    commitment_id.clone(),
+                )
+            });
 
     // Compliance score should decrease for non-compliant drawdown
     assert!(
@@ -512,38 +623,57 @@ fn test_compliance_score_with_violation_attestation() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record a violation attestation
     let mut data = Map::new(&harness.env);
     data.set(
-        String::from_str(&harness.env, "violation_type"),
-        String::from_str(&harness.env, "protocol_breach")
+        SorobanString::from_str(&harness.env, "violation_type"),
+        SorobanString::from_str(&harness.env, "protocol_breach"),
     );
-    data.set(String::from_str(&harness.env, "severity"), String::from_str(&harness.env, "high"));
+    data.set(
+        SorobanString::from_str(&harness.env, "severity"),
+        SorobanString::from_str(&harness.env, "high"),
+    );
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::attest(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            String::from_str(&harness.env, "violation"),
-            data.clone(),
-            false // Non-compliant
-        )
-    });
+    let params = AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: SorobanString::from_str(&harness.env, "violation"),
+        data: data.clone(),
+        is_compliant: false,
+    };
+    let mut params_vec: Vec<AttestParams> = Vec::new(&harness.env);
+    params_vec.push_back(params);
 
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::batch_attest(
+                harness.env.clone(),
+                verifier.clone(),
+                params_vec,
+                BatchMode::Atomic,
+            )
+        });
+
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     // Compliance score should decrease significantly for high severity violation
     assert!(metrics.compliance_score <= 70); // 100 - 30 (high severity penalty)
@@ -563,56 +693,73 @@ fn test_mixed_fees_and_drawdown_operations() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Mix of operations
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            10_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                10_0000000,
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            5
-        ).unwrap()
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                5,
+            )
+            .unwrap()
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            20_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                20_0000000,
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            8
-        ).unwrap()
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                8,
+            )
+            .unwrap()
+        });
 
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     // Verify cumulative fees
     assert_eq!(metrics.fees_generated, 30_0000000);
@@ -635,44 +782,60 @@ fn test_health_metrics_persistence() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Record some operations
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            15_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                15_0000000,
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            7
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                7,
+            )
+        });
 
     // Get metrics first time
-    let metrics1 = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics1 = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     // Get metrics again (should be consistent)
-    let metrics2 = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics2 = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     assert_eq!(metrics1.fees_generated, metrics2.fees_generated);
     assert_eq!(metrics1.drawdown_percent, metrics2.drawdown_percent);
@@ -693,20 +856,27 @@ fn test_empty_attestations_health_metrics() {
     // Approve tokens and create commitment
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
     // Get health metrics without any attestations
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
 
     assert_eq!(metrics.fees_generated, 0);
     assert_eq!(metrics.compliance_score, 100); // Default compliance score
@@ -723,55 +893,74 @@ fn test_single_attestation_types() {
     // Test single fee record
     harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
 
-    let commitment_id = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_fees(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id.clone(),
-            25_0000000
-        )
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_fees(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id.clone(),
+                25_0000000,
+            )
+        });
 
-    let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id.clone())
-    });
+    let metrics = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id.clone(),
+            )
+        });
     assert_eq!(metrics.fees_generated, 25_0000000);
 
     // Reset with new commitment for drawdown test
     let user2 = &harness.accounts.user2;
     harness.approve_tokens(user2, &harness.contracts.commitment_core, amount);
 
-    let commitment_id2 = harness.env.as_contract(&harness.contracts.commitment_core, || {
-        CommitmentCoreContract::create_commitment(
-            harness.env.clone(),
-            user2.clone(),
-            amount,
-            harness.contracts.token.clone(),
-            harness.default_rules()
-        )
-    });
+    let commitment_id2 = harness
+        .env
+        .as_contract(&harness.contracts.commitment_core, || {
+            CommitmentCoreContract::create_commitment(
+                harness.env.clone(),
+                user2.clone(),
+                amount,
+                harness.contracts.token.clone(),
+                harness.default_rules(),
+            )
+        });
 
-    harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::record_drawdown(
-            harness.env.clone(),
-            verifier.clone(),
-            commitment_id2.clone(),
-            12
-        ).unwrap()
-    });
+    harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::record_drawdown(
+                harness.env.clone(),
+                verifier.clone(),
+                commitment_id2.clone(),
+                12,
+            )
+            .unwrap()
+        });
 
-    let metrics2 = harness.env.as_contract(&harness.contracts.attestation_engine, || {
-        AttestationEngineContract::get_health_metrics(harness.env.clone(), commitment_id2.clone())
-    });
+    let metrics2 = harness
+        .env
+        .as_contract(&harness.contracts.attestation_engine, || {
+            AttestationEngineContract::get_health_metrics(
+                harness.env.clone(),
+                commitment_id2.clone(),
+            )
+        });
     assert_eq!(metrics2.drawdown_percent, 12);
 }
