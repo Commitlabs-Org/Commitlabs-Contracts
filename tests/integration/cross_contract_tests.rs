@@ -254,7 +254,7 @@ fn test_attestation_engine_verifies_commitment_exists() {
             )
         });
 
-    assert!(result.is_ok());
+    assert!(result.success);
 
     // Verify attestation was stored
     let attestations = harness
@@ -388,7 +388,7 @@ fn test_attest_by_verifier_succeeds() {
             )
         });
 
-    assert!(result.is_ok());
+    assert!(result.success);
 
     let attestations = harness
         .env
@@ -597,7 +597,6 @@ fn test_multiple_attestations_cross_contract() {
                     params_vec,
                     BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
@@ -682,7 +681,6 @@ fn test_get_attestations_page_single_page_returns_all() {
                     params_vec,
                     BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
@@ -739,7 +737,6 @@ fn test_get_attestations_page_multiple_pages_correct_order() {
                     params_vec,
                     BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
@@ -1083,7 +1080,6 @@ fn test_health_metrics_cross_contract_data() {
                 params_vec1,
                 BatchMode::Atomic,
             )
-            .unwrap();
         });
 
     harness.advance_time(60);
@@ -1105,7 +1101,6 @@ fn test_health_metrics_cross_contract_data() {
                 params_vec2,
                 BatchMode::Atomic,
             )
-            .unwrap();
         });
 
     // Get health metrics (involves reading from core contract)

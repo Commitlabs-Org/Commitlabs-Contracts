@@ -8,7 +8,7 @@
 //! - Expected error assertions
 
 use crate::harness::{TestHarness, DEFAULT_USER_BALANCE, SECONDS_PER_DAY};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 
 use allocation_logic::{
     AllocationStrategiesContract, Error as AllocationError, RiskLevel, Strategy,

@@ -106,7 +106,6 @@ fn test_e2e_complete_commitment_lifecycle() {
                     params_vec,
                     BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
@@ -434,7 +433,6 @@ fn test_e2e_violation_detection_flow() {
                 params_vec,
                 BatchMode::Atomic,
             )
-            .unwrap();
         });
 
     // Verify attestation recorded
@@ -590,7 +588,6 @@ fn test_e2e_fee_generation_tracking() {
                     params_vec,
                     BatchMode::Atomic,
                 )
-                .unwrap();
             });
     }
 
