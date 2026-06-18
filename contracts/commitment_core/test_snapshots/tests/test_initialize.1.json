@@ -83,18 +83,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "AuthorizedUpdaters"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "vec": []
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "NftContract"
                             }
                           ]

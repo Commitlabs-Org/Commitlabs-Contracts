@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use crate::*;
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address as SdkAddress, Env, String};
 
 fn generate_zero_address(env: &Env) -> SdkAddress {
@@ -19,9 +20,11 @@ fn test_nft_mint_to_zero_address_fails() {
     let contract_id = env.register_contract(None, CommitmentNFTContract);
     let client = CommitmentNFTContractClient::new(&env, &contract_id);
 
-    let admin = Address::generate(&env);
+    let admin = SdkAddress::generate(&env);
+    let asset_address = SdkAddress::generate(&env);
     let zero_address = generate_zero_address(&env);
-    let dummy_token_id = 0u32;
+
+    client.initialize(&admin);
 
     // mint(caller, owner, commitment_id, duration, loss, type, amount, asset, penalty)
     client.mint(
@@ -46,9 +49,12 @@ fn test_nft_transfer_to_zero_address_fails() {
     let contract_id = env.register_contract(None, CommitmentNFTContract);
     let client = CommitmentNFTContractClient::new(&env, &contract_id);
 
+    let admin = SdkAddress::generate(&env);
+    let asset_address = SdkAddress::generate(&env);
     let sender = SdkAddress::generate(&env);
     let zero_address = generate_zero_address(&env);
-    let token_id = 1u32;
+
+    client.initialize(&admin);
 
     // Setup: Mint to valid sender first
     let token_id = client.mint(

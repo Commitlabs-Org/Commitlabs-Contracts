@@ -19,7 +19,7 @@
 
 use shared_utils::{Validation, SafeMath};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Vec,
 };
 
 pub const CURRENT_VERSION: u32 = 1;
@@ -434,7 +434,7 @@ impl PriceOracleContract {
     ) -> Result<PriceData, OracleError> {
         // Use 5-minute staleness for commitment operations (stricter than default)
         let commitment_staleness = 300u64;
-        let data = Self::get_price_valid(e, asset.clone(), Some(commitment_staleness))?;
+        let data = Self::get_price_valid(e.clone(), asset.clone(), Some(commitment_staleness))?;
 
         // Additional commitment-specific validations
         if data.price <= 0 {
@@ -448,7 +448,6 @@ impl PriceOracleContract {
             }
 
             // Get previous price for comparison (if available)
-            let current_time = e.ledger().timestamp();
             let previous_data = e.storage().instance().get::<_, PriceData>(
                 &DataKey::Price(asset.clone())
             );
@@ -577,7 +576,7 @@ impl PriceOracleContract {
     /// - High-value operations require fresher price data
     /// - Historical deviation checks prevent manipulation attacks
     /// - Use for settlements, large transfers, or critical operations
-    pub fn get_price_for_high_value_operation(
+    pub fn get_price_high_value(
         e: Env,
         asset: Address,
         operation_value_usd: i128,

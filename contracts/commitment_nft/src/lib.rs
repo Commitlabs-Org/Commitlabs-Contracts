@@ -42,6 +42,7 @@
 //! This contract mirrors the lifecycle of commitments managed by
 //! `commitment_core`. Minting, settlement, and early-exit deactivation mutate
 //! NFT state and therefore must only be driven by trusted protocol contracts.
+use shared_utils::{EmergencyControl, Pausable, SafeMath};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,

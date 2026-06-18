@@ -1072,4 +1072,6 @@ fn format_tranformation_id(e: &Env, prefix: &str, n: u64) -> String {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod mock_commitment_core;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

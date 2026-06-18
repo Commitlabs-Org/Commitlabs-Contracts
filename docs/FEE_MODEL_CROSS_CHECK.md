@@ -1,195 +1,143 @@
 # Fee Model Cross-Check: Documentation vs Implementation
 
+Reconciled against `docs/FEES.md` and the current `lib.rs` of each fee-collecting crate. Last verified: implementation on branch `master` at time of `docs/unified-fee-model`.
+
 ## Executive Summary
 
-This document provides a comprehensive cross-check between the fee model documented in `docs/FEES.md` and the actual implementation in the contracts, specifically focusing on `commitment_core`.
+| Contract | `docs/FEES.md` coverage | Implementation status | Notes |
+|----------|-------------------------|----------------------|-------|
+| `commitment_core` | Creation + early exit | **Implemented** | Treasurer/Admin auth (not Admin-only as older docs stated) |
+| `attestation_engine` | Verification fee | **Implemented** | `batch_attest` does not collect verification fees |
+| `commitment_transformation` | Transformation fee | **Implemented** | Matches module-level rounding docs |
+| `commitment_marketplace` | Marketplace sale fee | **Implemented** | No `CollectedFees` / `withdraw_fees`; direct payout model |
 
-## Current State Analysis
+All four contracts are now documented in a single reconciled view in `docs/FEES.md`.
 
-### Documentation Requirements (docs/FEES.md)
+---
 
-#### commitment_core Fee Types
+## `commitment_core`
 
-1. **Commitment Creation Fee**
-   - Charged when a user creates a new commitment
-   - Rate: Basis points (0-10000) of commitment amount
-   - Calculation: `fee_amount = (amount * fee_bps) / 10000`
-   - Storage: `CreationFeeBps`, `CollectedFees(Address)`
-   - User transfers full amount; fee is credited to `CollectedFees(asset)`
-   - Commitment created with `amount_locked = amount - creation_fee`
+### Documented vs code
 
-2. **Early Exit Fee**
-   - Penalty on early exit; goes to protocol
-   - Percentage from commitment rules (stored as protocol revenue)
-   - Added to `CollectedFees(asset)`
-   - Rest returned to owner
+| Item | `docs/FEES.md` | `contracts/commitment_core/src/lib.rs` | Match |
+|------|----------------|----------------------------------------|-------|
+| `CreationFeeBps` storage | Yes | `DataKey::CreationFeeBps` | ✅ |
+| `CollectedFees(Address)` | Yes | `DataKey::CollectedFees(Address)` | ✅ |
+| `FeeRecipient` | Yes | `DataKey::FeeRecipient` | ✅ |
+| Creation fee on `create_commitment` | `fee_from_bps`, credit `CollectedFees` | Lines ~478–635 | ✅ |
+| Early exit penalty to `CollectedFees` | `SafeMath::penalty_amount` (percent / 100) | Lines ~1190–1204 | ✅ |
+| `set_creation_fee_bps` validates 0–10000 | Yes | `bps > fees::BPS_MAX` | ✅ |
+| `withdraw_fees` semantics | Treasurer/Admin, recipient required, cap by ledger | Lines ~1495–1537 | ✅ |
+| Getters | `get_creation_fee_bps`, `get_fee_recipient`, `get_collected_fees` | Lines ~1540–1558 | ✅ |
 
-#### Required Functions (per docs/FEES.md)
+### Corrections from prior cross-check
 
-**Admin Functions:**
+The previous version of this file listed commitment_core fee infrastructure as **missing**. That gap has been closed:
 
-- `set_creation_fee_bps(bps)` - Set creation fee rate
-- `set_fee_recipient(recipient)` - Set treasury address
-- `withdraw_fees(asset_address, amount)` - Withdraw collected fees
+- Storage keys exist.
+- `create_commitment` collects creation fees.
+- `early_exit` credits penalties to `CollectedFees`.
+- Admin functions and getters are implemented with tests in `fee_tests.rs`.
 
-**Getter Functions:**
+### Minor doc nuance
 
-- `get_creation_fee_bps()` - Get current creation fee rate
-- `get_fee_recipient()` - Get treasury address
-- `get_collected_fees(asset)` - Get collected fees for an asset
+- Fee admin uses **`is_treasurer`** (Admin is implicitly Treasurer), not bare Admin-only.
+- Early exit uses **percent (÷ 100)**, not basis points (÷ 10_000).
 
-#### Required Storage Keys
+---
 
-- `FeeRecipient` - Treasury address for fee withdrawals
-- `CreationFeeBps` - Creation fee rate in basis points
-- `CollectedFees(Address)` - Per-asset collected fee tracking
+## `attestation_engine`
 
-### Current Implementation Status
+### Documented vs code
 
-#### ✅ Implemented in shared_utils/fees.rs
+| Item | `docs/FEES.md` | `contracts/attestation_engine/src/lib.rs` | Match |
+|------|----------------|-------------------------------------------|-------|
+| `AttestationFeeAmount` / `AttestationFeeAsset` | Yes | `DataKey` enum ~125–128 | ✅ |
+| `CollectedFees(Address)` | Yes | `DataKey::CollectedFees(Address)` | ✅ |
+| `FeeRecipient` | Yes | `DataKey::FeeRecipient` | ✅ |
+| Fee collection in `write_attestation` | Transfer when `amount > 0` and asset set | Lines ~935–956 | ✅ |
+| `set_attestation_fee` | Admin, `amount >= 0` | Lines ~2103–2131 | ✅ |
+| `withdraw_fees` | Admin, positive amount, ledger cap | Lines ~2160–2196 | ✅ |
+| Getters | `get_attestation_fee`, `get_fee_recipient`, `get_collected_fees` | Lines ~2200–2220 | ✅ |
 
-- `BPS_SCALE` constant (10000)
-- `BPS_MAX` constant (10000)
-- `fee_from_bps(amount, bps)` - Fee calculation function
-- `net_after_fee_bps(amount, bps)` - Net amount after fee
+### Discrepancies / caveats
 
-#### ❌ Missing in commitment_core
+| Topic | Detail |
+|-------|--------|
+| `record_fees` vs protocol fee | `record_fees` records `fee_generation` attestation **data** and updates `TotalFees` analytics. Protocol revenue is the fixed `AttestationFeeAmount` charged inside `write_attestation`. |
+| `batch_attest` | Does **not** call `write_attestation`; verification fees are **not** collected on batch path. |
+| `record_drawdown` | May invoke `write_attestation` twice (drawdown + violation), charging verification fee up to twice per call when configured. |
 
-1. **Storage Keys:**
-   - `FeeRecipient` - NOT DEFINED
-   - `CreationFeeBps` - NOT DEFINED
-   - `CollectedFees(Address)` - NOT DEFINED
+---
 
-2. **Fee Collection Logic:**
-   - `create_commitment` - Does NOT collect creation fee
-   - `early_exit` - Calculates penalty but does NOT store it as protocol revenue
+## `commitment_transformation`
 
-3. **Admin Functions:**
-   - `set_creation_fee_bps` - NOT IMPLEMENTED
-   - `set_fee_recipient` - NOT IMPLEMENTED
-   - `withdraw_fees` - NOT IMPLEMENTED
+### Documented vs code
 
-4. **Getter Functions:**
-   - `get_creation_fee_bps` - NOT IMPLEMENTED
-   - `get_fee_recipient` - NOT IMPLEMENTED
-   - `get_collected_fees` - NOT IMPLEMENTED
+| Item | `docs/FEES.md` | `contracts/commitment_transformation/src/lib.rs` | Match |
+|------|----------------|--------------------------------------------------|-------|
+| `TransformationFeeBps` | Yes | `DataKey::TransformationFeeBps`, default `0` at init | ✅ |
+| `CollectedFees(asset)` | Yes | Credited in `create_tranches` | ✅ |
+| `FeeRecipient` | Yes | `set_fee_recipient` | ✅ |
+| Fee formula | `(total_value * bps) / 10_000` via `fees::fee_from_bps` | Lines ~529–543 | ✅ |
+| Rounding / dust | Floor toward zero; tranche dust documented | Module docs lines ~27–35 | ✅ |
+| `set_transformation_fee` | 0–10000 bps | `fee_bps > 10000` → `InvalidFeeBps` | ✅ |
+| `withdraw_fees` | Admin, ledger cap | Lines ~1009–1031 | ✅ |
+| Getters | `get_transformation_fee_bps`, `get_fee_recipient`, `get_collected_fees` | Lines ~961–1043 | ✅ |
 
-## Implementation Gap Analysis
+No material discrepancies.
 
-### Critical Gaps
+---
 
-1. **No Fee Collection Infrastructure**
-   - Storage keys for fee tracking are missing
-   - No mechanism to collect creation fees
-   - Early exit penalties are not retained as protocol revenue
+## `commitment_marketplace`
 
-2. **No Fee Administration**
-   - Cannot configure fee rates
-   - Cannot set fee recipient
-   - Cannot withdraw collected fees
+### Documented vs code
 
-3. **No Fee Transparency**
-   - No way to query current fee rates
-   - No way to check collected fees
-   - No way to verify fee recipient
+| Item | `docs/FEES.md` | `contracts/commitment_marketplace/src/lib.rs` | Match |
+|------|----------------|-----------------------------------------------|-------|
+| `MarketplaceFee` | Yes | `DataKey::MarketplaceFee` | ✅ |
+| `FeeRecipient` | Yes | `DataKey::FeeRecipient`, set at `initialize` | ✅ |
+| Sale entrypoints | `buy_nft`, `accept_offer`, `end_auction` | Fee deducted from price/bid | ✅ |
+| `CollectedFees` / `withdraw_fees` | Not present (by design) | No such keys or functions | ✅ |
+| Direct payout | Fee transferred to `FeeRecipient` at settlement | `buy_nft` ~640–642, `accept_offer` ~905–906, `end_auction` ~1302–1308 | ✅ |
 
-### Security Considerations
+### Discrepancies / caveats
 
-1. **Trust Boundaries**
-   - Fee configuration must be admin-only
-   - Fee withdrawal must be admin-only
-   - Fee recipient must be set before withdrawals
-   - Withdrawal amount must not exceed collected fees
+| Topic | Detail |
+|-------|--------|
+| Bps validation on set | `initialize` and `update_fee` do **not** reject `fee_basis_points > 10_000`. |
+| Bps validation on settle | Only `end_auction` clamps fee bps to `10_000`; `buy_nft` and `accept_offer` use stored value as-is. |
+| Fee recipient updates | No `set_fee_recipient` after init; recipient is fixed at `initialize`. |
+| Getters | No public `get_marketplace_fee` or `get_fee_recipient`. |
 
-2. **Arithmetic Safety**
-   - Use `shared_utils::fees::fee_from_bps` for safe calculation
-   - Check for overflow when adding to collected fees
-   - Check for underflow when subtracting fees from amounts
+Prior `docs/FEES.md` listed marketplace fees as "TBD". They are now documented as implemented with a direct-payout model.
 
-3. **Reentrancy Protection**
-   - Fee collection in `create_commitment` is protected by existing guard
-   - Fee withdrawal needs reentrancy protection
-   - Early exit fee retention is protected by existing guard
+---
 
-4. **Authorization**
-   - All fee admin functions require `require_admin`
-   - Fee withdrawal requires `require_auth` on caller
+## Shared utilities
 
-## Implementation Plan
+| Item | `shared_utils::fees` | Used by |
+|------|---------------------|---------|
+| `BPS_SCALE` / `BPS_MAX` = 10_000 | `fees.rs` | `commitment_core`, `commitment_transformation` |
+| `fee_from_bps` — floor division | `fees.rs` | Creation, transformation fees |
+| `SafeMath::penalty_amount` — percent ÷ 100 | `math.rs` | `commitment_core::early_exit` |
+| `SafeMath::div(mul(price, bps), 10_000)` | `math.rs` | `commitment_marketplace` listings/auctions |
 
-### Phase 1: Storage Infrastructure
+---
 
-Add to `DataKey` enum:
+## Verification checklist
 
-```rust
-FeeRecipient,
-CreationFeeBps,
-CollectedFees(Address),
-```
+Use this when changing fee logic or updating docs:
 
-### Phase 2: Fee Collection
+- [ ] `commitment_core`: `create_commitment` credits `CollectedFees`; `early_exit` credits penalty; `withdraw_fees` caps at ledger
+- [ ] `attestation_engine`: `write_attestation` collects `AttestationFeeAmount`; `batch_attest` behavior documented if changed
+- [ ] `commitment_transformation`: `create_tranches` fee transfer + ledger; tranche dust note still accurate
+- [ ] `commitment_marketplace`: sale paths pay `FeeRecipient`; document any new bps validation
+- [ ] `docs/FEES.md` summary table matches all four crates
+- [ ] Run `cargo test --target wasm32v1-none --release`
 
-1. **Modify `create_commitment`:**
-   - Read `CreationFeeBps` from storage
-   - Calculate fee using `shared_utils::fees::fee_from_bps`
-   - Transfer full amount from user
-   - Add fee to `CollectedFees(asset)`
-   - Create commitment with `amount - fee`
-   - Update TVL with net amount (not including fee)
+---
 
-2. **Modify `early_exit`:**
-   - Calculate penalty (already done)
-   - Add penalty to `CollectedFees(asset)` instead of just keeping it
-   - Transfer only `returned` amount to owner (already done)
+## Historical note
 
-### Phase 3: Admin Functions
-
-Implement:
-
-- `set_creation_fee_bps(caller, bps)` - Validate bps <= 10000
-- `set_fee_recipient(caller, recipient)` - Validate not zero address
-- `withdraw_fees(caller, asset, amount)` - Check recipient set, sufficient fees
-
-### Phase 4: Getter Functions
-
-Implement:
-
-- `get_creation_fee_bps()` - Return 0 if not set
-- `get_fee_recipient()` - Return Option<Address>
-- `get_collected_fees(asset)` - Return 0 if not set
-
-### Phase 5: Testing
-
-Add tests for:
-
-- Fee calculation accuracy
-- Fee collection on creation
-- Fee retention on early exit
-- Fee withdrawal with various scenarios
-- Admin-only access control
-- Edge cases (zero fees, max fees, insufficient collected fees)
-
-## Alignment with attestation_engine
-
-The attestation_engine contract already implements a similar fee model:
-
-- `set_attestation_fee` - Sets fee amount and asset
-- `set_fee_recipient` - Sets treasury
-- `withdraw_fees` - Withdraws collected fees
-- Fee collection in `attest` function
-- Proper storage keys and getters
-
-The commitment_core implementation should follow the same patterns for consistency.
-
-## Success Criteria
-
-1. ✅ All storage keys defined
-2. ✅ Fee collection on `create_commitment`
-3. ✅ Fee retention on `early_exit`
-4. ✅ All admin functions implemented with proper auth
-5. ✅ All getter functions implemented
-6. ✅ Comprehensive test coverage
-7. ✅ Rustdoc comments on all public functions
-8. ✅ Security assumptions documented
-9. ✅ Arithmetic safety verified
-10. ✅ Reentrancy protection verified
+An earlier draft of this cross-check (pre-implementation) tracked missing `commitment_core` fee infrastructure. That work is complete; this file now serves as a living reconciliation log between `docs/FEES.md` and contract source.

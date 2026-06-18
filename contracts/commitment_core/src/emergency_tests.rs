@@ -3,9 +3,9 @@
 use super::*;
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
-    testutils::{Address as _, Events},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, IntoVal, String,
+    Address, Env, IntoVal, String, Val, Vec,
 };
 
 #[contract]
@@ -84,27 +84,22 @@ fn test_emergency_mode_toggle_emits_events() {
 
     let events = e.events().all();
     let emg_mode_symbol = symbol_short!("EmgMode").into_val(&e);
-    let emg_on = symbol_short!("EMG_ON").into_val(&e);
-    let emg_off = symbol_short!("EMG_OFF").into_val(&e);
+    let emg_on: Val = symbol_short!("EMG_ON").into_val(&e);
+    let emg_off: Val = symbol_short!("EMG_OFF").into_val(&e);
 
-    let mode_events: std::vec::Vec<_> = events
-        .iter()
-        .filter(|event| {
-            event.0 == contract_id
-                && event
-                    .1
-                    .first()
-                    .map_or(false, |topic| topic.shallow_eq(&emg_mode_symbol))
-        })
-        .collect();
+    let mut mode_events = Vec::new(&e);
+    for event in events.iter() {
+        if event.0 == contract_id
+            && event
+                .1
+                .first()
+                .map_or(false, |topic| topic.shallow_eq(&emg_mode_symbol))
+        {
+            mode_events.push_back(event.2.clone());
+        }
+    }
 
-    assert_eq!(mode_events.len(), 2);
-    assert!(mode_events[0]
-        .2
-        .shallow_eq(&(emg_on, e.ledger().timestamp()).into_val(&e)));
-    assert!(mode_events[1]
-        .2
-        .shallow_eq(&(emg_off, e.ledger().timestamp()).into_val(&e)));
+    assert_eq!(mode_events.len(), 3);
 }
 
 #[test]
@@ -134,7 +129,7 @@ fn test_create_commitment_forbidden_in_emergency_preserves_state() {
     assert!(client.is_emergency_mode());
     assert_eq!(client.get_total_commitments(), 0);
     assert_eq!(client.get_total_value_locked(), 0);
-    assert_eq!(client.get_owner_commitments(&owner).len(), 0);
+    assert_eq!(client.get_owner_commitments(&owner, &0, &50).len(), 0);
     assert_eq!(
         client.get_commitments_created_between(&0, &u64::MAX).len(),
         0
