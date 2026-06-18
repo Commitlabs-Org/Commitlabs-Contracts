@@ -399,13 +399,15 @@ fn test_error_zero_amount_allocation() {
 
     harness.setup_default_pools();
 
+    let commitment_id = String::from_str(&harness.env, "1");
+
     let result = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                commitment_id.clone(),
                 0, // Zero amount
                 Strategy::Balanced,
             )
@@ -422,13 +424,15 @@ fn test_error_negative_amount_allocation() {
 
     harness.setup_default_pools();
 
+    let commitment_id = String::from_str(&harness.env, "1");
+
     let result = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                commitment_id.clone(),
                 -1000, // Negative amount
                 Strategy::Balanced,
             )
@@ -450,6 +454,14 @@ fn test_error_double_allocation() {
 
     harness.setup_default_pools();
 
+    harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
+
     // First allocation succeeds
     let result1 = harness
         .env
@@ -457,7 +469,7 @@ fn test_error_double_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                commitment_id.clone(),
                 amount,
                 Strategy::Balanced,
             )
@@ -471,7 +483,7 @@ fn test_error_double_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64, // Same commitment_id
+                commitment_id.clone(), // Same commitment_id
                 amount,
                 Strategy::Balanced,
             )
@@ -799,8 +811,17 @@ fn test_error_premature_settlement() {
 fn test_error_allocation_no_pools() {
     let harness = TestHarness::new();
     let user = &harness.accounts.user1;
+    let amount = 1_000_000_000_000i128;
 
     // Don't register any pools
+
+    harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
 
     let result = harness
         .env
@@ -808,8 +829,8 @@ fn test_error_allocation_no_pools() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                999u64, // Use commitment_id that has sufficient balance
-                1_000_000_000_000,
+                commitment_id,
+                amount,
                 Strategy::Balanced,
             )
         });
@@ -825,13 +846,15 @@ fn test_error_rebalance_nonexistent() {
 
     harness.setup_default_pools();
 
+    let nonexistent = String::from_str(&harness.env, "nonexistent");
+
     let result = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
             AllocationStrategiesContract::rebalance(
                 harness.env.clone(),
                 user.clone(),
-                99999u64, // Non-existent
+                nonexistent, // Non-existent
             )
         });
 

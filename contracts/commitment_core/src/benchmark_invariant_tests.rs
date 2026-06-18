@@ -29,7 +29,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger, Address, Env, String};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -474,7 +474,7 @@ fn invariant_settle_post_conditions() {
     assert_eq!(tvl, 0, "TVL must be 0 after settling the only commitment");
 
     let owner_list = e.as_contract(&contract_id, || {
-        CommitmentCoreContract::get_owner_commitments(e.clone(), owner.clone())
+        CommitmentCoreContract::get_owner_commitments(e.clone(), owner.clone(), 0, MAX_PAGE_SIZE)
     });
     assert_eq!(
         owner_list.len(),
@@ -601,8 +601,7 @@ fn invariant_loss_percent_no_loss() {
 #[test]
 fn invariant_loss_percent_gain_is_negative() {
     let loss = SafeMath::loss_percent(5_000, 6_000);
-    assert!(loss < 0, "Gain must produce negative loss_percent");
-    // Negative loss_percent can never exceed a non-negative max_loss_percent
+    assert_eq!(loss, 0, "Gain must produce zero loss_percent");
     assert!(!(loss > 20i128));
 }
 

@@ -1029,6 +1029,26 @@ impl AttestationEngineContract {
     }
 
 
+    /// Record a single attestation. Caller must be an authorized verifier.
+    pub fn attest(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
+        Self::attest_internal(
+            e,
+            caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+            true,
+        )
+    }
+
     /// Load the full attestation vector from storage (internal use only).
     fn load_attestations_from_storage(e: &Env, commitment_id: &String) -> Vec<Attestation> {
         let key = DataKey::Attestations(commitment_id.clone());
@@ -1451,7 +1471,6 @@ impl AttestationEngineContract {
             String::from_str(&e, "drawdown"),
             data,
             is_compliant,
-            false,
         )?;
 
         if !is_compliant {
@@ -1471,7 +1490,6 @@ impl AttestationEngineContract {
                 commitment_id.clone(),
                 String::from_str(&e, "violation"),
                 violation_data,
-                false,
                 false,
             )?;
 

@@ -422,13 +422,6 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        if let Err(err) = require_allowed_payment_token(&e, &listing.payment_token) {
-            e.storage()
-                .instance()
-                .set(&DataKey::ReentrancyGuard, &false);
-            return Err(err);
-        }
-
         // Note: This would require the NFT contract client
         // For now, we assume the caller has verified ownership
         // In production, you'd call: nft_contract.owner_of(&token_id)
@@ -579,6 +572,13 @@ impl CommitmentMarketplace {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::CannotBuyOwnListing);
+        }
+
+        if let Err(err) = require_allowed_payment_token(&e, &listing.payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
         }
 
         let fee_basis_points: u32 = e
@@ -743,6 +743,32 @@ impl CommitmentMarketplace {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(err);
+        }
+
+        if let Some(listing) = e
+            .storage()
+            .persistent()
+            .get::<_, Listing>(&DataKey::Listing(token_id))
+        {
+            if listing.seller == offerer {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                return Err(MarketplaceError::CannotBuyOwnListing);
+            }
+        }
+
+        if let Some(auction) = e
+            .storage()
+            .persistent()
+            .get::<_, Auction>(&DataKey::Auction(token_id))
+        {
+            if auction.seller == offerer {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                return Err(MarketplaceError::CannotBuyOwnListing);
+            }
         }
 
         // EFFECTS

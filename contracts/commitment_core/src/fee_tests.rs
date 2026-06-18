@@ -13,7 +13,8 @@ use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRule
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger},
-    token, Address, Env, String,
+    token::{Client as TokenClient, StellarAssetClient},
+    Address, Env, String,
 };
 
 #[contract]
@@ -44,13 +45,13 @@ impl FeeMockNftContract {
 fn create_token_contract<'a>(
     e: &Env,
     admin: &Address,
-) -> (Address, token::Client<'a>, token::StellarAssetClient<'a>) {
+) -> (Address, TokenClient<'a>, StellarAssetClient<'a>) {
     let token_contract = e.register_stellar_asset_contract_v2(admin.clone());
     let addr = token_contract.address();
     (
         addr.clone(),
-        token::Client::new(e, &addr),
-        token::StellarAssetClient::new(e, &addr),
+        TokenClient::new(e, &addr),
+        StellarAssetClient::new(e, &addr),
     )
 }
 
@@ -337,7 +338,7 @@ fn test_early_exit_with_creation_fee_and_penalty() {
     let exit_penalty = 99_000i128; // 10% of 990,000
     let returned_to_user = net_amount - exit_penalty;
     let total_fees = creation_fee + exit_penalty;
-    let expected_user_balance = 10_000_000i128 - amount + expected_returned;
+    let expected_user_balance = 10_000_000i128 - amount + returned_to_user;
 
     // Verify both fees were collected
     assert_eq!(client.get_collected_fees(&token_address), total_fees);

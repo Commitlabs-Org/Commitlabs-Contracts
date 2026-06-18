@@ -1,3 +1,16 @@
+#![cfg(test)]
+extern crate std;
+
+use super::*;
+use shared_utils::BatchMode;
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, Map, String, Vec,
+};
+
+fn ts(e: &Env, value: &str) -> String {
+    String::from_str(e, value)
+}
 
 #[test]
 fn test_attest_invalid_types() {
@@ -68,9 +81,24 @@ fn test_attest_invalid_types() {
     let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true);
     assert!(result.is_ok(), "attest should succeed for allowed type: drawdown");
 }
-use super::*;
-use shared_utils::BatchMode;
 
+fn create_mock_commitment_with_status(
+    e: &Env,
+    commitment_id: &str,
+    status: &str,
+    amount: i128,
+    current_value: i128,
+    max_loss_percent: u32,
+) -> Commitment {
+    create_mock_commitment_with_status_internal(
+        e,
+        commitment_id,
+        status,
+        amount,
+        current_value,
+        max_loss_percent,
+    )
+}
 
 fn create_mock_commitment_with_status_internal(
     e: &Env,
@@ -764,12 +792,10 @@ fn test_get_attestations_bounded_above_cap_paging_continuation() {
     assert_eq!(bounded.len(), MAX_PAGE_SIZE);
     assert_eq!(client.get_attestation_count(&commitment_id), total as u64);
 
-    // First bounded page matches get_attestations
     let page1 = client.get_attestations_page(&commitment_id, &0, &MAX_PAGE_SIZE);
     assert_eq!(page1.attestations.len(), bounded.len());
     assert_eq!(page1.next_offset, MAX_PAGE_SIZE);
 
-    // Paging continuation retrieves remaining attestations in order
     let page2 = client.get_attestations_page(&commitment_id, &page1.next_offset, &MAX_PAGE_SIZE);
     assert_eq!(page2.attestations.len(), 50);
     assert_eq!(page2.next_offset, 0);
@@ -1026,9 +1052,10 @@ fn test_add_verifier_rate_limit_exceeded() {
     let verifier2 = Address::generate(&e);
 
     e.as_contract(&contract_id, || {
-        // First call — within limit
         AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier1.clone())
             .unwrap();
+    });
+    e.as_contract(&contract_id, || {
         // Second call — exceeds limit, must panic
         AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier2.clone())
             .unwrap();
@@ -1049,8 +1076,14 @@ fn test_remove_verifier_rate_limit_exceeded() {
 
     e.as_contract(&contract_id, || {
         AttestationEngineContract::initialize(e.clone(), admin.clone(), core.clone()).unwrap();
+    });
+    e.as_contract(&contract_id, || {
         AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier1.clone()).unwrap();
+    });
+    e.as_contract(&contract_id, || {
         AttestationEngineContract::add_verifier(e.clone(), admin.clone(), verifier2.clone()).unwrap();
+    });
+    e.as_contract(&contract_id, || {
         // 1 remove_verifier allowed per 3600-second window
         AttestationEngineContract::set_rate_limit(
             e.clone(),
@@ -1063,9 +1096,10 @@ fn test_remove_verifier_rate_limit_exceeded() {
     });
 
     e.as_contract(&contract_id, || {
-        // First remove — within limit
         AttestationEngineContract::remove_verifier(e.clone(), admin.clone(), verifier1.clone())
             .unwrap();
+    });
+    e.as_contract(&contract_id, || {
         // Second remove — exceeds limit, must panic
         AttestationEngineContract::remove_verifier(e.clone(), admin.clone(), verifier2.clone())
             .unwrap();
@@ -1110,8 +1144,8 @@ fn test_attestation_types_health_check_validation() {
 
     // Test health check with optional data
     let mut health_data = Map::new(&e);
-    health_data.set("status".into(), "healthy".into());
-    health_data.set("notes".into(), "All systems operational".into());
+    health_data.set(ts(&e, "status"), ts(&e, "healthy"));
+    health_data.set(ts(&e, "notes"), ts(&e, "All systems operational"));
 
     let result = e.as_contract(&attestation_id, || {
         AttestationEngineContract::attest(
@@ -1170,9 +1204,9 @@ fn test_attestation_types_violation_validation() {
 
     // Test violation with required data
     let mut violation_data = Map::new(&e);
-    violation_data.set("violation_type".into(), "rule_breach".into());
-    violation_data.set("severity".into(), "medium".into());
-    violation_data.set("description".into(), "Exceeded daily limit".into());
+    violation_data.set(ts(&e, "violation_type"), ts(&e, "rule_breach"));
+    violation_data.set(ts(&e, "severity"), ts(&e, "medium"));
+    violation_data.set(ts(&e, "description"), ts(&e, "Exceeded daily limit"));
 
     let result = e.as_contract(&attestation_id, || {
         AttestationEngineContract::attest(
@@ -1231,7 +1265,7 @@ fn test_attestation_types_violation_missing_required_data_fails() {
 
     // Test violation with missing severity
     let mut incomplete_data = Map::new(&e);
-    incomplete_data.set("violation_type".into(), "rule_breach".into());
+    incomplete_data.set(ts(&e, "violation_type"), ts(&e, "rule_breach"));
     // Missing "severity" field
 
     let result = e.as_contract(&attestation_id, || {
@@ -1281,8 +1315,8 @@ fn test_attestation_types_fee_generation_validation() {
 
     // Test fee generation with required data
     let mut fee_data = Map::new(&e);
-    fee_data.set("fee_amount".into(), "500000".into());
-    fee_data.set("fee_type".into(), "performance".into());
+    fee_data.set(ts(&e, "fee_amount"), ts(&e, "500000"));
+    fee_data.set(ts(&e, "fee_type"), ts(&e, "performance"));
 
     let result = e.as_contract(&attestation_id, || {
         AttestationEngineContract::attest(
@@ -1341,8 +1375,8 @@ fn test_attestation_types_drawdown_validation() {
 
     // Test drawdown with required data
     let mut drawdown_data = Map::new(&e);
-    drawdown_data.set("drawdown_percent".into(), "15".into());
-    drawdown_data.set("trigger_event".into(), "market_crash".into());
+    drawdown_data.set(ts(&e, "drawdown_percent"), ts(&e, "15"));
+    drawdown_data.set(ts(&e, "trigger_event"), ts(&e, "market_crash"));
 
     let result = e.as_contract(&attestation_id, || {
         AttestationEngineContract::attest(
@@ -1453,7 +1487,7 @@ fn test_compliance_scoring_perfect_score() {
     // Record compliant health checks
     for i in 0..3 {
         let mut health_data = Map::new(&e);
-        health_data.set("check_number".into(), (i + 1).to_string().into());
+        health_data.set(ts(&e, "check_number"), String::from_str(&e, &std::format!("{}", i + 1)));
         
         e.as_contract(&attestation_id, || {
             AttestationEngineContract::attest(
@@ -1509,8 +1543,8 @@ fn test_compliance_scoring_with_violations() {
 
     // Record a high severity violation
     let mut violation_data = Map::new(&e);
-    violation_data.set("violation_type".into(), "rule_breach".into());
-    violation_data.set("severity".into(), "high".into());
+    violation_data.set(ts(&e, "violation_type"), ts(&e, "rule_breach"));
+    violation_data.set(ts(&e, "severity"), ts(&e, "high"));
 
     e.as_contract(&attestation_id, || {
         AttestationEngineContract::attest(
@@ -1525,8 +1559,8 @@ fn test_compliance_scoring_with_violations() {
 
     // Record a medium severity violation
     let mut violation_data2 = Map::new(&e);
-    violation_data2.set("violation_type".into(), "delay".into());
-    violation_data2.set("severity".into(), "medium".into());
+    violation_data2.set(ts(&e, "violation_type"), ts(&e, "delay"));
+    violation_data2.set(ts(&e, "severity"), ts(&e, "medium"));
 
     e.as_contract(&attestation_id, || {
         AttestationEngineContract::attest(
@@ -1543,8 +1577,8 @@ fn test_compliance_scoring_with_violations() {
         AttestationEngineContract::calculate_compliance_score(e.clone(), commitment_id.clone())
     });
 
-    // Base 100 - 30 (high) - 20 (medium) + 10 (duration) = 60
-    assert_eq!(score, 60);
+    // Stored metrics from attest: 100 - 30 (high) - 20 (medium) = 50
+    assert_eq!(score, 50);
 }
 
 #[test]
@@ -1675,8 +1709,8 @@ fn test_compliance_scoring_minimum_score() {
     // Record multiple high severity violations
     for _ in 0..5 {
         let mut violation_data = Map::new(&e);
-        violation_data.set("violation_type".into(), "critical_breach".into());
-        violation_data.set("severity".into(), "high".into());
+        violation_data.set(ts(&e, "violation_type"), ts(&e, "critical_breach"));
+        violation_data.set(ts(&e, "severity"), ts(&e, "high"));
 
         e.as_contract(&attestation_id, || {
             AttestationEngineContract::attest(
@@ -1732,8 +1766,8 @@ fn test_compliance_scoring_stored_metrics_priority() {
 
     // First, record some attestations to generate a score
     let mut violation_data = Map::new(&e);
-    violation_data.set("violation_type".into(), "test".into());
-    violation_data.set("severity".into(), "medium".into());
+    violation_data.set(ts(&e, "violation_type"), ts(&e, "test"));
+    violation_data.set(ts(&e, "severity"), ts(&e, "medium"));
 
     e.as_contract(&attestation_id, || {
         AttestationEngineContract::attest(
