@@ -6,6 +6,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::mock_commitment_core::MockCommitmentCore;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env, String, Vec};
 
@@ -13,6 +14,7 @@ fn setup(e: &Env) -> (Address, Address, Address) {
     let admin = Address::generate(e);
     let core = Address::generate(e);
     let user = Address::generate(e);
+    e.register_contract(&core, MockCommitmentCore);
     (admin, core, user)
 }
 
@@ -407,6 +409,34 @@ fn test_create_tranches_with_ratios_sum_greater_than_100() {
         String::from_str(&e, "senior"),
         String::from_str(&e, "equity"),
     ];
+    let fee_asset = Address::generate(&e);
+    
+    client.create_tranches(
+        &user,
+        &commitment_id,
+        &1_000_000i128,
+        &tranche_share_bps,
+        &risk_levels,
+        &fee_asset,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Invalid state for transformation")]
+fn test_create_tranches_with_expired_commitment() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, core, user) = setup(&e);
+    let contract_id = e.register_contract(None, CommitmentTransformationContract);
+    let client = CommitmentTransformationContractClient::new(&e, &contract_id);
+    
+    client.initialize(&admin, &core);
+    client.set_authorized_transformer(&admin, &user, &true);
+    
+    // "c_expired" is set to "expired" status in MockCommitmentCore
+    let commitment_id = String::from_str(&e, "c_expired");
+    let tranche_share_bps: Vec<u32> = vec![&e, 10000u32];
+    let risk_levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
     let fee_asset = Address::generate(&e);
     
     client.create_tranches(

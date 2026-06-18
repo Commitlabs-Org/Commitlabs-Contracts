@@ -302,9 +302,15 @@ fn load_commitment(e: &Env, commitment_id: &String) -> CoreCommitment {
         _ => fail(e, TransformationError::CommitmentNotFound, "load_commitment"),
     };
 
-    commitment_val
+    let commitment: CoreCommitment = commitment_val
         .try_into_val(e)
-        .unwrap_or_else(|_| fail(e, TransformationError::CommitmentNotFound, "load_commitment"))
+        .unwrap_or_else(|_| fail(e, TransformationError::CommitmentNotFound, "load_commitment"));
+
+    if commitment.status != String::from_str(e, "active") {
+        fail(e, TransformationError::InvalidState, "load_commitment");
+    }
+
+    commitment
 }
 
 fn require_owner_or_protocol(e: &Env, caller: &Address, commitment_id: &String) -> CoreCommitment {
@@ -1072,4 +1078,8 @@ fn format_tranformation_id(e: &Env, prefix: &str, n: u64) -> String {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod mock_commitment_core;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod invalid_state_tests;

@@ -54,13 +54,14 @@ pub struct TrancheSet {
 Tranches are created via `create_tranches()`:
 
 1. Caller must be authorized (owner or authorized transformer)
-2. Tranche shares must sum to 10000 bps (100%)
-3. Each tranche is initialized with:
+2. Underlying commitment must exist and be in `"active"` status in `commitment_core`
+3. Tranche shares must sum to 10000 bps (100%)
+4. Each tranche is initialized with:
    - `status: TrancheStatus::Active`
    - `created_at: ledger timestamp`
    - `updated_at: ledger timestamp`
-4. Individual tranches are stored for direct access
-5. `TrancheCreated` event is emitted
+5. Individual tranches are stored for direct access
+6. `TrancheCreated` event is emitted
 
 ### Updates
 
