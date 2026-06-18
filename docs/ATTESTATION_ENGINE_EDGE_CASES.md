@@ -4,6 +4,40 @@
 
 This document outlines the comprehensive edge case testing implemented for the `calculate_compliance_score` and `verify_compliance` functions in the attestation engine contract. These tests ensure robustness and security under extreme conditions.
 
+## Function: `get_attestations` (bounded / deprecated)
+
+### Purpose
+Returns attestations for a commitment, capped at `MAX_PAGE_SIZE` (100). For commitments
+with more attestations, callers must use `get_attestations_page` and iterate using
+`next_offset` until it returns 0.
+
+### Edge Cases Tested
+
+#### 1. Empty List (`test_get_attestations_bounded_empty`)
+- **Scenario**: No attestations recorded for commitment
+- **Expected Behavior**: Returns empty `Vec`; `get_attestation_count` returns 0
+
+#### 2. Below Cap (`test_get_attestations_bounded_matches_first_page`)
+- **Scenario**: 15 attestations (under `MAX_PAGE_SIZE`)
+- **Expected Behavior**: Returns all attestations; matches first page of pagination; oldest-first ordering by timestamp
+
+#### 3. At Cap (`test_get_attestations_bounded_at_cap`)
+- **Scenario**: Exactly `MAX_PAGE_SIZE` attestations
+- **Expected Behavior**: Returns all `MAX_PAGE_SIZE` entries; count matches
+
+#### 4. Above Cap with Paging Continuation (`test_get_attestations_bounded_above_cap_paging_continuation`)
+- **Scenario**: `MAX_PAGE_SIZE + 50` attestations
+- **Expected Behavior**: `get_attestations` returns only first `MAX_PAGE_SIZE`; `get_attestation_count` returns full total; paging retrieves remaining entries in order
+
+#### 5. Batch Attest Unaffected (`test_batch_attest_unaffected_by_bounded_get_attestations`)
+- **Scenario**: Batch attestation of 3 records followed by bounded read
+- **Expected Behavior**: `batch_attest` succeeds; count and bounded read both return 3
+
+### Migration Guidance
+- Replace `get_attestations` with paginated reads via `get_attestations_page(commitment_id, offset, limit)`.
+- Use `get_attestation_count` to determine total pages before iterating.
+- Ordering is oldest-first by timestamp, consistent with `AttestationsPage`.
+
 ## Function: `calculate_compliance_score`
 
 ### Purpose
@@ -150,9 +184,10 @@ Verifies if a commitment is compliant based on:
 ## Test Coverage Metrics
 
 ### Function Coverage
+- `get_attestations` (bounded): 5 edge cases
 - `calculate_compliance_score`: 11 edge cases
 - `verify_compliance`: 8 edge cases
-- Total: 19 comprehensive edge case tests
+- Total: 24 comprehensive edge case tests
 
 ### Boundary Conditions
 - Minimum values (0, negative numbers)

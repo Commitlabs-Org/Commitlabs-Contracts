@@ -69,6 +69,7 @@ fn test_attest_invalid_types() {
     assert!(result.is_ok(), "attest should succeed for allowed type: drawdown");
 }
 use super::*;
+use shared_utils::BatchMode;
 
 
 fn create_mock_commitment_with_status_internal(
@@ -596,6 +597,243 @@ fn test_get_attestations_page_logic() {
     let page_zero = client.get_attestations_page(&commitment_id, &0, &0);
     assert_eq!(page_zero.attestations.len(), 0);
     assert_eq!(page_zero.next_offset, 0);
+}
+
+#[test]
+fn test_get_attestations_bounded_empty() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "bounded_empty");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "bounded_empty",
+        "active",
+        1000,
+        950,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    let attestations = client.get_attestations(&commitment_id);
+    assert_eq!(attestations.len(), 0);
+    assert_eq!(client.get_attestation_count(&commitment_id), 0);
+}
+
+#[test]
+fn test_get_attestations_bounded_matches_first_page() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.budget().reset_unlimited();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "bounded_first_page");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "bounded_first_page",
+        "active",
+        1000,
+        950,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    let start_ts = e.ledger().timestamp();
+    for _ in 0..15u32 {
+        let data = Map::new(&e);
+        e.ledger().with_mut(|l| l.timestamp += 1);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+    }
+
+    let bounded = client.get_attestations(&commitment_id);
+    let page = client.get_attestations_page(&commitment_id, &0, &MAX_PAGE_SIZE);
+    assert_eq!(bounded.len(), page.attestations.len());
+    assert_eq!(bounded.len(), 15);
+
+    for i in 0..15u32 {
+        let att = bounded.get(i).unwrap();
+        assert_eq!(att.timestamp, start_ts + (i as u64) + 1);
+    }
+}
+
+#[test]
+fn test_get_attestations_bounded_at_cap() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.budget().reset_unlimited();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "bounded_at_cap");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "bounded_at_cap",
+        "active",
+        1000,
+        950,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    for _ in 0..MAX_PAGE_SIZE {
+        let data = Map::new(&e);
+        e.ledger().with_mut(|l| l.timestamp += 1);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+    }
+
+    let bounded = client.get_attestations(&commitment_id);
+    assert_eq!(bounded.len(), MAX_PAGE_SIZE);
+    assert_eq!(client.get_attestation_count(&commitment_id), MAX_PAGE_SIZE as u64);
+}
+
+#[test]
+fn test_get_attestations_bounded_above_cap_paging_continuation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.budget().reset_unlimited();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "bounded_above_cap");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "bounded_above_cap",
+        "active",
+        1000,
+        950,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    let total = MAX_PAGE_SIZE + 50;
+    let start_ts = e.ledger().timestamp();
+    for _ in 0..total {
+        let data = Map::new(&e);
+        e.ledger().with_mut(|l| l.timestamp += 1);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+    }
+
+    let bounded = client.get_attestations(&commitment_id);
+    assert_eq!(bounded.len(), MAX_PAGE_SIZE);
+    assert_eq!(client.get_attestation_count(&commitment_id), total as u64);
+
+    // First bounded page matches get_attestations
+    let page1 = client.get_attestations_page(&commitment_id, &0, &MAX_PAGE_SIZE);
+    assert_eq!(page1.attestations.len(), bounded.len());
+    assert_eq!(page1.next_offset, MAX_PAGE_SIZE);
+
+    // Paging continuation retrieves remaining attestations in order
+    let page2 = client.get_attestations_page(&commitment_id, &page1.next_offset, &MAX_PAGE_SIZE);
+    assert_eq!(page2.attestations.len(), 50);
+    assert_eq!(page2.next_offset, 0);
+
+    let mut collected = Vec::new(&e);
+    for att in bounded.iter() {
+        collected.push_back(att.clone());
+    }
+    for att in page2.attestations.iter() {
+        collected.push_back(att.clone());
+    }
+    assert_eq!(collected.len(), total);
+
+    for i in 0..total {
+        let att = collected.get(i).unwrap();
+        assert_eq!(att.timestamp, start_ts + (i as u64) + 1);
+    }
+}
+
+#[test]
+fn test_batch_attest_unaffected_by_bounded_get_attestations() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "batch_bounded");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "batch_bounded",
+        "active",
+        1000,
+        950,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    let mut params = Vec::new(&e);
+    for _ in 0..3u32 {
+        params.push_back(AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: String::from_str(&e, "health_check"),
+            data: Map::new(&e),
+            is_compliant: true,
+        });
+    }
+
+    let result = client.batch_attest(&admin, &params, &BatchMode::Atomic);
+    assert!(result.success);
+
+    assert_eq!(client.get_attestation_count(&commitment_id), 3);
+    let attestations = client.get_attestations(&commitment_id);
+    assert_eq!(attestations.len(), 3);
 }
 
 // ============================================
