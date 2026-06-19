@@ -143,6 +143,7 @@ Manages the lifecycle of commitments:
 - Value tracking
 - Settlement at maturity
 - Early exit handling
+- State-machine and TVL semantics are documented in [docs/commitment_core/SEMANTICS.md](docs/commitment_core/SEMANTICS.md)
 
 ### Attestation Engine (`attestation_engine`)
 
@@ -169,4 +170,3 @@ Continuously verifies commitment health:
 ## License
 
 MIT
-

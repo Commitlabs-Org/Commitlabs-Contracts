@@ -7,6 +7,9 @@
 //! - outbound writes to `commitment_nft` during create, settle, and early-exit flows
 //! - inbound read-only queries from `attestation_engine` through `get_commitment`
 //!
+//! The commitment status state machine is documented in:
+//! [`docs/commitment_core/SEMANTICS.md#commitment-lifecycle-state-machine`](../../../docs/commitment_core/SEMANTICS.md#commitment-lifecycle-state-machine)
+//!
 //! # Call-graph threat review
 //! The end-to-end review for the `commitment_core <-> commitment_nft <-> attestation_engine`
 //! call graph lives in:
