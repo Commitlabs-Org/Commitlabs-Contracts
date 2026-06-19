@@ -1104,3 +1104,151 @@ fn test_register_pool_event_emission() {
     let pool = client.get_pool(&0);
     assert_eq!(pool.pool_id, 0);
 }
+
+// ============================================================================
+// CAPACITY-BOUNDARY AND REBALANCE TESTS - Issue #480
+// Boundary matrix:
+// | Scenario                              | Expected outcome              |
+// |---------------------------------------|-------------------------------|
+// | amount == max_capacity                | Accepted (exact boundary)     |
+// | amount == max_capacity + 1 stroop     | PoolCapacityExceeded          |
+// | rebalance across pools at cap         | Accepted (liquidity released) |
+// | update_pool_capacity < total_liquidity| PoolCapacityExceeded          |
+// | total_liquidity after rebalance       | Never underflows (>= 0)       |
+// ============================================================================
+
+/// Allocation that lands exactly on max_capacity must succeed.
+#[test]
+fn test_allocate_exactly_at_max_capacity_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+
+    // Single low-risk pool whose max_capacity equals the allocation amount.
+    let capacity = 100_000_000i128;
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &capacity);
+
+    let user = Address::generate(&env);
+    let commitment_id = String::from_str(&env, "cap_exact");
+    create_mock_commitment(&env, &core_id, "cap_exact", capacity, "active");
+
+    let summary = client.allocate(&user, &commitment_id, &capacity, &Strategy::Safe);
+
+    assert_eq!(summary.total_allocated, capacity);
+
+    let pool = client.get_pool(&0);
+    assert_eq!(pool.total_liquidity, pool.max_capacity);
+}
+
+/// Allocation of max_capacity + 1 stroop must fail with PoolCapacityExceeded.
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #7)")]
+fn test_allocate_one_over_max_capacity_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+
+    let capacity = 100_000_000i128;
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &capacity);
+
+    let user = Address::generate(&env);
+    let over = capacity + 1;
+    let commitment_id = String::from_str(&env, "cap_over");
+    create_mock_commitment(&env, &core_id, "cap_over", over, "active");
+
+    // Must panic – one stroop over capacity.
+    client.allocate(&user, &commitment_id, &over, &Strategy::Safe);
+}
+
+/// Rebalance must correctly release old liquidity and reallocate across pools
+/// without violating any pool's max_capacity.
+#[test]
+fn test_rebalance_across_pools_respects_capacity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+
+    // Two low-risk pools each with capacity 60M; allocate 100M (split: 50/50).
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &60_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &600, &60_000_000);
+
+    let user = Address::generate(&env);
+    let amount = 100_000_000i128;
+    let commitment_id = String::from_str(&env, "rebal_cap");
+    create_mock_commitment(&env, &core_id, "rebal_cap", amount, "active");
+
+    client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+
+    // Verify pool liquidity before rebalance.
+    let p0_before = client.get_pool(&0);
+    let p1_before = client.get_pool(&1);
+    assert!(p0_before.total_liquidity <= p0_before.max_capacity);
+    assert!(p1_before.total_liquidity <= p1_before.max_capacity);
+
+    // Rebalance – liquidity should be released and reassigned within limits.
+    let summary = client.rebalance(&user, &commitment_id);
+
+    // Postcondition: each pool still within cap.
+    for alloc in summary.allocations.iter() {
+        let pool = client.get_pool(&alloc.pool_id);
+        assert!(pool.total_liquidity <= pool.max_capacity);
+        assert!(pool.total_liquidity >= 0);
+    }
+}
+
+/// update_pool_capacity to a value below total_liquidity must be rejected.
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #7)")]
+fn test_update_pool_capacity_below_total_liquidity_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+
+    let capacity = 100_000_000i128;
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &capacity);
+
+    let user = Address::generate(&env);
+    let amount = 80_000_000i128;
+    let commitment_id = String::from_str(&env, "cap_reduce");
+    create_mock_commitment(&env, &core_id, "cap_reduce", amount, "active");
+
+    // Allocate 80M into the pool.
+    client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+
+    // Attempt to lower capacity to 50M (below current 80M liquidity) – must panic.
+    client.update_pool_capacity(&admin, &0, &50_000_000);
+}
+
+/// total_liquidity must never underflow (remain >= 0) after rebalance.
+#[test]
+fn test_rebalance_total_liquidity_no_underflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &1_000_000_000);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &600, &1_000_000_000);
+
+    let user = Address::generate(&env);
+    let amount = 100_000_000i128;
+    let commitment_id = String::from_str(&env, "no_underflow");
+    create_mock_commitment(&env, &core_id, "no_underflow", amount, "active");
+
+    client.allocate(&user, &commitment_id, &amount, &Strategy::Safe);
+
+    let summary = client.rebalance(&user, &commitment_id);
+
+    // Every pool's total_liquidity must be >= 0 after rebalance.
+    for pool_id in 0u32..=1u32 {
+        let pool = client.get_pool(&pool_id);
+        assert!(pool.total_liquidity >= 0, "pool {} underflowed", pool_id);
+    }
+
+    // Total allocated must still equal the original amount.
+    assert_eq!(summary.total_allocated, amount);
+}

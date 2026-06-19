@@ -102,3 +102,15 @@ If the requested amount cannot be fully satisfied across the eligible pools due 
 
 This is a hard failure (no partial success), and state changes are reverted by the transaction.
 
+
+## Capacity Boundary Test Matrix
+
+The following matrix documents the exhaustive boundary scenarios covered by the test suite (`contracts/allocation_logic/src/tests.rs`, issue #480):
+
+| Scenario | Function | Expected Outcome | Test |
+|---|---|---|---|
+| `amount == max_capacity` | `allocate` | Accepted (`total_liquidity == max_capacity`) | `test_allocate_exactly_at_max_capacity_accepted` |
+| `amount == max_capacity + 1` | `allocate` | `Error::PoolCapacityExceeded` (#7) | `test_allocate_one_over_max_capacity_rejected` |
+| Rebalance across pools at cap | `rebalance` | Accepted; all pools remain `<= max_capacity` | `test_rebalance_across_pools_respects_capacity` |
+| `new_capacity < total_liquidity` | `update_pool_capacity` | `Error::PoolCapacityExceeded` (#7) | `test_update_pool_capacity_below_total_liquidity_rejected` |
+| `total_liquidity` after rebalance | `rebalance` | Never underflows (`>= 0`) | `test_rebalance_total_liquidity_no_underflow` |

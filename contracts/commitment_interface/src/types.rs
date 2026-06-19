@@ -99,3 +99,38 @@ pub struct CommitmentSettledEvent {
     /// Ledger timestamp when the event was emitted.
     pub timestamp: u64,
 }
+
+/// NFT metadata stored per commitment, mirroring `commitment_nft::CommitmentMetadata`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CommitmentMetadata {
+    pub commitment_id: String,
+    pub duration_days: u32,
+    pub max_loss_percent: u32,
+    pub commitment_type: String, // "safe", "balanced", "aggressive"
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub initial_amount: i128,
+    pub asset_address: Address,
+    /// Early-exit penalty in percent (0-100). Mirrors `CommitmentRules::early_exit_penalty`
+    /// from `commitment_core`. Stored here for single-struct readability by integrators.
+    pub early_exit_penalty: u32,
+}
+
+/// The Commitment NFT structure.
+///
+/// `early_exit_penalty` appears both here (top-level, for quick access) and inside
+/// `metadata` (for integrators reading the metadata struct in isolation).
+/// Both fields are always written with the same value during `mint`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CommitmentNFT {
+    pub owner: Address,
+    pub token_id: u32,
+    pub metadata: CommitmentMetadata,
+    pub is_active: bool,
+    /// Early-exit penalty in percent (0-100). Mirrors `CommitmentRules::early_exit_penalty`
+    /// from `commitment_core`. Also stored in `metadata.early_exit_penalty` for
+    /// single-struct readability.
+    pub early_exit_penalty: u32,
+}
