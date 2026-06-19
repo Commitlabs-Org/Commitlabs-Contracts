@@ -66,7 +66,7 @@ fn test_admin_transfer_and_oracle_control() {
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Bytes, BytesN};
+use soroban_sdk::{Bytes, BytesN, Vec};
 
 fn upload_wasm(e: &Env) -> BytesN<32> {
     // Empty WASM is accepted in testutils and is sufficient for upgrade tests.
@@ -318,6 +318,103 @@ fn test_get_price_valid_accepts_exact_staleness_boundary() {
     let data = client.get_price_valid(&asset, &None);
     assert_eq!(data.price, 42_00000000);
     assert_eq!(data.decimals, 8);
+}
+
+#[test]
+fn test_get_price_valid_rejects_one_second_past_staleness_boundary() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    client.set_price(&oracle, &asset, &42_00000000, &8);
+    e.ledger().with_mut(|li| {
+        li.timestamp += 3601;
+    });
+
+    assert_eq!(
+        client.try_get_price_valid(&asset, &None),
+        Err(Ok(OracleError::StalePrice))
+    );
+}
+
+#[test]
+fn test_get_price_valid_uses_legacy_max_staleness_fallback_boundary() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+        e.storage().instance().remove(&DataKey::OracleConfig);
+        e.storage()
+            .instance()
+            .set(&DataKey::MaxStalenessSeconds, &120u64);
+    });
+
+    assert_eq!(client.get_max_staleness(), 120);
+
+    client.set_price(&oracle, &asset, &77_00000000, &8);
+    e.ledger().with_mut(|li| {
+        li.timestamp += 120;
+    });
+
+    let boundary_data = client.get_price_valid(&asset, &None);
+    assert_eq!(boundary_data.price, 77_00000000);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp += 1;
+    });
+
+    assert_eq!(
+        client.try_get_price_valid(&asset, &None),
+        Err(Ok(OracleError::StalePrice))
+    );
+}
+
+#[test]
+fn test_get_batch_prices_rejects_mixed_fresh_and_stale_assets() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let stale_asset = Address::generate(&e);
+    let fresh_asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    client.set_price(&oracle, &stale_asset, &10_00000000, &8);
+    e.ledger().with_mut(|li| {
+        li.timestamp += 61;
+    });
+    client.set_price(&oracle, &fresh_asset, &20_00000000, &8);
+
+    let mut assets = Vec::new(&e);
+    assets.push_back(fresh_asset);
+    assets.push_back(stale_asset);
+
+    assert_eq!(
+        client.try_get_batch_prices(&assets, &60),
+        Err(Ok(OracleError::StalePrice))
+    );
 }
 
 #[test]

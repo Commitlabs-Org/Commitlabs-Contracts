@@ -75,6 +75,9 @@
 - **Mitigations:** Admin-managed oracle whitelist, `require_auth` on oracle/admin paths, non-negative price validation, and `get_price_valid` freshness checks that reject stale and future-dated prices.
 - **Assumptions:** `price_oracle` is a trusted-publisher registry, not an on-chain aggregation engine. It does not implement TWAP, medianization, quorum, circuit breakers, or cross-source reconciliation.
 - **Integrator responsibility:** Consumers must call `get_price_valid` with an appropriate staleness bound for the asset and use case; `get_price` is a raw read helper and does not enforce freshness.
+- **Freshness boundary matrix:** `get_price_valid` treats `current_time - updated_at < max_staleness_seconds` as fresh, accepts the exact boundary (`age == max_staleness_seconds`), rejects one second past the boundary (`age == max_staleness_seconds + 1`) with `StalePrice`, and rejects future-dated prices where `updated_at > current_time` with `StalePrice`.
+- **Legacy config compatibility:** When the structured `OracleConfig` key is absent, `read_config` falls back to the legacy `MaxStalenessSeconds` key and applies the same freshness-boundary matrix. Migration tests should continue to verify this fallback until all deployed legacy instances have been upgraded.
+- **Batch behavior:** `get_batch_prices` fails closed: a single stale asset in a batch returns `StalePrice` for the full batch rather than returning partial results.
 - **Audit focus:** Whether single-source trust is acceptable for each asset, whether admin key management around whitelist updates is strong enough, and whether downstream contracts choose staleness windows that match liquidation/settlement risk.
 
 ## Residual risks
