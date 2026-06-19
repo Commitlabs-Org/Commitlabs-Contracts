@@ -39,6 +39,21 @@ For direct generated-client usage, callers must now provide the trusted core con
 
 No owner balances, owner token registries, token counters, or total supply values are mutated during settlement.
 
+## Transfer Authorization Coverage
+
+`commitment_nft::transfer` remains owner-driven even when another address is admin,
+core, or an authorized minter:
+
+- Active NFTs are locked and cannot transfer until `settle` or `mark_inactive`
+  flips `is_active` to `false`.
+- Authorized minter status does not grant transfer authority; the `from` address
+  must still be the current owner.
+- Successful inactive-token transfers must update `owner_of`, `balance_of`, and
+  `get_nfts_by_owner` consistently without changing `total_supply`.
+
+The regression tests in `contracts/commitment_nft/src/tests.rs` cover both failed
+authorization attempts and successful inactive-token ownership-index updates.
+
 ## Migration Notes
 
 - On-chain storage layout does not change.

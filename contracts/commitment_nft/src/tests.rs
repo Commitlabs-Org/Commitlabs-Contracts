@@ -122,6 +122,28 @@ fn assert_balance_supply_invariant(client: &CommitmentNFTContractClient, owners:
     );
 }
 
+fn assert_owner_inventory(
+    client: &CommitmentNFTContractClient,
+    owner: &SdkAddress,
+    expected_token_ids: &[u32],
+) {
+    assert_eq!(client.balance_of(owner), expected_token_ids.len() as u32);
+
+    let owner_nfts = client.get_nfts_by_owner(owner);
+    assert_eq!(owner_nfts.len(), expected_token_ids.len() as u32);
+
+    for token_id in expected_token_ids {
+        assert_eq!(client.owner_of(token_id), owner.clone());
+        assert!(
+            owner_nfts
+                .iter()
+                .any(|nft| nft.token_id == *token_id && nft.owner == owner.clone()),
+            "owner inventory missing token_id {}",
+            token_id
+        );
+    }
+}
+
 /// Convenience wrapper that mints a 1-day duration NFT with default params.
 /// Returns the token_id.
 fn mint_to_owner(
@@ -3135,6 +3157,96 @@ fn test_consistency_after_transfers() {
     // Sum of all individual balances should equal total supply
     let total_individual_balances = client.balance_of(&owner1) + client.balance_of(&owner2);
     assert_eq!(total_individual_balances, client.total_supply());
+}
+
+#[test]
+fn test_transfer_authorization_failures_preserve_active_owner_state() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client) = setup_contract(&e);
+    let owner = Address::generate(&e);
+    let not_owner = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.initialize(&admin);
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "transfer_auth_active"),
+        &1,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    assert_eq!(client.is_active(&token_id), true);
+    assert_owner_inventory(&client, &owner, &[token_id]);
+    assert_owner_inventory(&client, &recipient, &[]);
+
+    let not_owner_result = client.try_transfer(&not_owner, &recipient, &token_id);
+    assert!(not_owner_result.is_err());
+
+    let active_owner_result = client.try_transfer(&owner, &recipient, &token_id);
+    assert!(active_owner_result.is_err());
+
+    assert_eq!(client.is_active(&token_id), true);
+    assert_owner_inventory(&client, &owner, &[token_id]);
+    assert_owner_inventory(&client, &recipient, &[]);
+    assert_balance_supply_invariant(&client, &[&owner, &recipient]);
+}
+
+#[test]
+fn test_inactive_transfer_requires_current_owner_and_updates_owner_indexes() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, client, _core_id) = setup_contract_with_core(&e);
+    let owner = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let authorized_minter = Address::generate(&e);
+    let final_recipient = Address::generate(&e);
+    let asset_address = Address::generate(&e);
+
+    client.add_authorized_contract(&admin, &authorized_minter).unwrap();
+    assert!(client.is_authorized(&authorized_minter));
+
+    let token_id = client.mint(
+        &admin,
+        &owner,
+        &String::from_str(&e, "transfer_auth_inactive"),
+        &1,
+        &10,
+        &String::from_str(&e, "safe"),
+        &1000,
+        &asset_address,
+        &5,
+    );
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 172800;
+    });
+    settle_as_core(&client, &token_id);
+    assert_eq!(client.is_active(&token_id), false);
+
+    let authorized_minter_result =
+        client.try_transfer(&authorized_minter, &recipient, &token_id);
+    assert!(authorized_minter_result.is_err());
+    assert_owner_inventory(&client, &owner, &[token_id]);
+    assert_owner_inventory(&client, &recipient, &[]);
+
+    client.transfer(&owner, &recipient, &token_id);
+    assert_owner_inventory(&client, &owner, &[]);
+    assert_owner_inventory(&client, &recipient, &[token_id]);
+
+    let old_owner_result = client.try_transfer(&owner, &final_recipient, &token_id);
+    assert!(old_owner_result.is_err());
+    assert_owner_inventory(&client, &recipient, &[token_id]);
+    assert_owner_inventory(&client, &final_recipient, &[]);
+    assert_balance_supply_invariant(&client, &[&owner, &recipient, &final_recipient]);
 }
 
 /// Test consistency with empty collections
