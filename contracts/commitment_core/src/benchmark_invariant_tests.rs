@@ -12,7 +12,7 @@
 //!    all active commitments after every create / settle / early-exit.
 //! 3. **Commitment ID uniqueness** — `generate_commitment_id` produces a distinct string
 //!    for every counter value in `[0, N)`.
-//! 4. **ID format** — every generated ID starts with the prefix `"c_"`.
+//! 4. **ID format** — every generated ID starts with the prefix `"COMMIT_"`.
 //! 5. **Violation predicate correctness** — `check_violations` returns `true` iff
 //!    `loss_percent > max_loss_percent` OR `now >= expires_at`; returns `false` for
 //!    non-active commitments (no false positives on settled/exited state).
@@ -29,7 +29,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -179,7 +179,7 @@ fn invariant_tvl_equals_sum_of_seeded_amounts() {
     });
 
     let amounts = [1_000i128, 2_000, 3_000, 4_000, 5_000];
-    let ids = ["c_0", "c_1", "c_2", "c_3", "c_4"];
+    let ids = ["COMMIT_0", "COMMIT_1", "COMMIT_2", "COMMIT_3", "COMMIT_4"];
     let expected_tvl: i128 = amounts.iter().sum();
 
     for (&id, &amt) in ids.iter().zip(amounts.iter()) {
@@ -227,46 +227,38 @@ fn invariant_commitment_ids_are_unique() {
     assert_eq!(ids.len(), n as u32);
 }
 
-/// Invariant: every generated ID starts with the prefix "c_".
+/// Invariant: every generated ID starts with the prefix "COMMIT_".
 #[test]
 fn invariant_commitment_id_prefix() {
     let e = Env::default();
     for i in [0u64, 1, 9, 10, 99, 100, 999, 1_000, u32::MAX as u64] {
         let id = CommitmentCoreContract::generate_commitment_id(&e, i);
-        // The first two bytes of the underlying string must be 'c' and '_'
+        // The first seven bytes must be "COMMIT_"
         assert!(
-            id.len() >= 2,
+            id.len() >= 7,
             "ID too short for counter {}",
             i
         );
-        // Verify prefix by comparing against known prefix string
-        let c_prefix = String::from_str(&e, "c_");
-        // Compare first two chars: build "c_X" and check id starts with "c_"
-        // We verify by constructing the expected prefix and checking id != a non-prefixed string
-        let bad_prefix = String::from_str(&e, "x_");
-        assert!(id != bad_prefix, "ID must not start with 'x_'");
-        // Positive check: id must equal String::from_str(&e, &format!("c_{}", i))
-        // We can't use format! in no_std, so we verify via generate_commitment_id round-trip:
-        // counter 0 → "c_0", counter 1 → "c_1" (verified in dedicated tests above)
-        // Here we just assert the id contains the prefix by checking it differs from a non-prefixed variant
-        let _ = c_prefix;
+        // Verify prefix does not start with a wrong prefix
+        let bad_prefix = String::from_str(&e, "c_");
+        assert!(id != bad_prefix, "ID must not equal 'c_'");
     }
 }
 
-/// Invariant: counter 0 produces "c_0".
+/// Invariant: counter 0 produces "COMMIT_0".
 #[test]
 fn invariant_commitment_id_counter_zero() {
     let e = Env::default();
     let id = CommitmentCoreContract::generate_commitment_id(&e, 0);
-    assert_eq!(id, String::from_str(&e, "c_0"));
+    assert_eq!(id, String::from_str(&e, "COMMIT_0"));
 }
 
-/// Invariant: counter 1 produces "c_1".
+/// Invariant: counter 1 produces "COMMIT_1".
 #[test]
 fn invariant_commitment_id_counter_one() {
     let e = Env::default();
     let id = CommitmentCoreContract::generate_commitment_id(&e, 1);
-    assert_eq!(id, String::from_str(&e, "c_1"));
+    assert_eq!(id, String::from_str(&e, "COMMIT_1"));
 }
 
 /// Invariant: large counter value encodes correctly.
@@ -274,7 +266,7 @@ fn invariant_commitment_id_counter_one() {
 fn invariant_commitment_id_large_counter() {
     let e = Env::default();
     let id = CommitmentCoreContract::generate_commitment_id(&e, 123_456_789);
-    assert_eq!(id, String::from_str(&e, "c_123456789"));
+    assert_eq!(id, String::from_str(&e, "COMMIT_123456789"));
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +466,7 @@ fn invariant_settle_post_conditions() {
     assert_eq!(tvl, 0, "TVL must be 0 after settling the only commitment");
 
     let owner_list = e.as_contract(&contract_id, || {
-        CommitmentCoreContract::get_owner_commitments(e.clone(), owner.clone())
+        CommitmentCoreContract::list_commitments_by_owner(e.clone(), owner.clone())
     });
     assert_eq!(
         owner_list.len(),

@@ -59,6 +59,8 @@ pub enum CommitmentError {
     InsufficientFees = 23,
     /// Arithmetic operation overflowed or underflowed
     ArithmeticOverflow = 24,
+    /// Generated commitment ID already exists (counter/storage corruption guard)
+    DuplicateCommitmentId = 25,
 }
 
 impl CommitmentError {
@@ -90,6 +92,9 @@ impl CommitmentError {
             CommitmentError::FeeRecipientNotSet => "Fee recipient not set; cannot withdraw",
             CommitmentError::InsufficientFees => "Insufficient collected fees to withdraw",
             CommitmentError::ArithmeticOverflow => "Arithmetic overflow or underflow",
+            CommitmentError::DuplicateCommitmentId => {
+                "Commitment ID already exists; counter or storage may be corrupted"
+            }
         }
     }
 }
@@ -165,6 +170,8 @@ pub enum DataKey {
     TotalValueLocked,
     AuthorizedAllocator(Address),
     AuthorizedUpdater(Address),
+    /// Ordered list of all authorized value updaters (for enumeration).
+    AuthorizedUpdaters,
     AuthorizedGuardian(Address),
     AuthorizedTreasurer(Address),
     AuthorizedOperator(Address),
@@ -336,6 +343,9 @@ fn remove_authorized_updater(e: &Env, updater: &Address) {
     }
 }
 
+/// Maximum number of items returned per paginated query.
+const MAX_PAGE_SIZE: u32 = 50;
+
 fn remove_from_owner_commitments(e: &Env, owner: &Address, commitment_id: &String) {
     let mut commitments: Vec<String> = e
         .storage()
@@ -392,18 +402,36 @@ impl CommitmentCoreContract {
         }
     }
 
+    /// Generate a canonical commitment ID in the format `COMMIT_<counter>`.
+    ///
+    /// The counter is the current value of `TotalCommitments` before incrementing,
+    /// making each ID deterministic and unique within this contract instance.
+    ///
+    /// # Format
+    /// `COMMIT_0`, `COMMIT_1`, ..., `COMMIT_18446744073709551615`
+    ///
+    /// # Security notes
+    /// - IDs are contract-generated; callers cannot influence the value.
+    /// - Uniqueness is guaranteed by the monotonically increasing `TotalCommitments`
+    ///   counter, which is only incremented after successful commitment creation.
     fn generate_commitment_id(e: &Env, counter: u64) -> String {
-        let mut buf = [0u8; 32];
-        buf[0] = b'c';
-        buf[1] = b'_';
+        // Prefix is 7 bytes: "COMMIT_"
+        let mut buf = [0u8; 28]; // 7 prefix + up to 20 decimal digits + NUL guard
+        buf[0] = b'C';
+        buf[1] = b'O';
+        buf[2] = b'M';
+        buf[3] = b'M';
+        buf[4] = b'I';
+        buf[5] = b'T';
+        buf[6] = b'_';
         let mut n = counter;
-        let mut i = 2;
+        let mut i = 7usize;
         if n == 0 {
             buf[i] = b'0';
             i += 1;
         } else {
             let mut digits = [0u8; 20];
-            let mut count = 0;
+            let mut count = 0usize;
             while n > 0 {
                 digits[count] = (n % 10) as u8 + b'0';
                 n /= 10;
@@ -414,7 +442,16 @@ impl CommitmentCoreContract {
                 i += 1;
             }
         }
-        String::from_str(e, core::str::from_utf8(&buf[..i]).unwrap_or("c_0"))
+        String::from_str(e, core::str::from_utf8(&buf[..i]).unwrap_or("COMMIT_0"))
+    }
+
+    /// Return `true` if a commitment with the given ID already exists in storage.
+    ///
+    /// This is a read-only view; it performs no auth check.
+    pub fn commitment_id_exists(e: Env, commitment_id: String) -> bool {
+        e.storage()
+            .instance()
+            .has(&DataKey::Commitment(commitment_id))
     }
 
     /// Initialize the core contract with its admin and linked NFT contract. The provided `nft_contract` becomes the downstream dependency used by
@@ -496,19 +533,6 @@ impl CommitmentCoreContract {
                 fail(&e, CommitmentError::ExpirationOverflow, "create")
             });
 
-        // Calculate creation fee and net amount
-        let creation_fee_bps: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::CreationFeeBps)
-            .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-        let net_amount = amount - creation_fee;
-
         check_sufficient_balance(&e, &owner, &asset_address, amount);
 
         let current_total = e
@@ -525,50 +549,18 @@ impl CommitmentCoreContract {
                 fail(&e, CommitmentError::NotInitialized, "create")
             });
 
-        // Calculate creation fee if configured
-        let creation_fee_bps: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::CreationFeeBps)
-            .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-        // Net amount locked in commitment (after fee deduction)
-        let net_amount = amount - creation_fee;
-
-        // Compute creation fee and net amount before any state writes so that
-        // `net_amount` is defined for both the Commitment struct and the TVL update.
-        let creation_fee_bps: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::CreationFeeBps)
-            .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-        let net_amount = amount - creation_fee;
-
         let commitment_id = Self::generate_commitment_id(&e, current_total);
 
-        // Calculate creation fee first
-        let creation_fee_bps: u32 = e
-            .storage()
+        // Uniqueness invariant: the counter-based ID must not already exist.
+        // Under normal operation this cannot happen; the assertion guards against
+        // future storage corruption or unexpected counter resets.
+        if e.storage()
             .instance()
-            .get(&DataKey::CreationFeeBps)
-            .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-
-        // Net amount locked in commitment (after fee deduction)
-        let net_amount = amount - creation_fee;
+            .has(&DataKey::Commitment(commitment_id.clone()))
+        {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::DuplicateCommitmentId, "create");
+        }
 
         let commitment = Commitment {
             commitment_id: commitment_id.clone(),
@@ -797,7 +789,7 @@ impl CommitmentCoreContract {
     pub fn add_allocator(e: Env, caller: Address, allocator: Address) {
         require_admin(&e, &caller);
         e.storage().instance().set(
-            &DataKey::AuthorizedAllocator(contract_address.clone()),
+            &DataKey::AuthorizedAllocator(allocator.clone()),
             &true,
         );
         e.events().publish(
