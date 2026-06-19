@@ -145,6 +145,90 @@ fn setup_initialized_engine_with_core(e: &Env) -> (Address, Address) {
 }
 
 #[test]
+fn test_migrate_rejects_wrong_from_version_without_mutating_state() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+
+    let result = client.try_migrate(&admin, &1);
+    assert_eq!(result, Err(Ok(AttestationError::InvalidVersion)));
+    assert_eq!(client.get_version(), 0);
+}
+
+#[test]
+fn test_migrate_initializes_missing_analytics_and_is_idempotent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+    client.migrate(&admin, &0);
+
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+    e.as_contract(&contract_id, || {
+        assert_eq!(e.storage().instance().get::<_, u64>(&DataKey::TotalAttestations), Some(0));
+        assert_eq!(e.storage().instance().get::<_, u64>(&DataKey::TotalViolations), Some(0));
+        assert_eq!(e.storage().instance().get::<_, i128>(&DataKey::TotalFees), Some(0));
+        assert_eq!(e.storage().instance().get::<_, bool>(&DataKey::ReentrancyGuard), Some(false));
+    });
+
+    let result = client.try_migrate(&admin, &CURRENT_VERSION);
+    assert_eq!(result, Err(Ok(AttestationError::AlreadyMigrated)));
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+}
+
+#[test]
+fn test_migrate_preserves_existing_analytics_counters() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalAttestations, &7u64);
+        e.storage().instance().set(&DataKey::TotalViolations, &2u64);
+        e.storage().instance().set(&DataKey::TotalFees, &123i128);
+    });
+
+    client.migrate(&admin, &0);
+
+    e.as_contract(&contract_id, || {
+        assert_eq!(e.storage().instance().get::<_, u64>(&DataKey::TotalAttestations), Some(7));
+        assert_eq!(e.storage().instance().get::<_, u64>(&DataKey::TotalViolations), Some(2));
+        assert_eq!(e.storage().instance().get::<_, i128>(&DataKey::TotalFees), Some(123));
+    });
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+}
+
+#[test]
+fn test_migrate_rejects_non_admin() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let non_admin = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+
+    let result = client.try_migrate(&non_admin, &0);
+    assert_eq!(result, Err(Ok(AttestationError::Unauthorized)));
+    assert_eq!(client.get_version(), 0);
+}
+
+#[test]
 fn test_get_health_metrics_cross_reads_commitment_core_state() {
     let e = Env::default();
     let (attestation_id, core_id) = setup_initialized_engine_with_core(&e);
