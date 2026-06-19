@@ -1683,6 +1683,7 @@ fn test_update_value_event() {
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.add_updater(&admin, &admin);
     client.update_value(&admin, &commitment_id, &1100);
 
     let updated = client.get_commitment(&commitment_id);
@@ -1691,7 +1692,7 @@ fn test_update_value_event() {
 }
 
 #[test]
-#[should_panic(expected = "upd: unauthorized")]
+#[should_panic(expected = "Caller is not an authorized value updater")]
 fn test_update_value_unauthorized_fails() {
     let e = Env::default();
     e.mock_all_auths();
@@ -1711,12 +1712,7 @@ fn test_update_value_unauthorized_fails() {
     });
 
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    // unauthorized caller should fail
     client.update_value(&unauthorized, &commitment_id, &1100);
-
-    let updated = client.get_commitment(&commitment_id);
-    assert_eq!(updated.current_value, 1100);
-    assert_eq!(client.get_total_value_locked(), 1100);
 }
 
 #[test]
@@ -1830,6 +1826,7 @@ fn test_create_commitment_rate_limit_exempt_owner() {
 
     let contract_id = e.register_contract(None, CommitmentCoreContract);
     let nft_contract = e.register_contract(None, instrumented_nft::InstrumentedNftContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
     let admin = Address::generate(&e);
     let owner = Address::generate(&e);
     let token_admin = Address::generate(&e);
@@ -1840,44 +1837,15 @@ fn test_create_commitment_rate_limit_exempt_owner() {
     let token_admin_client = StellarAssetClient::new(&e, &asset_address);
     token_admin_client.mint(&owner, &(amount * 2));
 
-    e.as_contract(&contract_id, || {
-        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
-        // Configure rate limit: 1 create per 60s
-        CommitmentCoreContract::set_rate_limit(
-            e.clone(),
-            admin.clone(),
-            symbol_short!("create"),
-            60,
-            1,
-        );
-        // Exempt the owner from rate limits
-        CommitmentCoreContract::set_rate_limit_exempt(e.clone(), admin.clone(), owner.clone(), true);
-    });
+    client.initialize(&admin, &nft_contract);
+    client.set_rate_limit(&admin, &symbol_short!("create"), &60, &1);
+    client.set_rate_limit_exempt(&admin, &owner, &true);
 
     let rules = test_rules(&e);
 
-    // Two creates should both succeed because owner is exempt
-    let _c1 = e.as_contract(&contract_id, || {
-        CommitmentCoreContract::create_commitment(
-            e.clone(),
-            owner.clone(),
-            amount,
-            asset_address.clone(),
-            rules.clone(),
-        )
-    });
+    let _c1 = client.create_commitment(&owner, &amount, &asset_address, &rules);
+    let _c2 = client.create_commitment(&owner, &amount, &asset_address, &rules);
 
-    let _c2 = e.as_contract(&contract_id, || {
-        CommitmentCoreContract::create_commitment(
-            e.clone(),
-            owner.clone(),
-            amount,
-            asset_address.clone(),
-            rules.clone(),
-        )
-    });
-
-    let client = CommitmentCoreContractClient::new(&e, &contract_id);
     assert_eq!(client.get_total_commitments(), 2);
 }
 
@@ -2440,6 +2408,7 @@ fn setup_test_context() -> (
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
 
     client.initialize(&admin, &nft_contract);
+    client.add_updater(&admin, &admin);
     client.set_fee_recipient(&admin, &admin);
 
     (e, admin, nft_contract, user, token_address, token_client, client)

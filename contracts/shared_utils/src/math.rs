@@ -27,6 +27,18 @@ impl SafeMath {
         a.checked_div(b).expect("Math: division overflow")
     }
 
+    /// Absolute percentage change between two values: `|new - old| * 100 / old`.
+    pub fn calculate_percentage_change(old_value: i128, new_value: i128) -> i128 {
+        if old_value == 0 {
+            return if new_value == 0 { 0 } else { 100 };
+        }
+        if new_value >= old_value {
+            Self::percent_from(Self::sub(new_value, old_value), old_value)
+        } else {
+            Self::percent_from(Self::sub(old_value, new_value), old_value)
+        }
+    }
+
     /// Calculate percentage: (value * percent) / 100
     ///
     /// # Arguments

@@ -26,6 +26,9 @@ use soroban_sdk::{
 
 pub mod fuzzing;
 
+/// Maximum page size for paginated owner-commitment queries.
+const MAX_PAGE_SIZE: u32 = 50;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -305,46 +308,27 @@ fn require_authorized_updater(e: &Env, caller: &Address) {
             return;
         }
     }
-    let updaters: Vec<Address> = e
+    if !e
         .storage()
         .instance()
-        .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
-        .unwrap_or(Vec::new(e));
-    if !updaters.contains(caller) {
+        .get::<_, bool>(&DataKey::AuthorizedUpdater(caller.clone()))
+        .unwrap_or(false)
+    {
         fail(e, CommitmentError::NotAuthorizedUpdater, "require_authorized_updater");
     }
 }
 
 fn add_authorized_updater(e: &Env, updater: &Address) {
-    let mut updaters: Vec<Address> = e
-        .storage()
+    e.storage()
         .instance()
-        .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
-        .unwrap_or(Vec::new(e));
-    if !updaters.contains(updater) {
-        updaters.push_back(updater.clone());
-        e.storage()
-            .instance()
-            .set(&DataKey::AuthorizedUpdaters, &updaters);
-    }
+        .set(&DataKey::AuthorizedUpdater(updater.clone()), &true);
 }
 
 fn remove_authorized_updater(e: &Env, updater: &Address) {
-    let mut updaters: Vec<Address> = e
-        .storage()
+    e.storage()
         .instance()
-        .get::<_, Vec<Address>>(&DataKey::AuthorizedUpdaters)
-        .unwrap_or(Vec::new(e));
-    if let Some(idx) = updaters.iter().position(|a| a == *updater) {
-        updaters.remove(idx as u32);
-        e.storage()
-            .instance()
-            .set(&DataKey::AuthorizedUpdaters, &updaters);
-    }
+        .remove(&DataKey::AuthorizedUpdater(updater.clone()));
 }
-
-/// Maximum number of items returned per paginated query.
-const MAX_PAGE_SIZE: u32 = 50;
 
 fn remove_from_owner_commitments(e: &Env, owner: &Address, commitment_id: &String) {
     let mut commitments: Vec<String> = e
@@ -517,11 +501,11 @@ impl CommitmentCoreContract {
             .instance()
             .get(&DataKey::CreationFeeBps)
             .unwrap_or(0);
-        let creation_fee = fuzzing::checked_fee_from_bps(amount, creation_fee_bps)
-            .unwrap_or_else(|| {
-                set_reentrancy_guard(&e, false);
-                fail(&e, CommitmentError::ArithmeticOverflow, "create");
-            });
+        let creation_fee = if creation_fee_bps > 0 {
+            fees::fee_from_bps(amount, creation_fee_bps)
+        } else {
+            0
+        };
         let net_amount = amount.checked_sub(creation_fee).unwrap_or_else(|| {
             set_reentrancy_guard(&e, false);
             fail(&e, CommitmentError::ArithmeticOverflow, "create");
@@ -567,11 +551,11 @@ impl CommitmentCoreContract {
             owner: owner.clone(),
             nft_token_id: 0,
             rules: rules.clone(),
-            amount: amount,
+            amount: net_amount,
             asset_address: asset_address.clone(),
             created_at: TimeUtils::now(&e),
             expires_at,
-            current_value: amount,
+            current_value: net_amount,
             status: String::from_str(&e, "active"),
         };
 
@@ -915,10 +899,7 @@ impl CommitmentCoreContract {
     /// - Requires `caller.require_auth()`.
     /// - Enforces `is_updater` check.
     pub fn update_value(e: Env, caller: Address, commitment_id: String, new_value: i128) {
-        caller.require_auth();
-        if !Self::is_updater(e.clone(), caller.clone()) {
-            fail(&e, CommitmentError::Unauthorized, "upd: unauthorized");
-        }
+        require_authorized_updater(&e, &caller);
         let fn_symbol = symbol_short!("upd_val");
         RateLimiter::check(&e, &caller, &fn_symbol);
         Validation::require_non_negative(new_value);
@@ -1332,6 +1313,19 @@ impl CommitmentCoreContract {
         let contract_address = e.current_contract_address();
         let token_client = token::Client::new(&e, &updated_commitment.asset_address);
         token_client.transfer(&contract_address, &target_pool, &amount);
+
+        let tvl = e
+            .storage()
+            .instance()
+            .get::<_, i128>(&DataKey::TotalValueLocked)
+            .unwrap_or(0);
+        let updated_tvl = tvl.checked_sub(amount).unwrap_or_else(|| {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::ArithmeticOverflow, "allocate");
+        });
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &updated_tvl);
 
         set_reentrancy_guard(&e, false);
         e.events().publish(

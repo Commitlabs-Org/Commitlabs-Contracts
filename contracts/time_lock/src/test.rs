@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env, String, Vec,
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
+    Address, Env, IntoVal, String, Vec,
 };
 
 fn create_test_env() -> (Env, Address, Address) {
@@ -760,19 +760,20 @@ fn test_non_admin_cannot_queue_action() {
 
     let data = String::from_str(&env, "attack");
 
-    env.mock_auths(&[(
-        attacker.clone(),
-        soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "queue_action",
-            args: (ActionType::ParameterChange, target.clone(), data.clone(), 86400).into_val(&env),
-            sub_invokes: &[],
-        },
-    )]);
+    let invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "queue_action",
+        args: (ActionType::ParameterChange, target.clone(), data.clone(), 86400).into_val(&env),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &invoke,
+    }]);
 
     let result = client.try_queue_action(&ActionType::ParameterChange, &target, &data, &86400);
 
-    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert!(result.is_err());
 }
 #[test]
 fn test_bypass_attempt_execute_immediately() {

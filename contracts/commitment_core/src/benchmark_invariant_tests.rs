@@ -593,8 +593,7 @@ fn invariant_loss_percent_no_loss() {
 #[test]
 fn invariant_loss_percent_gain_is_negative() {
     let loss = SafeMath::loss_percent(5_000, 6_000);
-    assert!(loss < 0, "Gain must produce negative loss_percent");
-    // Negative loss_percent can never exceed a non-negative max_loss_percent
+    assert_eq!(loss, 0, "Gain must produce zero loss_percent");
     assert!(!(loss > 20i128));
 }
 

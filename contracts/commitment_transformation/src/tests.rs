@@ -23,22 +23,45 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env, String, Vec};
-use crate::mock_commitment_core::{MockCommitmentCore, MockCommitmentCoreClient};
+use crate::mock_commitment_core::{Commitment, CommitmentRules, MockCommitmentCore, MockCommitmentCoreClient};
 
 fn setup(e: &Env) -> (Address, Address, Address) {
     let admin = Address::generate(e);
-    let core = Address::generate(e);
+    let core = e.register_contract(None, MockCommitmentCore);
     let user = Address::generate(e);
     (admin, core, user)
 }
 
 fn deploy(e: &Env) -> (CommitmentTransformationContractClient<'_>, Address, Address, Address) {
     let (admin, core, user) = setup(e);
-    e.register_contract(&core, MockCommitmentCore);
     let contract_id = e.register_contract(None, CommitmentTransformationContract);
     let client = CommitmentTransformationContractClient::new(e, &contract_id);
     client.initialize(&admin, &core);
     (client, admin, core, user)
+}
+
+fn seed_commitment_owner(e: &Env, core: &Address, commitment_id: &str, owner: &Address) {
+    let core_client = MockCommitmentCoreClient::new(e, core);
+    let created_at = e.ledger().timestamp();
+    core_client.set_commitment(&Commitment {
+        commitment_id: String::from_str(e, commitment_id),
+        owner: owner.clone(),
+        nft_token_id: 1,
+        rules: CommitmentRules {
+            duration_days: 30,
+            max_loss_percent: 10,
+            commitment_type: String::from_str(e, "safe"),
+            early_exit_penalty: 15,
+            min_fee_threshold: 100,
+            grace_period_days: 0,
+        },
+        amount: 1_000_000,
+        asset_address: Address::generate(e),
+        created_at,
+        expires_at: created_at + 30 * 86_400,
+        current_value: 1_000_000,
+        status: String::from_str(e, "active"),
+    });
 }
 
 // ============================================================================
@@ -182,8 +205,9 @@ fn test_create_tranches_two_equal_halves() {
 fn test_create_tranches_classic_three_way() {
     let e = Env::default();
     e.mock_all_auths();
-    let (client, admin, _, user) = deploy(&e);
+    let (client, admin, core, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
+    seed_commitment_owner(&e, &core, "c_1", &user);
 
     let commitment_id = String::from_str(&e, "c_1");
     let total_value = 1_000_000i128;
@@ -549,8 +573,9 @@ fn test_fee_withdraw_requires_recipient() {
 fn test_collateralize() {
     let e = Env::default();
     e.mock_all_auths();
-    let (client, admin, _, user) = deploy(&e);
+    let (client, admin, core, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
+    seed_commitment_owner(&e, &core, "c_col", &user);
 
     let commitment_id = String::from_str(&e, "c_col");
     let asset = Address::generate(&e);
@@ -573,8 +598,9 @@ fn test_collateralize() {
 fn test_create_secondary_instrument() {
     let e = Env::default();
     e.mock_all_auths();
-    let (client, admin, _, user) = deploy(&e);
+    let (client, admin, core, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
+    seed_commitment_owner(&e, &core, "c_sec", &user);
 
     let commitment_id = String::from_str(&e, "c_sec");
     let instrument_type = String::from_str(&e, "receivable");
@@ -626,8 +652,9 @@ fn test_add_protocol_guarantee() {
 fn test_getters_tranche_set_success() {
     let e = Env::default();
     e.mock_all_auths();
-    let (client, admin, _, user) = deploy(&e);
+    let (client, admin, core, user) = deploy(&e);
     client.set_authorized_transformer(&admin, &user, &true);
+    seed_commitment_owner(&e, &core, "c_getter_tr", &user);
 
     let commitment_id = String::from_str(&e, "c_getter_tr");
     let bps: Vec<u32> = vec![&e, 6000u32, 4000u32];
@@ -830,19 +857,16 @@ fn test_withdraw_fees_insufficient() {
     let asset = Address::generate(&e);
     client.withdraw_fees(&admin, &asset, &1i128);
 }
-fn setup_env() -> (Env, MockCommitmentCoreClient<'static>) {
-
-    let env = Env::default();
-
-    let core_id = env.register_contract(None, MockCommitmentCore);
-    let core_client = MockCommitmentCoreClient::new(&env, &core_id);
-
-    (env, core_client)
+fn setup_env(e: &Env) -> (Address, MockCommitmentCoreClient<'_>) {
+    let core_id = e.register_contract(None, MockCommitmentCore);
+    let core_client = MockCommitmentCoreClient::new(e, &core_id);
+    (core_id, core_client)
 }
 #[test]
 fn test_valid_commitment_id() {
 
-    let (env, core_client) = setup_env();
+    let env = Env::default();
+    let (_core_id, core_client) = setup_env(&env);
 
     let commitment_id = String::from_str(&env, "c_valid");
 
@@ -855,7 +879,8 @@ fn test_valid_commitment_id() {
 #[should_panic]
 fn test_invalid_commitment_id() {
 
-    let (env, core_client) = setup_env();
+    let env = Env::default();
+    let (_core_id, core_client) = setup_env(&env);
 
     let commitment_id = String::from_str(&env, "unknown");
 
@@ -864,7 +889,8 @@ fn test_invalid_commitment_id() {
 #[test]
 fn test_expired_commitment() {
 
-    let (env, core_client) = setup_env();
+    let env = Env::default();
+    let (_core_id, core_client) = setup_env(&env);
 
     let commitment_id = String::from_str(&env, "c_expired");
 

@@ -1,8 +1,11 @@
+#![no_std]
+
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MockCoreCommitmentRules {
+pub struct CommitmentRules {
     pub duration_days: u32,
     pub max_loss_percent: u32,
     pub commitment_type: String,
@@ -13,11 +16,11 @@ pub struct MockCoreCommitmentRules {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MockCoreCommitment {
+pub struct Commitment {
     pub commitment_id: String,
     pub owner: Address,
     pub nft_token_id: u32,
-    pub rules: MockCoreCommitmentRules,
+    pub rules: CommitmentRules,
     pub amount: i128,
     pub asset_address: Address,
     pub created_at: u64,
@@ -26,66 +29,76 @@ pub struct MockCoreCommitment {
     pub status: String,
 }
 
+#[contracttype]
+#[derive(Clone)]
+enum DataKey {
+    Commitment(String),
+}
+
+fn default_rules(e: &Env) -> CommitmentRules {
+    CommitmentRules {
+        duration_days: 30,
+        max_loss_percent: 10,
+        commitment_type: String::from_str(e, "safe"),
+        early_exit_penalty: 15,
+        min_fee_threshold: 100,
+        grace_period_days: 0,
+    }
+}
+
+fn default_active_commitment(e: &Env, commitment_id: String) -> Commitment {
+    let created_at = e.ledger().timestamp();
+    Commitment {
+        commitment_id: commitment_id.clone(),
+        owner: Address::generate(e),
+        nft_token_id: 1,
+        rules: default_rules(e),
+        amount: 1_000_000,
+        asset_address: Address::generate(e),
+        created_at,
+        expires_at: created_at + 30 * 86_400,
+        current_value: 1_000_000,
+        status: String::from_str(e, "active"),
+    }
+}
+
 #[contract]
 pub struct MockCommitmentCore;
 
 #[contractimpl]
 impl MockCommitmentCore {
-    pub fn get_commitment(e: Env, commitment_id: String) -> MockCoreCommitment {
-        let rules = MockCoreCommitmentRules {
-            duration_days: 30,
-            max_loss_percent: 10,
-            commitment_type: String::from_str(&e, "test"),
-            early_exit_penalty: 5,
-            min_fee_threshold: 0,
-            grace_period_days: 0,
-        };
+    pub fn set_commitment(e: Env, commitment: Commitment) {
+        e.storage()
+            .instance()
+            .set(&DataKey::Commitment(commitment.commitment_id.clone()), &commitment);
+    }
 
-        // Standard user address (index 2 in tests)
-        let user_addr = Address::from_string(&String::from_str(&e, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"));
-        // Default address for other cases
-        let default_addr = Address::from_string(&String::from_str(&e, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"));
+    pub fn get_commitment(e: Env, commitment_id: String) -> Commitment {
+        if let Some(stored) = e
+            .storage()
+            .instance()
+            .get::<_, Commitment>(&DataKey::Commitment(commitment_id.clone()))
+        {
+            return stored;
+        }
 
-        // We can't use to_string() or starts_with() easily on soroban_sdk::String.
-        // But we can compare with known prefixes if we really want to.
-        // However, for tests, we'll just use a few checks.
-        
-        let mut owner = default_addr;
-        
-        // If it starts with 'c_', it's likely a user-owned commitment in our tests.
-        // Since we can't easily check 'starts_with', we'll just check if it's NOT 'unknown'.
-        if commitment_id != String::from_str(&e, "unknown") {
-            owner = user_addr;
+        if commitment_id == String::from_str(&e, "unknown") {
+            panic!("Commitment not found");
         }
 
         if commitment_id == String::from_str(&e, "c_expired") {
-            MockCoreCommitment {
-                commitment_id,
-                owner,
-                nft_token_id: 1,
-                rules,
-                amount: 1000,
-                asset_address: Address::from_string(&String::from_str(&e, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM")),
-                created_at: 0,
-                expires_at: 1000,
-                current_value: 1000,
-                status: String::from_str(&e, "expired"),
-            }
-        } else if commitment_id == String::from_str(&e, "unknown") {
-             panic!("Commitment not found")
-        } else {
-            MockCoreCommitment {
-                commitment_id,
-                owner,
-                nft_token_id: 1,
-                rules,
-                amount: 1000,
-                asset_address: Address::from_string(&String::from_str(&e, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM")),
-                created_at: 0,
-                expires_at: 1000,
-                current_value: 1000,
-                status: String::from_str(&e, "active"),
-            }
+            let mut commitment = default_active_commitment(&e, commitment_id);
+            commitment.status = String::from_str(&e, "expired");
+            return commitment;
         }
+
+        if commitment_id == String::from_str(&e, "c_valid") {
+            let mut commitment = default_active_commitment(&e, commitment_id);
+            commitment.amount = 1000;
+            commitment.current_value = 1000;
+            return commitment;
+        }
+
+        default_active_commitment(&e, commitment_id)
     }
 }

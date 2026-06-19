@@ -13,7 +13,7 @@ use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRule
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger},
-    token::{self, Client as TokenClient, StellarAssetClient},
+    token::{Client as TokenClient, StellarAssetClient},
     Address, Env, String,
 };
 
@@ -45,13 +45,13 @@ impl FeeMockNftContract {
 fn create_token_contract<'a>(
     e: &Env,
     admin: &Address,
-) -> (Address, token::Client<'a>, token::StellarAssetClient<'a>) {
+) -> (Address, TokenClient<'a>, StellarAssetClient<'a>) {
     let token_contract = e.register_stellar_asset_contract_v2(admin.clone());
     let addr = token_contract.address();
     (
         addr.clone(),
-        token::Client::new(e, &addr),
-        token::StellarAssetClient::new(e, &addr),
+        TokenClient::new(e, &addr),
+        StellarAssetClient::new(e, &addr),
     )
 }
 

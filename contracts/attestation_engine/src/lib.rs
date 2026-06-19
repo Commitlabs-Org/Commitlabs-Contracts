@@ -1029,6 +1029,26 @@ impl AttestationEngineContract {
     }
 
 
+    /// Record a single attestation. Caller must be an authorized verifier.
+    pub fn attest(
+        e: Env,
+        caller: Address,
+        commitment_id: String,
+        attestation_type: String,
+        data: Map<String, String>,
+        is_compliant: bool,
+    ) -> Result<(), AttestationError> {
+        Self::attest_internal(
+            e,
+            caller,
+            commitment_id,
+            attestation_type,
+            data,
+            is_compliant,
+            true,
+        )
+    }
+
     /// Get all attestations for a commitment
     pub fn get_attestations(e: Env, commitment_id: String) -> Vec<Attestation> {
         // Retrieve attestations from persistent storage using commitment_id as key
@@ -1441,7 +1461,6 @@ impl AttestationEngineContract {
             String::from_str(&e, "drawdown"),
             data,
             is_compliant,
-            false,
         )?;
 
         if !is_compliant {
@@ -1461,7 +1480,6 @@ impl AttestationEngineContract {
                 commitment_id.clone(),
                 String::from_str(&e, "violation"),
                 violation_data,
-                false,
                 false,
             )?;
 

@@ -5,7 +5,7 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short,
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, IntoVal, String,
+    Address, Env, IntoVal, String, Val, Vec,
 };
 
 #[contract]
