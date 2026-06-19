@@ -23,7 +23,6 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env, String, Vec};
-use soroban_sdk::{Env, String};
 use crate::mock_commitment_core::{MockCommitmentCore, MockCommitmentCoreClient};
 
 fn setup(e: &Env) -> (Address, Address, Address) {
@@ -35,6 +34,7 @@ fn setup(e: &Env) -> (Address, Address, Address) {
 
 fn deploy(e: &Env) -> (CommitmentTransformationContractClient<'_>, Address, Address, Address) {
     let (admin, core, user) = setup(e);
+    e.register_contract(&core, MockCommitmentCore);
     let contract_id = e.register_contract(None, CommitmentTransformationContract);
     let client = CommitmentTransformationContractClient::new(e, &contract_id);
     client.initialize(&admin, &core);
@@ -830,7 +830,7 @@ fn test_withdraw_fees_insufficient() {
     let asset = Address::generate(&e);
     client.withdraw_fees(&admin, &asset, &1i128);
 }
-fn setup_env() -> (Env, MockCommitmentCoreClient) {
+fn setup_env() -> (Env, MockCommitmentCoreClient<'static>) {
 
     let env = Env::default();
 

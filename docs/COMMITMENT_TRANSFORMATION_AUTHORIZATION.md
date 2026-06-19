@@ -46,8 +46,9 @@ This note documents the production-facing authorization model for `commitment_tr
 
 ## Cross-Contract Call Notes
 
-- `commitment_core.get_commitment(commitment_id)` is the only cross-contract call used for authorization and existence checks.
+- `commitment_core.get_commitment(commitment_id)` is the canonical source for authorization, existence, and status checks.
 - This call is read-only and happens before the transformation contract sets its reentrancy guard or mutates storage.
+- Transformations (tranches, collateral, instruments) are only permitted if the commitment status is exactly `"active"`.
 - `create_tranches` may also call a token contract to collect a configured fee from the executor.
 
 ## Arithmetic Assumptions
