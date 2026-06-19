@@ -44,6 +44,7 @@ impl IntegrationTestFixture {
         let core_contract_id = env.register_contract(None, CommitmentCoreContract);
         let core_client = CommitmentCoreContractClient::new(&env, &core_contract_id);
         core_client.initialize(&admin, &nft_contract_id);
+        core_client.add_updater(&admin, &admin);
 
         // Deploy Attestation Engine contract
         let attestation_contract_id = env.register_contract(None, AttestationEngineContract);
@@ -145,7 +146,7 @@ fn test_commitment_value_update_with_health_tracking() {
     // Update value in core contract
     fixture
         .core_client
-        .update_value(&commitment_id, &1050_0000000);
+        .update_value(&fixture.admin, &commitment_id, &1050_0000000);
 
     // Record health metrics in attestation engine
     fixture
@@ -229,7 +230,7 @@ fn test_early_exit_flow_end_to_end() {
     // Update value
     fixture
         .core_client
-        .update_value(&commitment_id, &1100_0000000);
+        .update_value(&fixture.admin, &commitment_id, &1100_0000000);
 
     // Record attestation for early exit
     let mut data = Map::new(&fixture.env);
@@ -342,13 +343,13 @@ fn test_gas_multiple_operations() {
     // Multiple update operations
     fixture
         .core_client
-        .update_value(&commitment_id, &1010_0000000);
+        .update_value(&fixture.admin, &commitment_id, &1010_0000000);
     fixture
         .core_client
-        .update_value(&commitment_id, &1020_0000000);
+        .update_value(&fixture.admin, &commitment_id, &1020_0000000);
     fixture
         .core_client
-        .update_value(&commitment_id, &1030_0000000);
+        .update_value(&fixture.admin, &commitment_id, &1030_0000000);
 
     // Multiple attestation operations
     fixture

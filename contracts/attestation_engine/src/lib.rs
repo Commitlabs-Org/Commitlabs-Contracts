@@ -1049,14 +1049,24 @@ impl AttestationEngineContract {
         )
     }
 
-    /// Get all attestations for a commitment
-    pub fn get_attestations(e: Env, commitment_id: String) -> Vec<Attestation> {
-        // Retrieve attestations from persistent storage using commitment_id as key
-        let key = DataKey::Attestations(commitment_id);
+    /// Load the full attestation vector from storage (internal use only).
+    fn load_attestations_from_storage(e: &Env, commitment_id: &String) -> Vec<Attestation> {
+        let key = DataKey::Attestations(commitment_id.clone());
         e.storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| Vec::new(&e))
+            .unwrap_or_else(|| Vec::new(e))
+    }
+
+    /// Get attestations for a commitment (capped at [`MAX_PAGE_SIZE`]).
+    ///
+    /// **Deprecated:** Returns at most [`MAX_PAGE_SIZE`] attestations. For commitments
+    /// with more attestations, use [`Self::get_attestations_page`] and iterate using
+    /// `next_offset` until it returns 0.
+    ///
+    /// Ordering is oldest-first by timestamp, consistent with [`AttestationsPage`].
+    pub fn get_attestations(e: Env, commitment_id: String) -> Vec<Attestation> {
+        Self::get_attestations_page(e, commitment_id, 0, MAX_PAGE_SIZE).attestations
     }
 
     /// Get a paginated list of attestations for a commitment (ordered by timestamp, oldest first).
@@ -1136,7 +1146,7 @@ impl AttestationEngineContract {
     /// - **Mobile applications**: Reduce payload sizes for better performance
     ///
     /// # Related Functions
-    /// - `get_attestations` - Retrieve all attestations (use for small datasets)
+    /// - `get_attestations` - Convenience wrapper (capped at MAX_PAGE_SIZE; deprecated for large datasets)
     /// - `get_attestation_count` - Get total count before pagination
     /// - `get_verifier_statistics` - Per-verifier attestation analytics
     ///
@@ -1241,7 +1251,7 @@ impl AttestationEngineContract {
     /// - **Performance analytics**: Correlate attestation frequency with outcomes
     ///
     /// # Related Functions
-    /// - `get_attestations` - Retrieve full attestation details for a commitment
+    /// - `get_attestations` - Convenience wrapper (capped at MAX_PAGE_SIZE; use pagination for more)
     /// - `get_attestations_page` - Paginated attestation retrieval for large datasets
     /// - `get_verifier_statistics` - Per-verifier attestation counts
     /// - `get_protocol_statistics` - Global protocol-wide analytics
@@ -1295,7 +1305,7 @@ impl AttestationEngineContract {
             0
         };
 
-        let attestations = Self::get_attestations(e.clone(), commitment_id.clone());
+        let attestations = Self::load_attestations_from_storage(&e, &commitment_id);
         let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
 
         let compliance_score = Self::calculate_compliance_score(e.clone(), commitment_id.clone());
@@ -1575,9 +1585,8 @@ impl AttestationEngineContract {
         // Convert Val to Commitment
         let commitment: Commitment = commitment_val.try_into_val(&e).unwrap();
 
-        // Get all attestations
-        let attestations = Self::get_attestations(e.clone(), commitment_id.clone());
-    let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
+        let attestations = Self::load_attestations_from_storage(&e, &commitment_id);
+        let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
 
         // Base score: 100
         let mut score: i32 = 100;

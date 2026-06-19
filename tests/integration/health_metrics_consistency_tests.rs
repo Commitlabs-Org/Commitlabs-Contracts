@@ -4,11 +4,20 @@
 #![cfg(test)]
 
 use crate::harness::{ TestHarness, SECONDS_PER_DAY };
-use soroban_sdk::{ testutils::{ Address as _, Events, Ledger }, Address, Env, IntoVal, Map, String, Symbol };
+use soroban_sdk::{ testutils::{ Address as _, Events, Ledger }, Address, Env, IntoVal, Map, String, Symbol, TryFromVal, Val };
 
 use attestation_engine::AttestationEngineContract;
 use commitment_core::{ CommitmentCoreContract, CommitmentRules };
 use commitment_nft::CommitmentNFTContract;
+
+fn event_topics_include(env: &Env, topics: &soroban_sdk::Vec<Val>, symbol_name: &str) -> bool {
+    let expected = Symbol::new(env, symbol_name);
+    topics.iter().any(|topic| {
+        Symbol::try_from_val(env, &topic)
+            .map(|sym| sym == expected)
+            .unwrap_or(false)
+    })
+}
 
 // ============================================
 // Fee Aggregation Tests
@@ -284,14 +293,12 @@ fn test_record_drawdown_compliance_check() {
 
     // Drawdown event emitted, violation event not emitted
     let events = harness.env.events().all();
-    let drawdown_symbol = Symbol::new(&harness.env, "DrawdownRecorded").into_val(&harness.env);
-    let violation_symbol = Symbol::new(&harness.env, "ViolationRecorded").into_val(&harness.env);
-    let has_drawdown_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
-    });
-    let has_violation_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&violation_symbol))
-    });
+    let has_drawdown_event = events
+        .iter()
+        .any(|ev| event_topics_include(&harness.env, &ev.1, "DrawdownRecorded"));
+    let has_violation_event = events
+        .iter()
+        .any(|ev| event_topics_include(&harness.env, &ev.1, "ViolationRecorded"));
     assert!(has_drawdown_event);
     assert!(!has_violation_event);
 }
@@ -372,14 +379,12 @@ fn test_record_drawdown_non_compliant() {
 
     // Both drawdown and violation events should be emitted
     let events = harness.env.events().all();
-    let drawdown_symbol = Symbol::new(&harness.env, "DrawdownRecorded").into_val(&harness.env);
-    let violation_symbol = Symbol::new(&harness.env, "ViolationRecorded").into_val(&harness.env);
-    let has_drawdown_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&drawdown_symbol))
-    });
-    let has_violation_event = events.iter().any(|ev| {
-        ev.1.first().map_or(false, |topic| topic.shallow_eq(&violation_symbol))
-    });
+    let has_drawdown_event = events
+        .iter()
+        .any(|ev| event_topics_include(&harness.env, &ev.1, "DrawdownRecorded"));
+    let has_violation_event = events
+        .iter()
+        .any(|ev| event_topics_include(&harness.env, &ev.1, "ViolationRecorded"));
     assert!(has_drawdown_event);
     assert!(has_violation_event);
 }

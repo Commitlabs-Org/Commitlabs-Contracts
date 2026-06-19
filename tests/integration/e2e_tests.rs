@@ -349,7 +349,7 @@ fn test_e2e_commitment_with_allocation() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                commitment_id.clone(),
                 amount,
                 Strategy::Balanced,
             )
@@ -363,7 +363,7 @@ fn test_e2e_commitment_with_allocation() {
     let allocation = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::get_allocation(harness.env.clone(), 1u64)
+            AllocationStrategiesContract::get_allocation(harness.env.clone(), commitment_id.clone())
         });
     assert_eq!(allocation.strategy, Strategy::Balanced);
     assert!(allocation.allocations.len() > 0);
@@ -454,7 +454,7 @@ fn test_e2e_nft_transfer_between_users() {
         duration_days: 1,
         max_loss_percent: 10,
         commitment_type: String::from_str(&harness.env, "balanced"),
-        early_exit_penalty: 5,
+        early_exit_penalty: 10,
         min_fee_threshold: 1000,
         grace_period_days: 0,
     };
@@ -638,6 +638,14 @@ fn test_e2e_allocation_rebalancing_flow() {
     // Setup pools
     harness.setup_default_pools();
 
+    harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
+
     // Initial allocation
     let initial_result = harness
         .env
@@ -645,7 +653,7 @@ fn test_e2e_allocation_rebalancing_flow() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                commitment_id.clone(),
                 amount,
                 Strategy::Balanced,
             )
@@ -662,7 +670,7 @@ fn test_e2e_allocation_rebalancing_flow() {
     let rebalance_result = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::rebalance(harness.env.clone(), user.clone(), 1u64)
+            AllocationStrategiesContract::rebalance(harness.env.clone(), user.clone(), commitment_id.clone())
         });
     assert!(rebalance_result.is_ok());
 
@@ -673,7 +681,7 @@ fn test_e2e_allocation_rebalancing_flow() {
     let final_allocation = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::get_allocation(harness.env.clone(), 1u64)
+            AllocationStrategiesContract::get_allocation(harness.env.clone(), commitment_id.clone())
         });
     assert_eq!(final_allocation.total_allocated, amount);
 }

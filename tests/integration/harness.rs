@@ -14,11 +14,11 @@ use soroban_sdk::{
     Address, Env, String, Map,
 };
 
-use commitment_core::{CommitmentCoreContract, CommitmentRules};
-use commitment_nft::CommitmentNFTContract;
-use attestation_engine::AttestationEngineContract;
-use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
-use mock_oracle::MockOracleContract;
+use commitment_core::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
+use commitment_nft::{CommitmentNFTContract, CommitmentNFTContractClient};
+use attestation_engine::{AttestationEngineContract, AttestationEngineContractClient};
+use allocation_logic::{AllocationStrategiesContract, AllocationStrategiesContractClient, RiskLevel, Strategy};
+use mock_oracle::{MockOracleContract, MockOracleContractClient};
 
 /// Default staleness threshold for oracle (1 hour in seconds)
 pub const DEFAULT_STALENESS_THRESHOLD: u64 = 3600;
@@ -78,7 +78,7 @@ impl TestHarness {
     /// Create a new test harness with all contracts deployed and initialized
     pub fn new() -> Self {
         let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
+        env.mock_all_auths();
 
         // Set initial ledger state
         env.ledger().set(LedgerInfo {
@@ -107,57 +107,27 @@ impl TestHarness {
         let mock_oracle = env.register_contract(None, MockOracleContract);
 
         // Initialize NFT contract first (needed by commitment_core)
-        env.as_contract(&commitment_nft, || {
-            CommitmentNFTContract::initialize(env.clone(), accounts.admin.clone()).unwrap();
-            // Set core contract for NFT
-            CommitmentNFTContract::set_core_contract(env.clone(), commitment_core.clone()).unwrap();
-        });
+        let nft_client = CommitmentNFTContractClient::new(&env, &commitment_nft);
+        nft_client.initialize(&accounts.admin);
+        nft_client.set_core_contract(&commitment_core);
 
         // Initialize commitment_core
-        env.as_contract(&commitment_core, || {
-            CommitmentCoreContract::initialize(
-                env.clone(),
-                accounts.admin.clone(),
-                commitment_nft.clone(),
-            );
-        });
+        let core_client = CommitmentCoreContractClient::new(&env, &commitment_core);
+        core_client.initialize(&accounts.admin, &commitment_nft);
+        core_client.add_updater(&accounts.admin, &accounts.admin);
 
         // Initialize attestation_engine
-        env.as_contract(&attestation_engine, || {
-            AttestationEngineContract::initialize(
-                env.clone(),
-                accounts.admin.clone(),
-                commitment_core.clone(),
-            )
-            .unwrap();
-            // Add verifier
-            AttestationEngineContract::add_verifier(
-                env.clone(),
-                accounts.admin.clone(),
-                accounts.verifier.clone(),
-            )
-            .unwrap();
-        });
+        let attestation_client = AttestationEngineContractClient::new(&env, &attestation_engine);
+        attestation_client.initialize(&accounts.admin, &commitment_core);
+        attestation_client.add_verifier(&accounts.admin, &accounts.verifier);
 
         // Initialize allocation_logic
-        env.as_contract(&allocation_logic, || {
-            AllocationStrategiesContract::initialize(
-                env.clone(),
-                accounts.admin.clone(),
-                commitment_core.clone(),
-            )
-            .unwrap();
-        });
+        let allocation_client = AllocationStrategiesContractClient::new(&env, &allocation_logic);
+        allocation_client.initialize(&accounts.admin, &commitment_core);
 
         // Initialize mock_oracle
-        env.as_contract(&mock_oracle, || {
-            MockOracleContract::initialize(
-                env.clone(),
-                accounts.admin.clone(),
-                DEFAULT_STALENESS_THRESHOLD,
-            )
-            .unwrap();
-        });
+        let oracle_client = MockOracleContractClient::new(&env, &mock_oracle);
+        oracle_client.initialize(&accounts.admin, &DEFAULT_STALENESS_THRESHOLD);
 
         // Mint tokens to users
         let token_client = StellarAssetClient::new(&env, &token_address);
@@ -184,7 +154,7 @@ impl TestHarness {
     /// Create a minimal harness with just token and oracle (for simpler tests)
     pub fn minimal() -> Self {
         let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
+        env.mock_all_auths();
 
         env.ledger().set(LedgerInfo {
             timestamp: 1704067200,

@@ -63,6 +63,7 @@ fn test_verify_compliance_uses_core_commitment_data() {
         .as_contract(&harness.contracts.commitment_core, || {
             CommitmentCoreContract::update_value(
                 harness.env.clone(),
+                harness.accounts.admin.clone(),
                 commitment_id.clone(),
                 new_value,
             )
@@ -161,7 +162,7 @@ fn test_create_commitment_mints_nft_metadata_matches() {
         duration_days: 90,
         max_loss_percent: 5,
         commitment_type: String::from_str(&harness.env, "safe"),
-        early_exit_penalty: 3,
+        early_exit_penalty: 15,
         min_fee_threshold: 500,
         grace_period_days: 0,
     };
@@ -791,6 +792,14 @@ fn test_allocation_logic_pool_interaction() {
     // Setup pools
     harness.setup_default_pools();
 
+    harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
+
     // Allocate funds
     let result = harness
         .env
@@ -798,7 +807,7 @@ fn test_allocation_logic_pool_interaction() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64, // commitment_id
+                commitment_id.clone(),
                 amount,
                 Strategy::Balanced,
             )
@@ -835,6 +844,14 @@ fn test_allocation_rebalance_cross_pool() {
     // Setup pools
     harness.setup_default_pools();
 
+    harness.approve_tokens(user, &harness.contracts.commitment_core, amount);
+    let commitment_id = harness.create_commitment(
+        user,
+        amount,
+        &harness.contracts.token,
+        harness.default_rules(),
+    );
+
     // Initial allocation with Balanced strategy
     harness
         .env
@@ -842,7 +859,7 @@ fn test_allocation_rebalance_cross_pool() {
             AllocationStrategiesContract::allocate(
                 harness.env.clone(),
                 user.clone(),
-                1u64,
+                commitment_id.clone(),
                 amount,
                 Strategy::Balanced,
             )
@@ -853,7 +870,7 @@ fn test_allocation_rebalance_cross_pool() {
     let initial_allocation = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::get_allocation(harness.env.clone(), 1u64)
+            AllocationStrategiesContract::get_allocation(harness.env.clone(), commitment_id.clone())
         });
 
     // Advance time
@@ -863,7 +880,7 @@ fn test_allocation_rebalance_cross_pool() {
     let result = harness
         .env
         .as_contract(&harness.contracts.allocation_logic, || {
-            AllocationStrategiesContract::rebalance(harness.env.clone(), user.clone(), 1u64)
+            AllocationStrategiesContract::rebalance(harness.env.clone(), user.clone(), commitment_id.clone())
         });
 
     assert!(result.is_ok());
@@ -1260,8 +1277,8 @@ fn test_early_exit_zero_current_value() {
     let rules = CommitmentRules {
         duration_days: 30,
         max_loss_percent: 100,
-        commitment_type: String::from_str(&harness.env, "balanced"),
-        early_exit_penalty: 5,
+        commitment_type: String::from_str(&harness.env, "aggressive"),
+        early_exit_penalty: 10,
         min_fee_threshold: 1000,
         grace_period_days: 0,
     };
@@ -1278,6 +1295,7 @@ fn test_early_exit_zero_current_value() {
         .as_contract(&harness.contracts.commitment_core, || {
             CommitmentCoreContract::update_value(
                 harness.env.clone(),
+                harness.accounts.admin.clone(),
                 commitment_id.clone(),
                 0,
             )
