@@ -31,11 +31,21 @@ pub fn fee_from_bps(amount: i128, bps: u32) -> i128 {
     if bps == 0 {
         return 0;
     }
-    amount
-        .checked_mul(bps as i128)
+    let scale = BPS_SCALE as i128;
+    let bps = bps as i128;
+    let whole_units = amount / scale;
+    let remainder = amount % scale;
+
+    let whole_fee = whole_units.checked_mul(bps).expect("Fees: overflow");
+    let remainder_fee = remainder
+        .checked_mul(bps)
         .expect("Fees: overflow")
-        .checked_div(BPS_SCALE as i128)
-        .expect("Fees: div by zero")
+        .checked_div(scale)
+        .expect("Fees: div by zero");
+
+    whole_fee
+        .checked_add(remainder_fee)
+        .expect("Fees: overflow")
 }
 
 /// Net amount after deducting a fee in basis points.
@@ -69,6 +79,20 @@ mod tests {
     #[test]
     fn test_fee_from_bps_hundred_percent() {
         assert_eq!(fee_from_bps(1000, 10000), 1000);
+    }
+
+    #[test]
+    fn test_fee_from_bps_max_amount_boundaries() {
+        assert_eq!(fee_from_bps(i128::MAX, 0), 0);
+        assert_eq!(fee_from_bps(i128::MAX, 10_000), i128::MAX);
+
+        let fee = fee_from_bps(i128::MAX, 2);
+        assert!(fee >= 0);
+        assert!(fee <= i128::MAX);
+        assert_eq!(
+            i128::MAX.checked_sub(fee).unwrap().checked_add(fee),
+            Some(i128::MAX)
+        );
     }
 
     #[test]

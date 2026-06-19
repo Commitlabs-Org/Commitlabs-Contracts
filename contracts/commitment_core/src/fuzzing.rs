@@ -42,6 +42,12 @@ pub struct CommitmentInputObservation {
     pub amount: AmountObservation,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeeValueObservation {
+    pub net: i128,
+    pub fee: i128,
+}
+
 pub fn classify_generated_commitment_id_bytes(bytes: &[u8]) -> CommitmentIdShape {
     if bytes.is_empty() {
         return CommitmentIdShape::Empty;
@@ -68,13 +74,30 @@ pub fn classify_generated_commitment_id_bytes(bytes: &[u8]) -> CommitmentIdShape
 }
 
 pub fn checked_fee_from_bps(amount: i128, fee_bps: u32) -> Option<i128> {
+    if amount < 0 {
+        return None;
+    }
+
     if fee_bps > BPS_MAX {
         return None;
     }
 
-    amount
-        .checked_mul(fee_bps as i128)?
-        .checked_div(BPS_SCALE as i128)
+    let scale = BPS_SCALE as i128;
+    let fee_bps = fee_bps as i128;
+    let whole_units = amount / scale;
+    let remainder = amount % scale;
+
+    let whole_fee = whole_units.checked_mul(fee_bps)?;
+    let remainder_fee = remainder.checked_mul(fee_bps)?.checked_div(scale)?;
+
+    whole_fee.checked_add(remainder_fee)
+}
+
+pub fn checked_fee_value_from_bps(amount: i128, fee_bps: u32) -> Option<FeeValueObservation> {
+    let fee = checked_fee_from_bps(amount, fee_bps)?;
+    let net = amount.checked_sub(fee)?;
+
+    Some(FeeValueObservation { net, fee })
 }
 
 pub fn observe_amount(amount: i128, fee_bps: u32) -> AmountObservation {
@@ -94,18 +117,10 @@ pub fn observe_amount(amount: i128, fee_bps: u32) -> AmountObservation {
         };
     }
 
-    let Some(fee) = checked_fee_from_bps(amount, fee_bps) else {
+    let Some(FeeValueObservation { net, fee }) = checked_fee_value_from_bps(amount, fee_bps) else {
         return AmountObservation {
             shape: AmountShape::FeeOverflow,
             fee: None,
-            net: None,
-        };
-    };
-
-    let Some(net) = amount.checked_sub(fee) else {
-        return AmountObservation {
-            shape: AmountShape::NetUnderflow,
-            fee: Some(fee),
             net: None,
         };
     };
@@ -117,7 +132,11 @@ pub fn observe_amount(amount: i128, fee_bps: u32) -> AmountObservation {
     }
 }
 
-pub fn observe_commitment_input(commitment_id: &[u8], amount: i128, fee_bps: u32) -> CommitmentInputObservation {
+pub fn observe_commitment_input(
+    commitment_id: &[u8],
+    amount: i128,
+    fee_bps: u32,
+) -> CommitmentInputObservation {
     CommitmentInputObservation {
         id_shape: classify_generated_commitment_id_bytes(commitment_id),
         amount: observe_amount(amount, fee_bps),

@@ -2,16 +2,14 @@
 
 use crate::{
     fuzzing::{
-        classify_generated_commitment_id_bytes, observe_amount, observe_commitment_input,
-        AmountShape, CommitmentIdShape,
+        checked_fee_value_from_bps, classify_generated_commitment_id_bytes, observe_amount,
+        observe_commitment_input, AmountShape, CommitmentIdShape, FeeValueObservation,
     },
     CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules,
 };
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env, String,
+    contract, contractimpl, testutils::Address as _, token::StellarAssetClient, Address, Env,
+    String,
 };
 
 #[contract]
@@ -88,7 +86,6 @@ fn test_fuzz_amount_seed_shapes() {
     assert_eq!(observe_amount(0, 0).shape, AmountShape::NonPositive);
     assert_eq!(observe_amount(-1, 0).shape, AmountShape::NonPositive);
     assert_eq!(observe_amount(1, 10_001).shape, AmountShape::InvalidFeeBps);
-    assert_eq!(observe_amount(i128::MAX, 2).shape, AmountShape::FeeOverflow);
 
     let max_fee = observe_amount(1, 10_000);
     assert_eq!(max_fee.shape, AmountShape::Valid);
@@ -99,6 +96,85 @@ fn test_fuzz_amount_seed_shapes() {
     assert_eq!(normal.shape, AmountShape::Valid);
     assert_eq!(normal.fee, Some(10));
     assert_eq!(normal.net, Some(990));
+
+    let max_adjacent = observe_amount(i128::MAX, 2);
+    assert_eq!(max_adjacent.shape, AmountShape::Valid);
+    assert_eq!(
+        max_adjacent
+            .net
+            .unwrap()
+            .checked_add(max_adjacent.fee.unwrap()),
+        Some(i128::MAX)
+    );
+}
+
+fn assert_fee_value_invariants(amount: i128, bps: u32) {
+    let FeeValueObservation { net, fee } =
+        checked_fee_value_from_bps(amount, bps).expect("valid fee input must compute");
+
+    assert!(
+        fee >= 0,
+        "fee must be non-negative for amount={amount}, bps={bps}"
+    );
+    assert!(
+        fee <= amount,
+        "fee must not exceed amount={amount}, bps={bps}"
+    );
+    assert!(
+        net >= 0,
+        "net must be non-negative for amount={amount}, bps={bps}"
+    );
+    assert_eq!(
+        net.checked_add(fee),
+        Some(amount),
+        "net + fee must conserve amount for amount={amount}, bps={bps}"
+    );
+}
+
+#[test]
+fn test_fuzz_fee_value_seed_boundaries_conserve_amount() {
+    let amounts = [
+        0,
+        1,
+        9_999,
+        10_000,
+        10_001,
+        i128::MAX / 10_000 - 1,
+        i128::MAX / 10_000,
+        i128::MAX / 10_000 + 1,
+        i128::MAX / 2,
+        i128::MAX - 10_000,
+        i128::MAX - 1,
+        i128::MAX,
+    ];
+    let bps_values = [0, 1, 2, 15, 100, 9_999, 10_000];
+
+    for amount in amounts {
+        for bps in bps_values {
+            assert_fee_value_invariants(amount, bps);
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_fee_value_deterministic_input_sweep() {
+    let mut state = 0x9e37_79b9_7f4a_7c15_d1b5_4a32_d192_ed03u128;
+
+    for _ in 0..4096 {
+        state = state
+            .wrapping_mul(0xda94_2042_e4dd_58b5_0000_0000_0000_0001u128)
+            .wrapping_add(0x9e37_79b9_7f4a_7c15u128);
+        let amount = (state >> 1) as i128;
+        let bps = ((state >> 96) % 10_001) as u32;
+
+        assert_fee_value_invariants(amount, bps);
+    }
+}
+
+#[test]
+fn test_fuzz_fee_value_rejects_invalid_domain() {
+    assert_eq!(checked_fee_value_from_bps(-1, 0), None);
+    assert_eq!(checked_fee_value_from_bps(1, 10_001), None);
 }
 
 #[test]
@@ -111,7 +187,7 @@ fn test_fuzz_observation_combines_id_and_amount_seed() {
 }
 
 #[test]
-fn test_create_commitment_rejects_fee_math_overflow() {
+fn test_create_commitment_accepts_max_amount_fee_without_overflow() {
     let e = Env::default();
     e.mock_all_auths_allowing_non_root_auth();
 
@@ -132,10 +208,16 @@ fn test_create_commitment_rejects_fee_math_overflow() {
     client.initialize(&admin, &nft_contract);
     client.set_creation_fee_bps(&admin, &2);
 
-    let result = client.try_create_commitment(&owner, &amount, &asset_address, &default_rules(&e));
+    let commitment_id =
+        client.create_commitment(&owner, &amount, &asset_address, &default_rules(&e));
+    let commitment = client.get_commitment(&commitment_id);
+    let expected_fee = checked_fee_value_from_bps(amount, 2).unwrap().fee;
+    let expected_net = amount.checked_sub(expected_fee).unwrap();
 
-    assert!(result.is_err());
-    assert_eq!(client.get_total_commitments(), 0);
-    assert_eq!(client.get_total_value_locked(), 0);
-    assert_eq!(client.get_collected_fees(&asset_address), 0);
+    assert_eq!(commitment.amount, expected_net);
+    assert_eq!(commitment.current_value, expected_net);
+    assert_eq!(client.get_total_commitments(), 1);
+    assert_eq!(client.get_total_value_locked(), expected_net);
+    assert_eq!(client.get_collected_fees(&asset_address), expected_fee);
+    assert_eq!(expected_net.checked_add(expected_fee), Some(amount));
 }

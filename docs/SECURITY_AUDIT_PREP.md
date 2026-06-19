@@ -30,6 +30,12 @@
 - Cross-contract calls (token transfer, NFT mint/settle, commitment_core reads)
 - Storage growth and data consistency for vectors and registries
 
+## Deterministic fuzz properties
+- `commitment_core` fee arithmetic is covered by deterministic fuzz-style seed tests in `contracts/commitment_core/src/fuzz_tests.rs`.
+- For every covered `amount >= 0` and `bps in 0..=10000`, `checked_fee_value_from_bps` must produce `fee >= 0`, `fee <= amount`, `net >= 0`, and `net + fee == amount`.
+- Boundary seeds include `amount = 0`, `bps = 0`, `bps = 10000`, `i128::MAX / 10000` neighbors, `i128::MAX - 1`, and `i128::MAX`.
+- The `create_commitment` fee path is checked with an `i128::MAX` amount so the shared `fee_from_bps` implementation cannot regress to multiply-before-divide overflow.
+
 ## Open items before audit
 - Capture a coverage report and attach to TEST_COVERAGE.md
 - Decide on authorization model for mint/allocate/settle flows
