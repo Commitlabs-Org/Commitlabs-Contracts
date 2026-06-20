@@ -210,6 +210,9 @@ mod tests;
 #[cfg(test)]
 mod smoke_tests;
 
+#[cfg(test)]
+mod transfer_authorization_tests;
+
 // ============================================================================
 // Contract Implementation
 // ============================================================================
