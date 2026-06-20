@@ -40,6 +40,16 @@ When a commitment has no attestations, `get_health_metrics` returns:
 - Verifies metrics update correctly
 - Confirms `last_attestation` changes from 0 to the attestation timestamp
 
+### Test 3: `test_calculate_compliance_score_no_attestations_defaults_to_full_score`
+- Exercises the raw `calculate_compliance_score` path before stored metrics exist
+- Verifies the default score is `100`
+- Confirms `get_health_metrics` mirrors that score while keeping `last_attestation = 0` and `fees_generated = 0`
+- Confirms `verify_compliance` remains true for an active commitment with no drawdown and a full score
+
+### Test 4: `test_calculate_compliance_score_mixed_attestations_and_health_metrics_consistency`
+- Pins deterministic aggregation after the first several attestations
+- Confirms `last_attestation` is the maximum attestation timestamp, fees are summed from fee-generation data, and the direct score equals `HealthMetrics.compliance_score`
+
 ## Acceptance Criteria Met
 
 ✅ Edge case is handled: No panic when commitment has no attestations
