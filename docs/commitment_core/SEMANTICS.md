@@ -42,7 +42,10 @@ stateDiagram-v2
 
 The state machine has no entrypoint that returns `"violated"`, `"settled"`, or `"early_exit"` back to `"active"`. Active-only flows reject those terminal statuses:
 
-- `settle` rejects already settled commitments with `AlreadySettled`, and rejects any other non-active status with `NotActive`.
+- `settle` checks expiration before terminal status. Before `expires_at`, even
+  non-active commitments reject with `NotExpired`; after expiration, already
+  settled commitments reject with `AlreadySettled`, and other non-active
+  statuses reject with `NotActive`.
 - `early_exit` rejects settled, violated, and already exited commitments with `NotActive`.
 - `allocate` is not a status transition, but it also requires `"active"` and rejects settled, violated, and early-exited commitments with `NotActive`.
 
@@ -50,7 +53,8 @@ The state machine has no entrypoint that returns `"violated"`, `"settled"`, or `
 
 | Behavior | Coverage |
 | --- | --- |
-| Creation stores the commitment record, indexes, TVL, and NFT token id; the creation event is emitted. | [`test_create_commitment_updates_storage_layout`](../../contracts/commitment_core/src/tests.rs#L1173-L1208), [`test_create_commitment_event`](../../contracts/commitment_core/src/tests.rs#L1627-L1654) |
+| Creation emits the documented event payload. | [`test_create_commitment_event`](../../contracts/commitment_core/src/tests.rs#L1627-L1654) |
+| Commitment IDs use the canonical `COMMIT_<n>` format and advance monotonically. | [`test_commitment_id_format_is_commit_prefix`](../../contracts/commitment_core/src/tests.rs#L3236-L3279), [`test_commitment_ids_are_monotonically_increasing`](../../contracts/commitment_core/src/tests.rs#L3309-L3330) |
 | Successful settlement writes `"settled"` and removes the owner index entry. | [`test_settle_success_expired`](../../contracts/commitment_core/src/tests.rs#L1905-L1975) |
 | Settlement before expiration fails with `NotExpired`. | [`test_settle_rejects_when_not_expired`](../../contracts/commitment_core/src/tests.rs#L1865-L1903) |
 | Non-violating value updates keep `"active"` and emit `ValUpd`. | [`test_update_value_no_violation`](../../contracts/commitment_core/src/tests.rs#L2915-L2947) |
