@@ -1452,6 +1452,226 @@ fn test_attestation_types_invalid_type_fails() {
 // Comprehensive Compliance Scoring Tests
 // ============================================================================
 
+fn setup_compliance_score_case(
+    e: &Env,
+    commitment_id_str: &str,
+    current_value: i128,
+    max_loss_percent: u32,
+) -> (Address, Address, String) {
+    let (attestation_id, core_id) = setup_initialized_engine_with_core(e);
+    let commitment_id = String::from_str(e, commitment_id_str);
+    let commitment = create_mock_commitment_with_status(
+        e,
+        commitment_id_str,
+        "active",
+        1_000,
+        current_value,
+        max_loss_percent,
+    );
+
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    (attestation_id, core_id, commitment_id)
+}
+
+fn attestation_with_data(
+    e: &Env,
+    commitment_id: &String,
+    timestamp: u64,
+    attestation_type: &str,
+    is_compliant: bool,
+    data: Map<String, String>,
+) -> Attestation {
+    Attestation {
+        commitment_id: commitment_id.clone(),
+        timestamp,
+        attestation_type: String::from_str(e, attestation_type),
+        data,
+        is_compliant,
+        verified_by: Address::generate(e),
+    }
+}
+
+fn store_attestations(
+    e: &Env,
+    attestation_id: &Address,
+    commitment_id: &String,
+    attestations: Vec<Attestation>,
+) {
+    e.as_contract(attestation_id, || {
+        e.storage()
+            .persistent()
+            .set(&DataKey::Attestations(commitment_id.clone()), &attestations);
+    });
+}
+
+#[test]
+fn test_calculate_compliance_score_no_attestations_defaults_to_full_score() {
+    let e = Env::default();
+    let (attestation_id, _, commitment_id) =
+        setup_compliance_score_case(&e, "score_no_attestations", 1_000, 10);
+
+    let score = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::calculate_compliance_score(e.clone(), commitment_id.clone())
+    });
+    let metrics = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_health_metrics(e.clone(), commitment_id.clone())
+    });
+    let compliant = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
+    });
+
+    assert_eq!(score, 100);
+    assert_eq!(metrics.compliance_score, score);
+    assert_eq!(metrics.last_attestation, 0);
+    assert_eq!(metrics.fees_generated, 0);
+    assert!(compliant);
+}
+
+#[test]
+fn test_calculate_compliance_score_all_violations_clamps_and_marks_noncompliant() {
+    let e = Env::default();
+    let (attestation_id, _, commitment_id) =
+        setup_compliance_score_case(&e, "score_all_violations", 1_000, 10);
+    let mut attestations = Vec::new(&e);
+
+    for idx in 0..4 {
+        let mut data = Map::new(&e);
+        data.set(ts(&e, "violation_type"), ts(&e, "policy_breach"));
+        data.set(ts(&e, "severity"), ts(&e, "high"));
+        attestations.push_back(attestation_with_data(
+            &e,
+            &commitment_id,
+            2_000 + idx,
+            "violation",
+            false,
+            data,
+        ));
+    }
+    store_attestations(&e, &attestation_id, &commitment_id, attestations);
+
+    let score = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::calculate_compliance_score(e.clone(), commitment_id.clone())
+    });
+    let metrics = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_health_metrics(e.clone(), commitment_id.clone())
+    });
+    let compliant = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
+    });
+
+    assert_eq!(score, 30);
+    assert_eq!(metrics.compliance_score, score);
+    assert_eq!(metrics.last_attestation, 2_003);
+    assert!(!compliant);
+}
+
+#[test]
+fn test_calculate_compliance_score_mixed_attestations_and_health_metrics_consistency() {
+    let e = Env::default();
+    let (attestation_id, _, commitment_id) =
+        setup_compliance_score_case(&e, "score_mixed_attestations", 1_000, 10);
+    let mut attestations = Vec::new(&e);
+
+    attestations.push_back(attestation_with_data(
+        &e,
+        &commitment_id,
+        3_000,
+        "health_check",
+        true,
+        Map::new(&e),
+    ));
+
+    let mut violation_data = Map::new(&e);
+    violation_data.set(ts(&e, "violation_type"), ts(&e, "late_report"));
+    violation_data.set(ts(&e, "severity"), ts(&e, "medium"));
+    attestations.push_back(attestation_with_data(
+        &e,
+        &commitment_id,
+        3_010,
+        "violation",
+        false,
+        violation_data,
+    ));
+
+    let mut drawdown_data = Map::new(&e);
+    drawdown_data.set(ts(&e, "drawdown_percent"), ts(&e, "12"));
+    attestations.push_back(attestation_with_data(
+        &e,
+        &commitment_id,
+        3_020,
+        "drawdown",
+        true,
+        drawdown_data,
+    ));
+
+    let mut fee_data = Map::new(&e);
+    fee_data.set(ts(&e, "fee_amount"), ts(&e, "55"));
+    attestations.push_back(attestation_with_data(
+        &e,
+        &commitment_id,
+        3_030,
+        "fee_generation",
+        true,
+        fee_data,
+    ));
+    store_attestations(&e, &attestation_id, &commitment_id, attestations);
+
+    let score = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::calculate_compliance_score(e.clone(), commitment_id.clone())
+    });
+    let metrics = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_health_metrics(e.clone(), commitment_id.clone())
+    });
+
+    assert_eq!(score, 88);
+    assert_eq!(metrics.compliance_score, score);
+    assert_eq!(metrics.drawdown_percent, 12);
+    assert_eq!(metrics.fees_generated, 55);
+    assert_eq!(metrics.last_attestation, 3_030);
+}
+
+#[test]
+fn test_calculate_compliance_score_single_drawdown_attestation_drives_verification() {
+    let e = Env::default();
+    let (attestation_id, _, commitment_id) =
+        setup_compliance_score_case(&e, "score_drawdown_only", 1_000, 10);
+    let mut data = Map::new(&e);
+    data.set(ts(&e, "drawdown_percent"), ts(&e, "60"));
+
+    let mut attestations = Vec::new(&e);
+    attestations.push_back(attestation_with_data(
+        &e,
+        &commitment_id,
+        4_000,
+        "drawdown",
+        false,
+        data,
+    ));
+    store_attestations(&e, &attestation_id, &commitment_id, attestations);
+
+    let score = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::calculate_compliance_score(e.clone(), commitment_id.clone())
+    });
+    let metrics = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::get_health_metrics(e.clone(), commitment_id.clone())
+    });
+    let compliant = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::verify_compliance(e.clone(), commitment_id.clone())
+    });
+
+    assert_eq!(score, 40);
+    assert_eq!(metrics.compliance_score, score);
+    assert_eq!(metrics.drawdown_percent, 60);
+    assert_eq!(metrics.last_attestation, 4_000);
+    assert!(!compliant);
+}
+
 #[test]
 fn test_compliance_scoring_perfect_score() {
     let e = Env::default();
