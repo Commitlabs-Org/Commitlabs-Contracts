@@ -2,8 +2,8 @@
 extern crate std;
 
 use crate::{
-    AllocationStrategiesContract, AllocationStrategiesContractClient, RiskLevel, Strategy,
-    Commitment, CommitmentRules,
+    AllocationStrategiesContract, AllocationStrategiesContractClient, Error, RiskLevel, Strategy,
+    Commitment, CommitmentRules, CURRENT_VERSION,
 };
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _, testutils::Ledger, Address, Env, Map, String,
@@ -88,6 +88,63 @@ fn setup_test_pools(_env: &Env, client: &AllocationStrategiesContractClient, adm
     client.register_pool(admin, &3, &RiskLevel::Medium, &1200, &800_000_000);
     client.register_pool(admin, &4, &RiskLevel::High, &2000, &500_000_000);
     client.register_pool(admin, &5, &RiskLevel::High, &2500, &500_000_000);
+}
+
+#[test]
+fn test_migrate_rejects_wrong_from_version_without_mutating_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _core_id, client) = create_contract(&env);
+
+    let result = client.try_migrate(&admin, &1);
+    assert_eq!(result, Err(Ok(Error::InvalidVersion)));
+    assert_eq!(client.get_version(), 0);
+}
+
+#[test]
+fn test_migrate_initializes_missing_registry_and_guard_then_is_idempotent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _core_id, client) = create_contract(&env);
+
+    client.migrate(&admin, &0);
+
+    assert_eq!(client.get_all_pools().len(), 0);
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+
+    let result = client.try_migrate(&admin, &CURRENT_VERSION);
+    assert_eq!(result, Err(Ok(Error::AlreadyMigrated)));
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+}
+
+#[test]
+fn test_migrate_preserves_existing_pool_registry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _core_id, client) = create_contract(&env);
+
+    client.register_pool(&admin, &42, &RiskLevel::Medium, &900, &123_456);
+    client.migrate(&admin, &0);
+
+    let pools = client.get_all_pools();
+    assert_eq!(pools.len(), 1);
+    assert_eq!(pools.get(0).unwrap().pool_id, 42);
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+}
+
+#[test]
+fn test_migrate_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _core_id, client) = create_contract(&env);
+    let non_admin = Address::generate(&env);
+
+    let result = client.try_migrate(&non_admin, &0);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.get_version(), 0);
+
+    client.migrate(&admin, &0);
+    assert_eq!(client.get_version(), CURRENT_VERSION);
 }
 
 // ============================================================================

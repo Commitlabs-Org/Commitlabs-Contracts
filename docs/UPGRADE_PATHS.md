@@ -12,3 +12,9 @@
 5. **Update off-chain metadata** if needed.
 
 For full details, see `docs/UPGRADES.md`.
+
+## Migration idempotency guarantees
+- `migrate(caller, from_version)` is admin-only and rejects non-admin callers before writing state.
+- `from_version` must match the stored `Version`; mismatches return `InvalidVersion` and leave `Version` unchanged.
+- After a successful migration, `Version` is set to the current contract version; repeat calls return `AlreadyMigrated` without changing stored data.
+- Migration initialises missing analytics/registry keys needed by the current version while preserving existing counters, pool registries, and allocation state.
