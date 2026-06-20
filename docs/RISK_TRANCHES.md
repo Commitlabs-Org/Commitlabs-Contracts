@@ -156,6 +156,13 @@ Active ──────────────> Closed
 - All allocation calculations use **checked arithmetic**
 - Overflow/underflow results in `InvalidAmount` error
 - Negative allocations allowed (withdrawals) but cannot result in negative balance
+- `create_tranches()` requires tranche shares to be non-empty, match the number of
+  risk labels, and sum to exactly `10_000` basis points. Off-by-one totals such as
+  `9_999` or `10_001` are rejected before any tranche set is stored.
+- Tranche amounts are computed with integer floor division against the post-fee net
+  value. The unallocated rounding dust is deterministic and bounded by
+  `0 <= dust <= tranche_count - 1`, with
+  `sum(tranche.amount) + dust == total_value - fee_paid`.
 
 ### Reentrancy Protection
 
@@ -187,6 +194,12 @@ let transformation_id = client.create_tranches(
     &fee_asset,
 );
 ```
+
+For non-round values, callers should treat the tranche set as conserving the
+post-fee net value plus explicit dust rather than expecting every stroop to be
+allocated to a tranche. Example: with `1_000_003` net units and
+`3333/3333/3334` bps, tranche allocation totals `1_000_001` and leaves `2`
+units of bounded rounding dust.
 
 ### Accessing Individual Tranches
 

@@ -21,9 +21,11 @@
 #![cfg(test)]
 
 use super::*;
+use crate::mock_commitment_core::{
+    Commitment, CommitmentRules, MockCommitmentCore, MockCommitmentCoreClient,
+};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{vec, Address, Env, String, Vec};
-use crate::mock_commitment_core::{Commitment, CommitmentRules, MockCommitmentCore, MockCommitmentCoreClient};
+use soroban_sdk::{token::StellarAssetClient, vec, Address, Env, String, Vec};
 
 fn setup(e: &Env) -> (Address, Address, Address) {
     let admin = Address::generate(e);
@@ -38,6 +40,14 @@ fn deploy(e: &Env) -> (CommitmentTransformationContractClient<'_>, Address, Addr
     let client = CommitmentTransformationContractClient::new(e, &contract_id);
     client.initialize(&admin, &core);
     (client, admin, core, user)
+}
+
+fn setup_fee_asset(e: &Env, holder: &Address, balance: i128) -> Address {
+    let token_admin = Address::generate(e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let asset = token.address();
+    StellarAssetClient::new(e, &asset).mint(holder, &balance);
+    asset
 }
 
 fn seed_commitment_owner(e: &Env, core: &Address, commitment_id: &str, owner: &Address) {
@@ -193,7 +203,14 @@ fn test_create_tranches_two_equal_halves() {
     ];
     let fee_asset = Address::generate(&e);
 
-    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let id = client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &bps,
+        &levels,
+        &fee_asset,
+    );
     let set = client.get_tranche_set(&id);
     assert_eq!(set.tranches.len(), 2);
     assert_eq!(set.tranches.get(0).unwrap().amount, 1_000_000i128);
@@ -255,7 +272,14 @@ fn test_create_tranches_four_tranches() {
     ];
     let fee_asset = Address::generate(&e);
 
-    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let id = client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &bps,
+        &levels,
+        &fee_asset,
+    );
     let set = client.get_tranche_set(&id);
     assert_eq!(set.tranches.len(), 4);
     assert_eq!(set.tranches.get(0).unwrap().amount, 400_000i128);
@@ -283,7 +307,14 @@ fn test_create_tranches_amounts_sum_to_net_value() {
     ];
     let fee_asset = Address::generate(&e);
 
-    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let id = client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &bps,
+        &levels,
+        &fee_asset,
+    );
     let set = client.get_tranche_set(&id);
 
     // Verify bps sum is exactly 10000
@@ -331,10 +362,99 @@ fn test_transformation_with_zero_fee() {
     let levels: Vec<String> = vec![&e, String::from_str(&e, "senior")];
     let fee_asset = Address::generate(&e);
 
-    let id = client.create_tranches(&user, &commitment_id, &total_value, &bps, &levels, &fee_asset);
+    let id = client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &bps,
+        &levels,
+        &fee_asset,
+    );
     let set = client.get_tranche_set(&id);
     assert_eq!(set.fee_paid, 0i128);
     assert_eq!(set.total_value, total_value);
+}
+
+#[test]
+fn test_create_tranches_conserves_net_value_with_deterministic_dust() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_transformation_fee(&admin, &0);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_dust");
+    let total_value = 1_000_003i128;
+    let bps: Vec<u32> = vec![&e, 3333u32, 3333u32, 3334u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "mezzanine"),
+        String::from_str(&e, "equity"),
+    ];
+    let fee_asset = Address::generate(&e);
+
+    let id = client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &bps,
+        &levels,
+        &fee_asset,
+    );
+    let set = client.get_tranche_set(&id);
+    let tranche_sum: i128 = set.tranches.iter().map(|tranche| tranche.amount).sum();
+    let net_value = total_value - set.fee_paid;
+    let dust = net_value - tranche_sum;
+
+    assert_eq!(set.fee_paid, 0);
+    assert_eq!(net_value, 1_000_003);
+    assert_eq!(tranche_sum, 1_000_001);
+    assert_eq!(dust, 2);
+    assert!(dust >= 0);
+    assert!(dust <= (set.tranches.len() as i128 - 1));
+    assert_eq!(tranche_sum + dust, net_value);
+}
+
+#[test]
+fn test_create_tranches_records_fee_and_conserves_net_value() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, _, user) = deploy(&e);
+    client.set_transformation_fee(&admin, &125);
+    client.set_authorized_transformer(&admin, &user, &true);
+
+    let commitment_id = String::from_str(&e, "c_fee_conserve");
+    let total_value = 1_234_567i128;
+    let expected_fee = (total_value * 125i128) / 10_000i128;
+    let fee_asset = setup_fee_asset(&e, &user, expected_fee);
+    let bps: Vec<u32> = vec![&e, 5000u32, 3000u32, 2000u32];
+    let levels: Vec<String> = vec![
+        &e,
+        String::from_str(&e, "senior"),
+        String::from_str(&e, "mezzanine"),
+        String::from_str(&e, "equity"),
+    ];
+
+    let id = client.create_tranches(
+        &user,
+        &commitment_id,
+        &total_value,
+        &bps,
+        &levels,
+        &fee_asset,
+    );
+    let set = client.get_tranche_set(&id);
+    let net_value = total_value - expected_fee;
+    let tranche_sum: i128 = set.tranches.iter().map(|tranche| tranche.amount).sum();
+    let dust = net_value - tranche_sum;
+
+    assert_eq!(set.fee_paid, expected_fee);
+    assert_eq!(client.get_collected_fees(&fee_asset), expected_fee);
+    assert_eq!(dust, 1);
+    assert!(dust >= 0);
+    assert!(dust <= (set.tranches.len() as i128 - 1));
+    assert_eq!(tranche_sum + dust, net_value);
 }
 
 // ============================================================================

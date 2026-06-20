@@ -87,6 +87,20 @@ The previous version of this file listed commitment_core fee infrastructure as *
 
 No material discrepancies.
 
+### Tranche fee/dust invariants
+
+Regression tests in `contracts/commitment_transformation/src/tests.rs` pin the
+following properties for `create_tranches`:
+
+- accepted ratios must sum to exactly `10_000` bps; `9_999`, `10_001`, empty
+  vectors, and mismatched risk-level lengths are rejected;
+- `fee_paid == floor(total_value * TransformationFeeBps / 10_000)` and the same
+  amount is credited to `CollectedFees(asset)`;
+- tranche allocation conserves the post-fee net value as
+  `sum(tranche.amount) + dust == total_value - fee_paid`; and
+- integer-division dust is deterministic and bounded by
+  `0 <= dust <= tranche_count - 1`.
+
 ---
 
 ## `commitment_marketplace`
