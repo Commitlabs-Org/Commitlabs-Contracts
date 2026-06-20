@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_fee_from_bps_rounds_down() {
-        assert_eq!(fee_from_bps(100, 15), 0); // 1.5% of 100 = 1.5 -> 1
+        assert_eq!(fee_from_bps(100, 15), 0); // 0.15% of 100 = 0.15 -> 0
         assert_eq!(fee_from_bps(1000, 33), 3); // 3.3% rounds down
     }
 
