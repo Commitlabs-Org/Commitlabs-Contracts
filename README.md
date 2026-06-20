@@ -87,7 +87,7 @@ You can re-run the script after any changes to regenerate function, parameter, a
 
 ## CI/CD
 
-This repository uses GitHub Actions to automatically build, test, and validate Soroban smart contracts on every push to `main` and every pull request targeting `main`.
+This repository uses GitHub Actions to automatically build, test, and validate Soroban smart contracts on every push to `master` and every pull request targeting `master`.
 
 ### What the CI Does
 
