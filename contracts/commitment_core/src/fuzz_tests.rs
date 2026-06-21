@@ -2,8 +2,8 @@
 
 use crate::{
     fuzzing::{
-        classify_generated_commitment_id_bytes, observe_amount, observe_commitment_input,
-        AmountShape, CommitmentIdShape,
+        checked_fee_and_net_from_bps, checked_fee_from_bps, classify_generated_commitment_id_bytes,
+        observe_amount, observe_commitment_input, AmountShape, CommitmentIdShape,
     },
     CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules,
 };
@@ -88,7 +88,16 @@ fn test_fuzz_amount_seed_shapes() {
     assert_eq!(observe_amount(0, 0).shape, AmountShape::NonPositive);
     assert_eq!(observe_amount(-1, 0).shape, AmountShape::NonPositive);
     assert_eq!(observe_amount(1, 10_001).shape, AmountShape::InvalidFeeBps);
-    assert_eq!(observe_amount(i128::MAX, 2).shape, AmountShape::FeeOverflow);
+
+    let max_small_fee = observe_amount(i128::MAX, 2);
+    assert_eq!(max_small_fee.shape, AmountShape::Valid);
+    assert_eq!(
+        max_small_fee
+            .net
+            .unwrap()
+            .checked_add(max_small_fee.fee.unwrap()),
+        Some(i128::MAX)
+    );
 
     let max_fee = observe_amount(1, 10_000);
     assert_eq!(max_fee.shape, AmountShape::Valid);
@@ -99,6 +108,55 @@ fn test_fuzz_amount_seed_shapes() {
     assert_eq!(normal.shape, AmountShape::Valid);
     assert_eq!(normal.fee, Some(10));
     assert_eq!(normal.net, Some(990));
+}
+
+#[test]
+fn test_fee_and_net_seed_cases_conserve_value() {
+    let cases = [
+        (0i128, 0u32),
+        (0, 10_000),
+        (1, 0),
+        (1, 1),
+        (1, 10_000),
+        (9_999, 9_999),
+        (10_000, 10_000),
+        (1_000_000, 250),
+        (i128::MAX - 10_000, 1),
+        (i128::MAX - 9_999, 9_999),
+        (i128::MAX - 1, 5_000),
+        (i128::MAX, 0),
+        (i128::MAX, 1),
+        (i128::MAX, 10_000),
+    ];
+
+    for (amount, bps) in cases {
+        let (fee, net) = checked_fee_and_net_from_bps(amount, bps)
+            .expect("valid amount and bps should produce fee and net");
+        assert!(
+            fee >= 0,
+            "fee must be non-negative for amount={amount} bps={bps}"
+        );
+        assert!(
+            net >= 0,
+            "net must be non-negative for amount={amount} bps={bps}"
+        );
+        assert!(
+            fee <= amount,
+            "fee must not exceed amount={amount} bps={bps}"
+        );
+        assert_eq!(
+            net.checked_add(fee),
+            Some(amount),
+            "net + fee must exactly conserve amount={amount} bps={bps}"
+        );
+        assert_eq!(checked_fee_from_bps(amount, bps), Some(fee));
+    }
+}
+
+#[test]
+fn test_fee_and_net_rejects_invalid_bps() {
+    assert_eq!(checked_fee_from_bps(1_000, 10_001), None);
+    assert_eq!(checked_fee_and_net_from_bps(1_000, 10_001), None);
 }
 
 #[test]

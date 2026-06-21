@@ -27,6 +27,9 @@
 - Access control enforcement for privileged paths
 - Reentrancy guard usage and guard cleanup on error paths
 - Arithmetic safety and overflow behavior
+  - Fee fuzz helpers assert `0 <= fee <= amount` and `net + fee == amount`
+    for deterministic boundary seeds, including `i128::MAX`-adjacent values
+    and `bps = 10000`.
 - Cross-contract calls (token transfer, NFT mint/settle, commitment_core reads)
 - Storage growth and data consistency for vectors and registries
 

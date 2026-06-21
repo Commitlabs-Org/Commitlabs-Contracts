@@ -72,9 +72,20 @@ pub fn checked_fee_from_bps(amount: i128, fee_bps: u32) -> Option<i128> {
         return None;
     }
 
-    amount
-        .checked_mul(fee_bps as i128)?
-        .checked_div(BPS_SCALE as i128)
+    let scale = BPS_SCALE as i128;
+    let bps = fee_bps as i128;
+    let whole = amount.checked_div(scale)?.checked_mul(bps)?;
+    let fractional = amount
+        .checked_rem(scale)?
+        .checked_mul(bps)?
+        .checked_div(scale)?;
+    whole.checked_add(fractional)
+}
+
+pub fn checked_fee_and_net_from_bps(amount: i128, fee_bps: u32) -> Option<(i128, i128)> {
+    let fee = checked_fee_from_bps(amount, fee_bps)?;
+    let net = amount.checked_sub(fee)?;
+    Some((fee, net))
 }
 
 pub fn observe_amount(amount: i128, fee_bps: u32) -> AmountObservation {
