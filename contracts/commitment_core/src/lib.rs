@@ -477,6 +477,9 @@ impl CommitmentCoreContract {
     /// 4. transfer tokens into this contract
     /// 5. invoke `commitment_nft::mint`
     ///
+    /// Creation fee math uses `fuzzing::checked_fee_from_bps` as the single
+    /// checked source of truth so arithmetic overflow maps to `ArithmeticOverflow`.
+    ///
     /// Because Soroban reverts the entire invocation on panic, a downstream NFT mint
     /// failure should roll back the earlier state writes and token transfer.
     pub fn create_commitment(
@@ -504,11 +507,11 @@ impl CommitmentCoreContract {
             .instance()
             .get(&DataKey::CreationFeeBps)
             .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
+        let creation_fee =
+            fuzzing::checked_fee_from_bps(amount, creation_fee_bps).unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "create");
+            });
         let net_amount = amount.checked_sub(creation_fee).unwrap_or_else(|| {
             set_reentrancy_guard(&e, false);
             fail(&e, CommitmentError::ArithmeticOverflow, "create");

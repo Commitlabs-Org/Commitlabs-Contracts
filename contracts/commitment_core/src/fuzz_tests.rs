@@ -138,4 +138,12 @@ fn test_create_commitment_rejects_fee_math_overflow() {
     assert_eq!(client.get_total_commitments(), 0);
     assert_eq!(client.get_total_value_locked(), 0);
     assert_eq!(client.get_collected_fees(&asset_address), 0);
+
+    client.set_creation_fee_bps(&admin, &0);
+    let retry_amount = 1_000i128;
+    let retry =
+        client.try_create_commitment(&owner, &retry_amount, &asset_address, &default_rules(&e));
+
+    assert!(retry.is_ok());
+    assert_eq!(client.get_total_commitments(), 1);
 }

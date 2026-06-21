@@ -79,7 +79,7 @@ The previous version of this file listed commitment_core fee infrastructure as *
 | `TransformationFeeBps` | Yes | `DataKey::TransformationFeeBps`, default `0` at init | ✅ |
 | `CollectedFees(asset)` | Yes | Credited in `create_tranches` | ✅ |
 | `FeeRecipient` | Yes | `set_fee_recipient` | ✅ |
-| Fee formula | `(total_value * bps) / 10_000` via `fees::fee_from_bps` | Lines ~529–543 | ✅ |
+| Fee formula | `(total_value * bps) / 10_000` via `fuzzing::checked_fee_from_bps` | Lines ~529–543 | ✅ |
 | Rounding / dust | Floor toward zero; tranche dust documented | Module docs lines ~27–35 | ✅ |
 | `set_transformation_fee` | 0–10000 bps | `fee_bps > 10000` → `InvalidFeeBps` | ✅ |
 | `withdraw_fees` | Admin, ledger cap | Lines ~1009–1031 | ✅ |
@@ -133,7 +133,8 @@ Prior `docs/FEES.md` listed marketplace fees as "TBD". They are now documented a
 | Item | `shared_utils::fees` | Used by |
 |------|---------------------|---------|
 | `BPS_SCALE` / `BPS_MAX` = 10_000 | `fees.rs` | `commitment_core`, `commitment_transformation` |
-| `fee_from_bps` — floor division | `fees.rs` | Creation, transformation fees |
+| `checked_fee_from_bps` — checked floor division | `commitment_core::fuzzing` | Creation fees |
+| `fee_from_bps` — floor division | `fees.rs` | Transformation fees |
 | `SafeMath::penalty_amount` — percent ÷ 100 | `math.rs` | `commitment_core::early_exit` |
 | `SafeMath::div(mul(price, bps), 10_000)` | `math.rs` | `commitment_marketplace` listings/auctions |
 

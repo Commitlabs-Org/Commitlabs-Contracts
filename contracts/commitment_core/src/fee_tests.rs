@@ -9,7 +9,7 @@
 
 #![cfg(test)]
 
-use crate::{CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
+use crate::{fuzzing, CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules};
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger},
@@ -239,6 +239,22 @@ fn test_create_commitment_with_max_fee() {
 
     // Verify all amount was collected as fee
     assert_eq!(client.get_collected_fees(&token_address), expected_fee);
+}
+
+#[test]
+fn test_checked_creation_fee_boundaries() {
+    assert_eq!(fuzzing::checked_fee_from_bps(1_000_000, 0), Some(0));
+    assert_eq!(
+        fuzzing::checked_fee_from_bps(1_000_000, 10_000),
+        Some(1_000_000)
+    );
+
+    let near_overflow_amount = i128::MAX / 10_000;
+    assert_eq!(
+        fuzzing::checked_fee_from_bps(near_overflow_amount, 10_000),
+        Some(near_overflow_amount)
+    );
+    assert_eq!(fuzzing::checked_fee_from_bps(i128::MAX, 2), None);
 }
 
 #[test]
