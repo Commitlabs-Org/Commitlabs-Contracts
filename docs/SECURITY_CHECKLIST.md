@@ -9,6 +9,14 @@
 ## Reentrancy protection
 - [ ] Validate guard set/clear in every state-changing function.
 - [ ] Confirm external calls are performed after state updates.
+- [x] Cover malicious-token reentry attempts through marketplace `buy_nft`,
+  `accept_offer`, and `end_auction` token transfers.
+- [x] Note: Soroban host rejects same-contract reentry before marketplace code
+  can return `ReentrancyDetected`; direct guard tests cover that contract error.
+- [x] Confirm marketplace guard state is clear after successful guarded paths
+  and after a token transfer revert.
+- [x] Confirm current `cancel_offer` has no token-refund external call surface;
+  revisit if offers become escrowed.
 
 ## Arithmetic safety
 - [ ] Check for unchecked arithmetic in all contracts.
