@@ -5,6 +5,7 @@ use super::*;
 use shared_utils::BatchMode;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Map, String, Vec,
 };
 
@@ -142,6 +143,62 @@ fn setup_initialized_engine_with_core(e: &Env) -> (Address, Address) {
     });
 
     (attestation_id, core_id)
+}
+
+fn setup_fee_accounting_fixture<'a>(
+    e: &'a Env,
+    commitment_name: &str,
+    attestation_fee: i128,
+) -> (
+    Address,
+    AttestationEngineContractClient<'a>,
+    Address,
+    Address,
+    Address,
+    Address,
+    String,
+) {
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(e, &attestation_id);
+
+    let admin = Address::generate(e);
+    let verifier = Address::generate(e);
+    let recipient = Address::generate(e);
+    let token_admin = Address::generate(e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let asset = token.address();
+    StellarAssetClient::new(e, &asset).mint(&verifier, &(attestation_fee * 4));
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &verifier);
+    client.set_attestation_fee(&admin, &attestation_fee, &asset);
+
+    let commitment_id = String::from_str(e, commitment_name);
+    let commitment = create_mock_commitment_with_status_internal(
+        e,
+        commitment_name,
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    (
+        attestation_id,
+        client,
+        admin,
+        verifier,
+        recipient,
+        asset,
+        commitment_id,
+    )
 }
 
 #[test]
@@ -582,6 +639,81 @@ fn test_record_fees_records_attestation_and_metrics() {
 
     let metrics = client.get_stored_health_metrics(&commitment_id).unwrap();
     assert_eq!(metrics.fees_generated, 250);
+}
+
+#[test]
+fn test_record_fees_protocol_fee_withdrawal_conserves_balances() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_fee = 1_000_000_000_000i128;
+    let (contract_id, client, admin, verifier, recipient, asset, commitment_id) =
+        setup_fee_accounting_fixture(&e, "fee_conservation", attestation_fee);
+    let token_client = TokenClient::new(&e, &asset);
+
+    client.set_fee_recipient(&admin, &recipient);
+    client.record_fees(&verifier, &commitment_id, &600_000_000_000i128);
+    client.record_fees(&verifier, &commitment_id, &400_000_000_000i128);
+
+    let collected = attestation_fee * 2;
+    assert_eq!(client.get_collected_fees(&asset), collected);
+    assert_eq!(token_client.balance(&contract_id), collected);
+
+    let recipient_before = token_client.balance(&recipient);
+    let withdrawn = 1_500_000_000_000i128;
+    client.withdraw_fees(&admin, &asset, &withdrawn);
+
+    assert_eq!(client.get_collected_fees(&asset), collected - withdrawn);
+    assert_eq!(token_client.balance(&contract_id), collected - withdrawn);
+    assert_eq!(token_client.balance(&recipient), recipient_before + withdrawn);
+
+    let metrics = client.get_stored_health_metrics(&commitment_id).unwrap();
+    assert_eq!(metrics.fees_generated, 1_000_000_000_000i128);
+}
+
+#[test]
+fn test_fee_withdrawal_errors_preserve_collected_fees() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (contract_id, client, admin, verifier, recipient, asset, commitment_id) =
+        setup_fee_accounting_fixture(&e, "fee_errors", 25i128);
+    let other_asset = e
+        .register_stellar_asset_contract_v2(Address::generate(&e))
+        .address();
+    let token_client = TokenClient::new(&e, &asset);
+
+    client.record_fees(&verifier, &commitment_id, &250i128);
+    assert_eq!(client.get_collected_fees(&asset), 25i128);
+
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset, &1i128),
+        Err(Ok(AttestationError::FeeRecipientNotSet))
+    );
+
+    client.set_fee_recipient(&admin, &recipient);
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &other_asset, &1i128),
+        Err(Ok(AttestationError::InsufficientFees))
+    );
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset, &26i128),
+        Err(Ok(AttestationError::InsufficientFees))
+    );
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset, &0i128),
+        Err(Ok(AttestationError::InvalidFeeAmount))
+    );
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset, &-1i128),
+        Err(Ok(AttestationError::InvalidFeeAmount))
+    );
+    assert_eq!(
+        client.try_record_fees(&verifier, &commitment_id, &-1i128),
+        Err(Ok(AttestationError::InvalidFeeAmount))
+    );
+
+    assert_eq!(client.get_collected_fees(&asset), 25i128);
+    assert_eq!(client.get_collected_fees(&other_asset), 0i128);
+    assert_eq!(token_client.balance(&contract_id), 25i128);
 }
 
 #[test]

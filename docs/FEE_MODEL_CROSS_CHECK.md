@@ -65,6 +65,7 @@ The previous version of this file listed commitment_core fee infrastructure as *
 | Topic | Detail |
 |-------|--------|
 | `record_fees` vs protocol fee | `record_fees` records `fee_generation` attestation **data** and updates `TotalFees` analytics. Protocol revenue is the fixed `AttestationFeeAmount` charged inside `write_attestation`. |
+| Fee accounting tests | `attestation_engine` tests cover `record_fees` with configured protocol fees, per-asset `CollectedFees`, successful withdrawal, unset recipient, over-withdraw, cross-asset isolation, and invalid negative amounts. |
 | `batch_attest` | Does **not** call `write_attestation`; verification fees are **not** collected on batch path. |
 | `record_drawdown` | May invoke `write_attestation` twice (drawdown + violation), charging verification fee up to twice per call when configured. |
 
