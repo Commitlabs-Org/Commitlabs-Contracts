@@ -57,8 +57,21 @@ The previous version of this file listed commitment_core fee infrastructure as *
 | `FeeRecipient` | Yes | `DataKey::FeeRecipient` | ✅ |
 | Fee collection in `write_attestation` | Transfer when `amount > 0` and asset set | Lines ~935–956 | ✅ |
 | `set_attestation_fee` | Admin, `amount >= 0` | Lines ~2103–2131 | ✅ |
-| `withdraw_fees` | Admin, positive amount, ledger cap | Lines ~2160–2196 | ✅ |
+| `withdraw_fees` | Admin, positive amount, recipient required, ledger cap | Lines ~2160–2196 | ✅ |
 | Getters | `get_attestation_fee`, `get_fee_recipient`, `get_collected_fees` | Lines ~2200–2220 | ✅ |
+
+### Fee-conservation regression tests
+
+Regression tests in `contracts/attestation_engine/src/tests.rs` now pin the
+protocol-fee ledger invariant for the attestation path:
+
+- configured attestation fees are transferred from verifier to contract and
+  credited to `CollectedFees(asset)` per attestation;
+- withdrawals conserve `collected == remaining + withdrawn` by decrementing the
+  ledger and transferring the same amount to `FeeRecipient`;
+- missing recipients, over-withdrawals, zero withdrawals, and negative fee
+  configuration are rejected with the expected errors; and
+- fees remain isolated by asset, so withdrawing asset A cannot drain asset B.
 
 ### Discrepancies / caveats
 
