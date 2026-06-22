@@ -1,7 +1,7 @@
 // Allocation Strategies Contract
 #![no_std]
 
-use shared_utils::{Pausable, RateLimiter};
+use shared_utils::{BatchError, BatchMode, BatchProcessor, Pausable, RateLimiter};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     IntoVal, Map, String, Symbol, TryIntoVal, Val, Vec,
@@ -101,6 +101,23 @@ pub struct AllocationSummary {
     pub strategy: Strategy,
     pub total_allocated: i128,
     pub allocations: Vec<Allocation>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchAllocateParams {
+    pub caller: Address,
+    pub commitment_id: String,
+    pub amount: i128,
+    pub strategy: Strategy,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchAllocateResult {
+    pub success: bool,
+    pub results: Vec<AllocationSummary>,
+    pub errors: Vec<BatchError>,
 }
 
 // Import Commitment types from commitment_core (re-defined here for cross-contract calls)
@@ -378,148 +395,127 @@ impl AllocationStrategiesContract {
         // at the protocol level, ensuring the address matches the transaction signer
         caller.require_auth();
 
-        Self::require_initialized(&env)?;
-        Self::require_no_reentrancy(&env)?;
+        Self::allocate_internal(env, caller, commitment_id, amount, strategy)
+    }
 
-        // Rate limit allocations per caller address
-        let fn_symbol = symbol_short!("alloc");
-        RateLimiter::check(&env, &caller, &fn_symbol);
+    /// Allocate multiple commitments in one call using shared batch limits.
+    ///
+    /// `BatchMode::Atomic` pre-validates every item against a simulated pool
+    /// liquidity view before writing; if any item fails, no allocations are
+    /// applied. `BatchMode::BestEffort` processes each item independently and
+    /// returns per-index errors while preserving successful allocations.
+    pub fn batch_allocate(
+        env: Env,
+        admin: Address,
+        params: Vec<BatchAllocateParams>,
+        mode: BatchMode,
+    ) -> BatchAllocateResult {
+        admin.require_auth();
 
-        // Set reentrancy guard
-        Self::set_reentrancy_guard(&env, true);
-
-        // Check if contract is paused
-        Pausable::require_not_paused(&env);
-
-        // Input validation
-        if amount <= 0 {
-            Self::set_reentrancy_guard(&env, false);
-            return Err(Error::InvalidAmount);
-        }
-
-        // Check commitment balance and status
-        let commitment_balance = Self::get_commitment_balance(&env, commitment_id.clone())?;
-        if amount > commitment_balance {
-            Self::set_reentrancy_guard(&env, false);
-            return Err(Error::InsufficientCommitmentBalance);
-        }
-
-        // Check for existing allocation (prevent double allocation)
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Allocations(commitment_id.clone()))
+        let batch_size = params.len();
+        let contract_name = String::from_str(&env, "allocation_logic");
+        if let Err(error_code) =
+            BatchProcessor::enforce_batch_limits(&env, batch_size, Some(contract_name))
         {
-            Self::set_reentrancy_guard(&env, false);
-            return Err(Error::AlreadyInitialized);
-        }
-
-        // Store allocation ownership
-        env.storage()
-            .persistent()
-            .set(&DataKey::AllocationOwner(commitment_id.clone()), &caller);
-
-        // Store the strategy
-        env.storage()
-            .persistent()
-            .set(&DataKey::Strategy(commitment_id.clone()), &strategy);
-
-        // Get pools based on strategy
-        let pools = Self::select_pools(&env, strategy)?;
-
-        if pools.is_empty() {
-            Self::set_reentrancy_guard(&env, false);
-            return Err(Error::NoSuitablePools);
-        }
-
-        // Calculate allocation amounts with overflow protection
-        let allocation_plan = Self::calculate_allocation(&env, amount, &pools, strategy)?;
-
-        // Execute allocations
-        let mut allocations = Vec::new(&env);
-        let mut total_allocated = 0i128;
-
-        for (pool_id, alloc_amount) in allocation_plan.iter() {
-            if alloc_amount <= 0 {
-                continue;
-            }
-
-            // Update pool liquidity with overflow check
-            let mut pool = Self::get_pool_internal(&env, pool_id)?;
-
-            // Check pool is active
-            if !pool.active {
-                Self::set_reentrancy_guard(&env, false);
-                return Err(Error::PoolInactive);
-            }
-
-            // Safe addition with overflow check
-            let new_liquidity = pool
-                .total_liquidity
-                .checked_add(alloc_amount)
-                .ok_or(Error::ArithmeticOverflow)?;
-
-            if new_liquidity > pool.max_capacity {
-                Self::set_reentrancy_guard(&env, false);
-                return Err(Error::PoolCapacityExceeded);
-            }
-
-            pool.total_liquidity = new_liquidity;
-            pool.updated_at = env.ledger().timestamp();
-            env.storage()
-                .persistent()
-                .set(&DataKey::Pool(pool_id), &pool);
-
-            // Record allocation
-            let allocation = Allocation {
-                commitment_id: commitment_id.clone(),
-                pool_id,
-                amount: alloc_amount,
-                timestamp: env.ledger().timestamp(),
+            let mut errors = Vec::new(&env);
+            errors.push_back(BatchError {
+                index: 0,
+                error_code,
+                context: String::from_str(&env, "batch_size_validation"),
+            });
+            return BatchAllocateResult {
+                success: false,
+                results: Vec::new(&env),
+                errors,
             };
-
-            allocations.push_back(allocation);
-
-            // Safe addition
-            total_allocated = total_allocated
-                .checked_add(alloc_amount)
-                .ok_or(Error::ArithmeticOverflow)?;
         }
 
-        // Verify total matches requested amount
-        if total_allocated != amount {
-            Self::set_reentrancy_guard(&env, false);
-            // Under-allocation should be treated as a capacity failure; over-allocation
-            // indicates a logic/arithmetic bug.
-            if total_allocated < amount {
-                return Err(Error::PoolCapacityExceeded);
+        if let Err(error) = Self::require_initialized(&env) {
+            let mut errors = Vec::new(&env);
+            errors.push_back(Self::batch_error(
+                &env,
+                0,
+                error,
+                String::from_str(&env, "not_initialized"),
+            ));
+            return BatchAllocateResult {
+                success: false,
+                results: Vec::new(&env),
+                errors,
+            };
+        }
+
+        if let Err(error) = Self::require_admin(&env, &admin) {
+            let mut errors = Vec::new(&env);
+            errors.push_back(Self::batch_error(
+                &env,
+                0,
+                error,
+                String::from_str(&env, "not_admin"),
+            ));
+            return BatchAllocateResult {
+                success: false,
+                results: Vec::new(&env),
+                errors,
+            };
+        }
+
+        Self::require_batch_callers_auth(&env, &admin, &params);
+
+        if mode == BatchMode::Atomic {
+            if let Err(error) = Self::validate_batch_allocations(&env, &params) {
+                return BatchAllocateResult {
+                    success: false,
+                    results: Vec::new(&env),
+                    errors: error,
+                };
             }
-            return Err(Error::ArithmeticOverflow);
         }
 
-        // Store allocations
-        env.storage()
-            .persistent()
-            .set(&DataKey::Allocations(commitment_id.clone()), &allocations);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TotalAllocated(commitment_id.clone()), &total_allocated);
+        let mut results = Vec::new(&env);
+        let mut errors = Vec::new(&env);
 
-        // Clear reentrancy guard
-        Self::set_reentrancy_guard(&env, false);
+        for i in 0..batch_size {
+            let param = params.get(i).unwrap();
+            match Self::allocate_internal(
+                env.clone(),
+                param.caller.clone(),
+                param.commitment_id.clone(),
+                param.amount,
+                param.strategy,
+            ) {
+                Ok(summary) => results.push_back(summary),
+                Err(error) => {
+                    let batch_error = Self::batch_error(
+                        &env,
+                        i,
+                        error,
+                        param.commitment_id.clone(),
+                    );
+                    if mode == BatchMode::Atomic {
+                        let mut atomic_errors = Vec::new(&env);
+                        atomic_errors.push_back(batch_error);
+                        return BatchAllocateResult {
+                            success: false,
+                            results: Vec::new(&env),
+                            errors: atomic_errors,
+                        };
+                    }
+                    errors.push_back(batch_error);
+                }
+            }
+        }
 
-        // Emit event
         env.events().publish(
-            (symbol_short!("allocate"), commitment_id.clone()),
-            (strategy, amount),
+            (Symbol::new(&env, "BatchAllocate"), batch_size),
+            (results.len(), errors.len(), env.ledger().timestamp()),
         );
 
-        Ok(AllocationSummary {
-            commitment_id,
-            strategy,
-            total_allocated,
-            allocations,
-        })
+        BatchAllocateResult {
+            success: errors.is_empty(),
+            results,
+            errors,
+        }
     }
 
     /// Rebalances an existing allocation using the stored strategy.
@@ -837,6 +833,258 @@ impl AllocationStrategiesContract {
         }
 
         Ok(commitment.current_value)
+    }
+
+    fn allocate_internal(
+        env: Env,
+        caller: Address,
+        commitment_id: String,
+        amount: i128,
+        strategy: Strategy,
+    ) -> Result<AllocationSummary, Error> {
+        Self::require_initialized(&env)?;
+        Self::require_no_reentrancy(&env)?;
+
+        let fn_symbol = symbol_short!("alloc");
+        RateLimiter::check(&env, &caller, &fn_symbol);
+
+        Self::set_reentrancy_guard(&env, true);
+        Pausable::require_not_paused(&env);
+
+        if amount <= 0 {
+            Self::set_reentrancy_guard(&env, false);
+            return Err(Error::InvalidAmount);
+        }
+
+        let commitment_balance = Self::get_commitment_balance(&env, commitment_id.clone())?;
+        if amount > commitment_balance {
+            Self::set_reentrancy_guard(&env, false);
+            return Err(Error::InsufficientCommitmentBalance);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Allocations(commitment_id.clone()))
+        {
+            Self::set_reentrancy_guard(&env, false);
+            return Err(Error::AlreadyInitialized);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllocationOwner(commitment_id.clone()), &caller);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Strategy(commitment_id.clone()), &strategy);
+
+        let pools = Self::select_pools(&env, strategy)?;
+        if pools.is_empty() {
+            Self::set_reentrancy_guard(&env, false);
+            return Err(Error::NoSuitablePools);
+        }
+
+        let allocation_plan = Self::calculate_allocation(&env, amount, &pools, strategy)?;
+        let mut allocations = Vec::new(&env);
+        let mut total_allocated = 0i128;
+
+        for (pool_id, alloc_amount) in allocation_plan.iter() {
+            if alloc_amount <= 0 {
+                continue;
+            }
+
+            let mut pool = Self::get_pool_internal(&env, pool_id)?;
+            if !pool.active {
+                Self::set_reentrancy_guard(&env, false);
+                return Err(Error::PoolInactive);
+            }
+
+            let new_liquidity = pool
+                .total_liquidity
+                .checked_add(alloc_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if new_liquidity > pool.max_capacity {
+                Self::set_reentrancy_guard(&env, false);
+                return Err(Error::PoolCapacityExceeded);
+            }
+
+            pool.total_liquidity = new_liquidity;
+            pool.updated_at = env.ledger().timestamp();
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(pool_id), &pool);
+
+            let allocation = Allocation {
+                commitment_id: commitment_id.clone(),
+                pool_id,
+                amount: alloc_amount,
+                timestamp: env.ledger().timestamp(),
+            };
+            allocations.push_back(allocation);
+            total_allocated = total_allocated
+                .checked_add(alloc_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        if total_allocated != amount {
+            Self::set_reentrancy_guard(&env, false);
+            if total_allocated < amount {
+                return Err(Error::PoolCapacityExceeded);
+            }
+            return Err(Error::ArithmeticOverflow);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allocations(commitment_id.clone()), &allocations);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalAllocated(commitment_id.clone()), &total_allocated);
+
+        Self::set_reentrancy_guard(&env, false);
+
+        env.events().publish(
+            (symbol_short!("allocate"), commitment_id.clone()),
+            (strategy, amount),
+        );
+
+        Ok(AllocationSummary {
+            commitment_id,
+            strategy,
+            total_allocated,
+            allocations,
+        })
+    }
+
+    fn require_batch_callers_auth(env: &Env, admin: &Address, params: &Vec<BatchAllocateParams>) {
+        let mut authorized = Vec::<Address>::new(env);
+        authorized.push_back(admin.clone());
+        for i in 0..params.len() {
+            let caller = params.get(i).unwrap().caller;
+            let mut already_authorized = false;
+            for existing in authorized.iter() {
+                if existing == caller {
+                    already_authorized = true;
+                    break;
+                }
+            }
+            if !already_authorized {
+                caller.require_auth();
+                authorized.push_back(caller);
+            }
+        }
+    }
+
+    fn batch_error(_env: &Env, index: u32, error: Error, context: String) -> BatchError {
+        BatchError {
+            index,
+            error_code: error as u32,
+            context,
+        }
+    }
+
+    fn validate_batch_allocations(
+        env: &Env,
+        params: &Vec<BatchAllocateParams>,
+    ) -> Result<(), Vec<BatchError>> {
+        let mut errors = Vec::new(env);
+        let mut simulated_pools = Map::<u32, Pool>::new(env);
+        let mut seen_commitments = Vec::<String>::new(env);
+
+        for i in 0..params.len() {
+            let param = params.get(i).unwrap();
+            if let Err(error) = Self::validate_batch_item(
+                env,
+                &param,
+                &mut simulated_pools,
+                &mut seen_commitments,
+            ) {
+                errors.push_back(Self::batch_error(
+                    env,
+                    i,
+                    error,
+                    param.commitment_id.clone(),
+                ));
+                return Err(errors);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_batch_item(
+        env: &Env,
+        param: &BatchAllocateParams,
+        simulated_pools: &mut Map<u32, Pool>,
+        seen_commitments: &mut Vec<String>,
+    ) -> Result<(), Error> {
+        if param.amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Allocations(param.commitment_id.clone()))
+        {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        for seen in seen_commitments.iter() {
+            if seen == param.commitment_id {
+                return Err(Error::AlreadyInitialized);
+            }
+        }
+        seen_commitments.push_back(param.commitment_id.clone());
+
+        let commitment_balance = Self::get_commitment_balance(env, param.commitment_id.clone())?;
+        if param.amount > commitment_balance {
+            return Err(Error::InsufficientCommitmentBalance);
+        }
+
+        let pools = Self::select_pools(env, param.strategy)?;
+        if pools.is_empty() {
+            return Err(Error::NoSuitablePools);
+        }
+
+        let allocation_plan = Self::calculate_allocation(env, param.amount, &pools, param.strategy)?;
+        let mut total_allocated = 0i128;
+
+        for (pool_id, alloc_amount) in allocation_plan.iter() {
+            if alloc_amount <= 0 {
+                continue;
+            }
+
+            let mut pool = simulated_pools
+                .get(pool_id)
+                .unwrap_or(Self::get_pool_internal(env, pool_id)?);
+            if !pool.active {
+                return Err(Error::PoolInactive);
+            }
+
+            let new_liquidity = pool
+                .total_liquidity
+                .checked_add(alloc_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if new_liquidity > pool.max_capacity {
+                return Err(Error::PoolCapacityExceeded);
+            }
+
+            pool.total_liquidity = new_liquidity;
+            simulated_pools.set(pool_id, pool);
+            total_allocated = total_allocated
+                .checked_add(alloc_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        if total_allocated != param.amount {
+            if total_allocated < param.amount {
+                return Err(Error::PoolCapacityExceeded);
+            }
+            return Err(Error::ArithmeticOverflow);
+        }
+
+        Ok(())
     }
 
     fn require_initialized(env: &Env) -> Result<(), Error> {

@@ -2,6 +2,7 @@
 #![cfg(feature = "benchmark")]
 
 use super::*;
+use shared_utils::BatchMode;
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 /// Benchmark helper to measure gas usage
@@ -119,7 +120,7 @@ fn benchmark_allocate() {
         let _ = AllocationStrategiesContract::allocate(
             e.clone(),
             caller.clone(),
-            1,
+            String::from_str(&e, "bench_allocate"),
             1000_0000000,
             Strategy::Safe,
         );
@@ -147,21 +148,20 @@ fn benchmark_get_allocation() {
             10000_0000000,
         )
         .unwrap();
-        AllocationStrategiesContract::allocate(
+        let _ = AllocationStrategiesContract::allocate(
             e.clone(),
             caller.clone(),
-            1,
+            String::from_str(&e, "bench_get_allocation"),
             1000_0000000,
             Strategy::Safe,
-        )
-        .unwrap();
+        );
     });
 
     let mut metrics = BenchmarkMetrics::new("get_allocation");
 
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
-        AllocationStrategiesContract::get_allocation(e.clone(), 1);
+        AllocationStrategiesContract::get_allocation(e.clone(), String::from_str(&e, "bench_get_allocation"));
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
@@ -221,19 +221,26 @@ fn benchmark_batch_allocate() {
 
     let mut metrics = BenchmarkMetrics::new("batch_allocate_10");
 
-    let start = e.ledger().sequence();
-    for i in 1..=10 {
-        let caller = Address::generate(&e);
-        e.as_contract(&contract_id, || {
-            let _ = AllocationStrategiesContract::allocate(
-                e.clone(),
-                caller.clone(),
-                i,
-                1000_0000000,
-                Strategy::Safe,
-            );
+    let caller = Address::generate(&e);
+    let mut params = Vec::new(&e);
+    for _ in 1..=10 {
+        params.push_back(BatchAllocateParams {
+            caller: caller.clone(),
+            commitment_id: String::from_str(&e, "bench_commit"),
+            amount: 1000_0000000,
+            strategy: Strategy::Safe,
         });
     }
+
+    let start = e.ledger().sequence();
+    e.as_contract(&contract_id, || {
+        let _ = AllocationStrategiesContract::batch_allocate(
+            e.clone(),
+            admin.clone(),
+            params,
+            BatchMode::BestEffort,
+        );
+    });
     let end = e.ledger().sequence();
     metrics.record_gas(start, end);
 

@@ -2,9 +2,10 @@
 extern crate std;
 
 use crate::{
-    AllocationStrategiesContract, AllocationStrategiesContractClient, Error, RiskLevel, Strategy,
-    Commitment, CommitmentRules, CURRENT_VERSION,
+    AllocationStrategiesContract, AllocationStrategiesContractClient, BatchAllocateParams,
+    Commitment, CommitmentRules, Error, RiskLevel, Strategy, CURRENT_VERSION,
 };
+use shared_utils::BatchMode;
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _, testutils::Ledger, Address, Env, Map, String,
     Symbol, Vec, IntoVal,
@@ -88,6 +89,191 @@ fn setup_test_pools(_env: &Env, client: &AllocationStrategiesContractClient, adm
     client.register_pool(admin, &3, &RiskLevel::Medium, &1200, &800_000_000);
     client.register_pool(admin, &4, &RiskLevel::High, &2000, &500_000_000);
     client.register_pool(admin, &5, &RiskLevel::High, &2500, &500_000_000);
+}
+
+fn batch_param(
+    env: &Env,
+    caller: &Address,
+    commitment_id: &str,
+    amount: i128,
+    strategy: Strategy,
+) -> BatchAllocateParams {
+    BatchAllocateParams {
+        caller: caller.clone(),
+        commitment_id: String::from_str(env, commitment_id),
+        amount,
+        strategy,
+    }
+}
+
+#[test]
+fn test_batch_allocate_atomic_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let caller = Address::generate(&env);
+    create_mock_commitment(&env, &core_id, "batch_1", 100_000_000, "active");
+    create_mock_commitment(&env, &core_id, "batch_2", 200_000_000, "active");
+
+    let params = soroban_sdk::vec![
+        &env,
+        batch_param(&env, &caller, "batch_1", 100_000_000, Strategy::Safe),
+        batch_param(&env, &caller, "batch_2", 200_000_000, Strategy::Balanced),
+    ];
+
+    let result = client.batch_allocate(&admin, &params, &BatchMode::Atomic);
+    assert!(result.success);
+    assert_eq!(result.results.len(), 2);
+    assert_eq!(result.errors.len(), 0);
+    assert_eq!(
+        client
+            .get_allocation(&String::from_str(&env, "batch_1"))
+            .total_allocated,
+        100_000_000
+    );
+    assert_eq!(
+        client
+            .get_allocation(&String::from_str(&env, "batch_2"))
+            .total_allocated,
+        200_000_000
+    );
+}
+
+#[test]
+fn test_batch_allocate_best_effort_partial_failure() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let caller = Address::generate(&env);
+    create_mock_commitment(&env, &core_id, "batch_ok", 100_000_000, "active");
+    create_mock_commitment(&env, &core_id, "batch_bad", 100_000_000, "active");
+    create_mock_commitment(&env, &core_id, "batch_after", 100_000_000, "active");
+
+    let params = soroban_sdk::vec![
+        &env,
+        batch_param(&env, &caller, "batch_ok", 100_000_000, Strategy::Safe),
+        batch_param(&env, &caller, "batch_bad", -1, Strategy::Safe),
+        batch_param(&env, &caller, "batch_after", 100_000_000, Strategy::Safe),
+    ];
+
+    let result = client.batch_allocate(&admin, &params, &BatchMode::BestEffort);
+    assert!(!result.success);
+    assert_eq!(result.results.len(), 2);
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors.get(0).unwrap().index, 1);
+    assert_eq!(result.errors.get(0).unwrap().error_code, Error::InvalidAmount as u32);
+    assert_eq!(
+        client
+            .get_allocation(&String::from_str(&env, "batch_ok"))
+            .total_allocated,
+        100_000_000
+    );
+    assert_eq!(
+        client
+            .get_allocation(&String::from_str(&env, "batch_after"))
+            .total_allocated,
+        100_000_000
+    );
+    assert_eq!(
+        client
+            .get_allocation(&String::from_str(&env, "batch_bad"))
+            .total_allocated,
+        0
+    );
+}
+
+#[test]
+fn test_batch_allocate_allows_admin_as_item_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    create_mock_commitment(&env, &core_id, "batch_admin", 50_000_000, "active");
+    let params = soroban_sdk::vec![
+        &env,
+        batch_param(&env, &admin, "batch_admin", 50_000_000, Strategy::Safe),
+    ];
+
+    let result = client.batch_allocate(&admin, &params, &BatchMode::Atomic);
+    assert!(result.success);
+    assert_eq!(result.results.len(), 1);
+    assert_eq!(result.errors.len(), 0);
+}
+
+#[test]
+fn test_batch_allocate_atomic_capacity_failure_writes_nothing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &150_000_000);
+
+    let caller = Address::generate(&env);
+    create_mock_commitment(&env, &core_id, "batch_cap_1", 100_000_000, "active");
+    create_mock_commitment(&env, &core_id, "batch_cap_2", 100_000_000, "active");
+
+    let params = soroban_sdk::vec![
+        &env,
+        batch_param(&env, &caller, "batch_cap_1", 100_000_000, Strategy::Safe),
+        batch_param(&env, &caller, "batch_cap_2", 100_000_000, Strategy::Safe),
+    ];
+
+    let result = client.batch_allocate(&admin, &params, &BatchMode::Atomic);
+    assert!(!result.success);
+    assert_eq!(result.results.len(), 0);
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(
+        result.errors.get(0).unwrap().error_code,
+        Error::PoolCapacityExceeded as u32
+    );
+    assert_eq!(
+        client
+            .get_allocation(&String::from_str(&env, "batch_cap_1"))
+            .total_allocated,
+        0
+    );
+    assert_eq!(client.get_pool(&0).total_liquidity, 0);
+}
+
+#[test]
+fn test_batch_allocate_empty_batch_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _core_id, client) = create_contract(&env);
+    let params = Vec::<BatchAllocateParams>::new(&env);
+
+    let result = client.batch_allocate(&admin, &params, &BatchMode::BestEffort);
+    assert!(!result.success);
+    assert_eq!(result.results.len(), 0);
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors.get(0).unwrap().error_code, 1);
+}
+
+#[test]
+fn test_batch_allocate_accepts_default_max_batch_size() {
+    let env = Env::default();
+    env.budget().reset_unlimited();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    client.register_pool(&admin, &0, &RiskLevel::Low, &500, &10_000_000_000);
+
+    let caller = Address::generate(&env);
+    let mut params = Vec::new(&env);
+    for i in 0..50 {
+        let id = std::format!("batch_max_{}", i);
+        create_mock_commitment(&env, &core_id, &id, 1_000_000, "active");
+        params.push_back(batch_param(&env, &caller, &id, 1_000_000, Strategy::Safe));
+    }
+
+    let result = client.batch_allocate(&admin, &params, &BatchMode::Atomic);
+    assert!(result.success);
+    assert_eq!(result.results.len(), 50);
+    assert_eq!(result.errors.len(), 0);
+    assert_eq!(client.get_pool(&0).total_liquidity, 50_000_000);
 }
 
 #[test]

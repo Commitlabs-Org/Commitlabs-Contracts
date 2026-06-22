@@ -12,6 +12,9 @@ This page is an operational guide for integrators interacting with the `allocati
 - Allocation entry points are **caller-authorized**:
   - `allocate(caller, ...)` requires `caller.require_auth()`.
   - `rebalance(caller, commitment_id)` requires `caller.require_auth()` and `caller` must match the stored allocation owner for `commitment_id`.
+- Batch allocation is **admin/operator-authorized**:
+  - `batch_allocate(admin, params, mode)` requires `admin.require_auth()` and `admin` must match the stored `Admin`.
+  - Each batch item still uses the regular `allocate(caller, ...)` path, so the item caller must also authorize and rate-limit/capacity/reentrancy checks remain unchanged.
 
 The contract does not validate commitment ownership against `commitment_core`; allocations are tracked locally within `allocation_logic` (see `docs/ARCHITECTURE.md`).
 
@@ -102,6 +105,22 @@ If the requested amount cannot be fully satisfied across the eligible pools due 
 
 This is a hard failure (no partial success), and state changes are reverted by the transaction.
 
+## Batch Allocation Semantics
+
+`batch_allocate(admin, params, mode) -> BatchAllocateResult`
+
+Batch allocation accepts a bounded vector of `BatchAllocateParams` and uses `shared_utils::BatchProcessor` limits. The default maximum batch size is 50 unless the shared batch configuration is overridden.
+
+Modes:
+
+- `BatchMode::Atomic`: pre-validates all items against a simulated pool-liquidity view. If any item would fail, the result contains one `BatchError` and no allocations are written.
+- `BatchMode::BestEffort`: processes items independently. Successful items are committed, failing items are reported by index in `errors`, and later items continue.
+
+Per-item behavior:
+
+- Each item follows the same allocation logic as `allocate`, including commitment balance/status lookup, pool activity checks, deterministic rounding, capacity enforcement, duplicate-allocation rejection, and reentrancy cleanup.
+- Capacity checks account for earlier successful items in the same batch. In atomic mode this happens during preflight; in best-effort mode this happens naturally as successful items update pool liquidity.
+- Empty batches and batches over the configured limit return a failed `BatchAllocateResult` with a batch-size validation error.
 
 ## Capacity Boundary Test Matrix
 
