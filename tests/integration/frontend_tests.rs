@@ -406,10 +406,11 @@ fn test_frontend_early_exit_flow() {
             )
         });
 
-    // Verify user received funds back (minus penalty)
+    // Verify user received funds back (minus pro-rata penalty)
     let balance_after = harness.balance(user);
     let penalty_percent = 10u32; // From default_rules (Balanced)
-    let expected_return = amount - (amount * penalty_percent as i128 / 100);
+    let max_penalty = amount * penalty_percent as i128 / 100;
+    let expected_return = amount - (max_penalty / 2);
     assert_eq!(balance_after - balance_before, expected_return);
 
     // Verify commitment status changed

@@ -223,8 +223,9 @@ fn test_e2e_early_exit_with_penalty() {
         String::from_str(&harness.env, "early_exit")
     );
 
-    // Verify penalty was applied
-    let expected_penalty = amount * early_exit_penalty as i128 / 100;
+    // Verify pro-rata penalty was applied after 10 of 30 days elapsed.
+    let max_penalty = amount * early_exit_penalty as i128 / 100;
+    let expected_penalty = (max_penalty * 20 + 29) / 30;
     let expected_return = amount - expected_penalty;
     let balance_after_exit = harness.balance(user);
 
