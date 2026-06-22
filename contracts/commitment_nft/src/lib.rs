@@ -54,6 +54,8 @@ pub const CURRENT_VERSION: u32 = 2;
 // Issue #139: String parameter constraints
 #[allow(dead_code)]
 const MAX_COMMITMENT_ID_LENGTH: u32 = 256;
+const MAX_ROYALTY_BPS: u32 = 1_000;
+const BPS_DENOMINATOR: i128 = 10_000;
 
 // ============================================================================
 // Error Types
@@ -108,6 +110,10 @@ pub enum ContractError {
     InvalidCommitmentId = 21,
     /// Given address is a zero/invalid address
     InvalidAddress = 22,
+    /// Royalty bps exceeds the configured cap
+    RoyaltyTooHigh = 23,
+    /// Royalty calculation overflowed
+    ArithmeticOverflow = 24,
 }
 
 // ============================================================================
@@ -200,6 +206,10 @@ pub enum DataKey {
     ReentrancyGuard,
     /// Contract version
     Version,
+    /// Royalty rate in basis points
+    RoyaltyBps,
+    /// Royalty recipient address
+    RoyaltyRecipient,
     /// Mapping from commitment_id to token_id for reverse lookup (commitment_id -> token_id)
     CommitmentIdIndex(String),
 }
@@ -274,6 +284,10 @@ impl CommitmentNFTContract {
 
         e.storage().instance().set(&DataKey::Admin, &admin);
         e.storage().instance().set(&DataKey::TokenCounter, &0u32);
+        e.storage().instance().set(&DataKey::RoyaltyBps, &0u32);
+        e.storage()
+            .instance()
+            .set(&DataKey::RoyaltyRecipient, &admin);
 
         // Initialize empty token IDs vector (persistent storage for scalability)
         let token_ids: Vec<u32> = Vec::new(&e);
@@ -587,6 +601,67 @@ impl CommitmentNFTContract {
         Ok(())
     }
 
+    /// Configure secondary-sale royalty information (admin-only).
+    ///
+    /// `royalty_bps` is capped at 1,000 bps (10%). A zero rate is allowed and
+    /// makes `royalty_info` return amount `0` while preserving the recipient.
+    pub fn set_royalty(
+        e: Env,
+        caller: Address,
+        royalty_recipient: Address,
+        royalty_bps: u32,
+    ) -> Result<(), ContractError> {
+        require_admin(&e, &caller)?;
+        if is_zero_address(&e, &royalty_recipient) {
+            return Err(ContractError::InvalidAddress);
+        }
+        if royalty_bps > MAX_ROYALTY_BPS {
+            return Err(ContractError::RoyaltyTooHigh);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::RoyaltyRecipient, &royalty_recipient);
+        e.storage().instance().set(&DataKey::RoyaltyBps, &royalty_bps);
+        Ok(())
+    }
+
+    /// Return the EIP-2981-style royalty recipient and amount for a sale.
+    ///
+    /// The token must exist. The amount is `floor(sale_price * royalty_bps / 10_000)`.
+    pub fn royalty_info(
+        e: Env,
+        token_id: u32,
+        sale_price: i128,
+    ) -> Result<(Address, i128), ContractError> {
+        if sale_price < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let _: CommitmentNFT = e
+            .storage()
+            .persistent()
+            .get(&DataKey::NFT(token_id))
+            .ok_or(ContractError::TokenNotFound)?;
+
+        let recipient: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::RoyaltyRecipient)
+            .ok_or(ContractError::NotInitialized)?;
+        let royalty_bps: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::RoyaltyBps)
+            .unwrap_or(0);
+
+        let amount = sale_price
+            .checked_mul(royalty_bps as i128)
+            .and_then(|v| v.checked_div(BPS_DENOMINATOR))
+            .ok_or(ContractError::ArithmeticOverflow)?;
+        Ok((recipient, amount))
+    }
+
     /// Upgrade contract WASM (admin-only).
     pub fn upgrade(
         e: Env,
@@ -623,6 +698,19 @@ impl CommitmentNFTContract {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
+        }
+        if !e.storage().instance().has(&DataKey::RoyaltyBps) {
+            e.storage().instance().set(&DataKey::RoyaltyBps, &0u32);
+        }
+        if !e.storage().instance().has(&DataKey::RoyaltyRecipient) {
+            let admin: Address = e
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(ContractError::NotInitialized)?;
+            e.storage()
+                .instance()
+                .set(&DataKey::RoyaltyRecipient, &admin);
         }
 
         e.storage()

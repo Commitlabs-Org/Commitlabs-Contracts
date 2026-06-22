@@ -18,9 +18,17 @@ The `commitment_nft` contract mints and manages commitment NFTs that represent l
 - `add_authorized_contract(caller: Address, contract_address: Address) -> Result<(), ContractError>`
   - Admin-only. Adds a minter to the whitelist so it may call `mint`.
 
+- `set_royalty(caller: Address, royalty_recipient: Address, royalty_bps: u32) -> Result<(), ContractError>`
+  - Admin-only. Sets the secondary-sale royalty recipient and rate.
+  - Notes: `royalty_bps` is capped at 1,000 bps (10%). A zero rate is allowed.
+
 - `mint(caller: Address, owner: Address, _commitment_id: String, duration_days: u32, max_loss_percent: u32, commitment_type: String, initial_amount: i128, asset_address: Address, early_exit_penalty: u32) -> Result<u32, ContractError>`
   - Creates a new `CommitmentNFT` and returns the minted `token_id`.
   - Notes: user-supplied `commitment_id` is ignored; the contract auto-generates `COMMIT_{token_id}` and indexes it for reverse lookup.
+
+- `royalty_info(token_id: u32, sale_price: i128) -> Result<(Address, i128), ContractError>`
+  - Returns the royalty recipient and `floor(sale_price * royalty_bps / 10_000)`.
+  - Errors: `TokenNotFound` if the token does not exist; `InvalidAmount` if `sale_price` is negative.
 
 - `get_metadata(token_id: u32) -> Result<CommitmentNFT, ContractError>`
   - Returns the stored `CommitmentNFT`.
@@ -35,6 +43,8 @@ The `commitment_nft` contract mints and manages commitment NFTs that represent l
 - `commitment_type` must be one of: `"safe"`, `"balanced"`, `"aggressive"`. Otherwise `InvalidCommitmentType`.
 - `initial_amount` must be > 0 (signed i128). Otherwise `InvalidAmount`.
 - `owner` must not be the "zero" Stellar address (contract uses canonical zero address string). Otherwise `TransferToZeroAddress`.
+- `royalty_bps` must be <= 1,000. Otherwise `RoyaltyTooHigh`.
+- `sale_price` passed to `royalty_info` must be >= 0. Otherwise `InvalidAmount`.
 - Expiration timestamp calculation checks for overflow and returns `ExpirationOverflow` if duration math overflows u64.
 
 Note: There is no global supply cap implemented in the contract. If a supply or per-owner cap is required, the integrator should request an enhancement; tests will be added to reflect the chosen policy once implemented.
@@ -69,6 +79,8 @@ See `ContractError` enum in `contracts/commitment_nft/src/lib.rs` for full list.
 - `ReentrancyDetected` = 14
 - `ExpirationOverflow` = 20
 - `TransferToZeroAddress` = 18
+- `RoyaltyTooHigh` = 23
+- `ArithmeticOverflow` = 24
 
 ## Testing notes
 
@@ -82,6 +94,7 @@ cargo test -p commitment_nft --target wasm32v1-none --release
 
 - If the wasm target is not installed, tests will fail to compile (error: can't find crate for `core`).
 - The test suite includes checks for parameter validation, events, reverse lookup, and reentrancy guard behavior.
+- Royalty tests cover the default zero-rate configuration, the 10% cap, floor rounding, missing tokens, and negative sale prices.
 
 ## Integration recommendation
 

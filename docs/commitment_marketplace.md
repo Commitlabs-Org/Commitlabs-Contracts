@@ -38,6 +38,7 @@ This page documents the public entry points, access control, and security notes 
 ## Integrator Notes
 - Integrators should expect deterministic errors for all invalid operations.
 - All public APIs are documented with Rustdoc/NatSpec comments in the contract source.
+- Marketplace settlement can call the NFT contract's `royalty_info(token_id, sale_price)` before fee and seller proceeds are finalized. The returned amount should be paid to the royalty recipient, with the remaining proceeds split according to the marketplace fee rules.
 - See also: `docs/CONTRACT_FUNCTIONS.md` for cross-contract summary.
 
 ## Changelog
