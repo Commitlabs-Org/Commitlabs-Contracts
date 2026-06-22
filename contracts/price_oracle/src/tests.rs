@@ -74,6 +74,19 @@ fn upload_wasm(e: &Env) -> BytesN<32> {
     e.deployer().upload_contract_wasm(wasm)
 }
 
+fn write_price_sample(
+    e: &Env,
+    client: &PriceOracleContractClient,
+    oracle: &Address,
+    asset: &Address,
+    price: i128,
+) {
+    client.set_price(oracle, asset, &price, &8);
+    e.ledger().with_mut(|li| {
+        li.timestamp += 1;
+    });
+}
+
 #[test]
 fn test_initialize() {
     let e = Env::default();
@@ -929,7 +942,9 @@ fn test_get_price_high_value_high_value() {
         PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
     });
 
-    client.set_price(&oracle, &asset, &1000_00000000, &8);
+    write_price_sample(&e, &client, &oracle, &asset, 998_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 1000_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 1002_00000000);
     
     // High value operation ($2000 USD) should use 5-minute staleness
     let data = client.get_price_high_value(
@@ -938,6 +953,144 @@ fn test_get_price_high_value_high_value() {
         &10 // 10% max deviation
     );
     assert_eq!(data.price, 1000_00000000);
+}
+
+#[test]
+fn test_get_price_for_high_value_requires_min_fresh_samples() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    write_price_sample(&e, &client, &oracle, &asset, 1000_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 1001_00000000);
+
+    assert_eq!(
+        client.try_get_price_high_value(
+            &asset,
+            &200_000_000_000,
+            &10
+        ),
+        Err(Ok(OracleError::StalePrice))
+    );
+}
+
+#[test]
+fn test_get_price_high_value_uses_odd_median_and_drops_outlier() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    write_price_sample(&e, &client, &oracle, &asset, 100_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 101_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 10_000_00000000);
+
+    let data = client.get_price_high_value(&asset, &200_000_000_000, &10);
+    assert_eq!(data.price, 101_00000000);
+}
+
+#[test]
+fn test_get_price_high_value_uses_even_median_average() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    write_price_sample(&e, &client, &oracle, &asset, 100_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 101_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 102_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 10_000_00000000);
+
+    let data = client.get_price_high_value(&asset, &200_000_000_000, &10);
+    assert_eq!(data.price, 101_50000000);
+}
+
+#[test]
+fn test_get_price_high_value_ignores_stale_samples() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        PriceOracleContract::add_oracle(e.clone(), admin.clone(), oracle.clone()).unwrap();
+    });
+
+    write_price_sample(&e, &client, &oracle, &asset, 100_00000000);
+    write_price_sample(&e, &client, &oracle, &asset, 101_00000000);
+    e.ledger().with_mut(|li| {
+        li.timestamp += 301;
+    });
+    write_price_sample(&e, &client, &oracle, &asset, 102_00000000);
+
+    assert_eq!(
+        client.try_get_price_high_value(
+            &asset,
+            &200_000_000_000,
+            &10
+        ),
+        Err(Ok(OracleError::StalePrice))
+    );
+}
+
+#[test]
+fn test_get_price_for_high_value_even_median_overflow_rejects() {
+    let e = Env::default();
+    let admin = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+        let mut samples = Vec::new(&e);
+        samples.push_back(PriceData { price: 1, updated_at: 1, decimals: 8 });
+        samples.push_back(PriceData { price: i128::MAX, updated_at: 2, decimals: 8 });
+        samples.push_back(PriceData { price: i128::MAX, updated_at: 3, decimals: 8 });
+        samples.push_back(PriceData { price: i128::MAX, updated_at: 4, decimals: 8 });
+        e.storage()
+            .instance()
+            .set(&DataKey::PriceSamples(asset.clone()), &samples);
+    });
+    e.ledger().with_mut(|li| {
+        li.timestamp = 4;
+    });
+
+    let result = client.try_get_price_high_value(
+        &asset,
+        &200_000_000_000,
+        &10
+    );
+    assert!(result.is_err());
 }
 
 #[test]
@@ -1041,7 +1194,9 @@ fn test_oracle_consumer_integration_scenario() {
 
     // Set realistic prices
     client.set_price(&oracle, &usdc_asset, &1_00000000, &8); // $1 USDC
-    client.set_price(&oracle, &eth_asset, &3000_00000000, &8); // $3000 ETH
+    write_price_sample(&e, &client, &oracle, &eth_asset, 2998_00000000);
+    write_price_sample(&e, &client, &oracle, &eth_asset, 3000_00000000);
+    write_price_sample(&e, &client, &oracle, &eth_asset, 3002_00000000);
 
     // Simulate commitment_core operation - high value commitment
     let commitment_value = 500_000_000_000; // $5000 USD

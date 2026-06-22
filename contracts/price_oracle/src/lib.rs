@@ -10,8 +10,10 @@
 //! This contract is a push-based oracle registry. It assumes:
 //! - Oracle addresses added by the admin are trusted to publish honest prices
 //! - Consumers enforce freshness through `get_price_valid` and `max_staleness_seconds`
-//! - A single whitelisted oracle update can replace the latest value for an asset
-//! - There is no medianization, TWAP, quorum, or cross-source reconciliation on-chain
+//! - `get_price` and `get_price_valid` expose the latest whitelisted update for
+//!   low-value consumers.
+//! - High-value readers use a bounded recent-sample median path that requires
+//!   multiple fresh samples before returning a price.
 //!
 //! Integrators should only use this contract when those trust assumptions are acceptable
 //! for their asset and risk model. See:
@@ -23,6 +25,9 @@ use soroban_sdk::{
 };
 
 pub const CURRENT_VERSION: u32 = 1;
+const PRICE_SAMPLE_CAP: u32 = 16;
+const HIGH_VALUE_MIN_SAMPLES: u32 = 3;
+const HIGH_VALUE_THRESHOLD_USD_8DEC: i128 = 10_000_000_000;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -70,6 +75,8 @@ pub enum DataKey {
     OracleWhitelist(Address),
     /// Price per asset: asset_address -> PriceData
     Price(Address),
+    /// Bounded recent price samples per asset for high-value median reads
+    PriceSamples(Address),
     /// Oracle configuration (v1+)
     OracleConfig,
     /// Contract version
@@ -141,6 +148,103 @@ fn set_max_staleness_internal(e: &Env, seconds: u64) {
             .instance()
             .set(&DataKey::MaxStalenessSeconds, &seconds);
     }
+}
+
+fn read_price_samples(e: &Env, asset: &Address) -> Vec<PriceData> {
+    e.storage()
+        .instance()
+        .get::<_, Vec<PriceData>>(&DataKey::PriceSamples(asset.clone()))
+        .unwrap_or(Vec::new(e))
+}
+
+fn push_price_sample(e: &Env, asset: &Address, data: &PriceData) {
+    let mut samples = read_price_samples(e, asset);
+    samples.push_back(data.clone());
+    while samples.len() > PRICE_SAMPLE_CAP {
+        samples.remove(0);
+    }
+    e.storage()
+        .instance()
+        .set(&DataKey::PriceSamples(asset.clone()), &samples);
+}
+
+fn sort_prices(prices: &Vec<i128>) -> Vec<i128> {
+    let mut sorted = prices.clone();
+    let len = sorted.len();
+    let mut i = 0;
+    while i < len {
+        let mut j = i + 1;
+        while j < len {
+            let left = sorted.get(i).unwrap();
+            let right = sorted.get(j).unwrap();
+            if right < left {
+                sorted.set(i, right);
+                sorted.set(j, left);
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    sorted
+}
+
+fn median_price(prices: &Vec<i128>) -> i128 {
+    let sorted = sort_prices(prices);
+    let len = sorted.len();
+    if len == 0 {
+        return 0;
+    }
+
+    let mid = len / 2;
+    if len % 2 == 1 {
+        sorted.get(mid).unwrap()
+    } else {
+        let left = sorted.get(mid - 1).unwrap();
+        let right = sorted.get(mid).unwrap();
+        SafeMath::div(SafeMath::add(left, right), 2)
+    }
+}
+
+fn compute_fresh_median(
+    e: &Env,
+    asset: &Address,
+    max_staleness_seconds: u64,
+    min_samples: u32,
+) -> Result<PriceData, OracleError> {
+    let now = e.ledger().timestamp();
+    let samples = read_price_samples(e, asset);
+    let mut fresh_prices = Vec::new(e);
+    let mut latest_updated_at = 0u64;
+    let mut decimals = 0u32;
+
+    for sample in samples.iter() {
+        if sample.price <= 0 {
+            continue;
+        }
+        if now < sample.updated_at || now - sample.updated_at > max_staleness_seconds {
+            continue;
+        }
+        if fresh_prices.is_empty() {
+            decimals = sample.decimals;
+        }
+        if sample.decimals != decimals {
+            continue;
+        }
+        if sample.updated_at > latest_updated_at {
+            latest_updated_at = sample.updated_at;
+        }
+        fresh_prices.push_back(sample.price);
+    }
+
+    if fresh_prices.len() < min_samples {
+        return Err(OracleError::StalePrice);
+    }
+
+    Ok(PriceData {
+        price: median_price(&fresh_prices),
+        updated_at: latest_updated_at,
+        decimals,
+    })
 }
 
 fn require_admin_result(e: &Env, caller: &Address) -> Result<(), OracleError> {
@@ -260,6 +364,7 @@ impl PriceOracleContract {
         e.storage()
             .instance()
             .set(&DataKey::Price(asset.clone()), &data);
+        push_price_sample(&e, &asset, &data);
         e.events().publish(
             (symbol_short!("PriceSet"), asset),
             (price, updated_at, decimals),
@@ -560,7 +665,7 @@ impl PriceOracleContract {
     /// 
     /// Provides enhanced validation for operations involving significant value:
     /// - Stricter staleness requirements (60 seconds for high-value ops)
-    /// - Price deviation checks against historical averages
+    /// - Median aggregation across recent fresh samples for high-value operations
     /// - Additional validation for critical financial operations
     /// 
     /// # Parameters
@@ -574,13 +679,14 @@ impl PriceOracleContract {
     /// 
     /// # Security Notes
     /// - High-value operations require fresher price data
-    /// - Historical deviation checks prevent manipulation attacks
+    /// - Fresh-sample median checks prevent a single latest update from dominating
+    ///   high-value reads. Normal-value reads preserve the latest-price path.
     /// - Use for settlements, large transfers, or critical operations
     pub fn get_price_high_value(
         e: Env,
         asset: Address,
         operation_value_usd: i128,
-        max_deviation_percent: u32,
+        _max_deviation_percent: u32,
     ) -> Result<PriceData, OracleError> {
         // Dynamic staleness based on operation value
         let staleness = if operation_value_usd > 100_000_000_000 { // > $1,000 USD in 8 decimals
@@ -591,7 +697,17 @@ impl PriceOracleContract {
             900 // 15 minutes for normal value
         };
 
-        let data = Self::get_price_valid(e, asset.clone(), Some(staleness))?;
+        let data = if operation_value_usd > HIGH_VALUE_THRESHOLD_USD_8DEC {
+            let configured_staleness = read_config(&e).max_staleness_seconds;
+            let sample_staleness = if configured_staleness < staleness {
+                configured_staleness
+            } else {
+                staleness
+            };
+            compute_fresh_median(&e, &asset, sample_staleness, HIGH_VALUE_MIN_SAMPLES)?
+        } else {
+            Self::get_price_valid(e.clone(), asset.clone(), Some(staleness))?
+        };
 
         // Additional high-value validations
         if data.price <= 0 {

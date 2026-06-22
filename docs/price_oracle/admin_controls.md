@@ -16,6 +16,7 @@ The `price_oracle` contract is a trusted-publisher registry. Only addresses whit
 | `add_oracle(caller, oracle_address)` | Add a trusted price publisher | Admin require_auth | Whitelisted oracle can overwrite the latest price for any asset it updates |
 | `remove_oracle(caller, oracle_address)` | Remove a trusted price publisher | Admin require_auth | Prevents further updates from that address |
 | `set_admin(caller, new_admin)` | Transfer oracle admin authority | Admin require_auth | Transfers control over whitelist and configuration |
+| `get_price_high_value(asset, operation_value_usd, max_deviation_percent)` | Read with high-value validation | Public read | Uses latest-price validation for normal values and requires a bounded fresh-sample median for high-value operations |
 
 ## Oracle Rotation
 
@@ -28,7 +29,8 @@ Oracle rotation is performed by removing an old oracle address and adding a new 
 ## Security Notes
 - Only the admin can modify the whitelist. Attempts by non-admins will fail with `Unauthorized`.
 - Whitelisted oracles are trusted to publish honest prices. Compromised oracles can overwrite the latest price for any asset.
-- Downstream contracts should always use `get_price_valid` and set appropriate staleness windows.
+- Downstream contracts should always use `get_price_valid` and set appropriate staleness windows for low-value reads.
+- High-value downstream contracts should use `get_price_high_value`. That path requires at least three fresh positive samples for operation values above the high-value threshold and returns the median sample price, which limits the impact of a single outlier update.
 
 ## See Also
 - [CONTRACT_FUNCTIONS.md](../CONTRACT_FUNCTIONS.md#price_oracle)
