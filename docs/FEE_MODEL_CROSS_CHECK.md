@@ -24,7 +24,7 @@ All four contracts are now documented in a single reconciled view in `docs/FEES.
 | `CreationFeeBps` storage | Yes | `DataKey::CreationFeeBps` | ✅ |
 | `CollectedFees(Address)` | Yes | `DataKey::CollectedFees(Address)` | ✅ |
 | `FeeRecipient` | Yes | `DataKey::FeeRecipient` | ✅ |
-| Creation fee on `create_commitment` | `fee_from_bps`, credit `CollectedFees` | Lines ~478–635 | ✅ |
+| Creation fee on `create_commitment` | `checked_fee_from_bps`, credit `CollectedFees` | Lines ~478–635 | ✅ |
 | Early exit penalty to `CollectedFees` | `SafeMath::penalty_amount` (percent / 100) | Lines ~1190–1204 | ✅ |
 | `set_creation_fee_bps` validates 0–10000 | Yes | `bps > fees::BPS_MAX` | ✅ |
 | `withdraw_fees` semantics | Treasurer/Admin, recipient required, cap by ledger | Lines ~1495–1537 | ✅ |
@@ -133,7 +133,8 @@ Prior `docs/FEES.md` listed marketplace fees as "TBD". They are now documented a
 | Item | `shared_utils::fees` | Used by |
 |------|---------------------|---------|
 | `BPS_SCALE` / `BPS_MAX` = 10_000 | `fees.rs` | `commitment_core`, `commitment_transformation` |
-| `fee_from_bps` — floor division | `fees.rs` | Creation, transformation fees |
+| `fee_from_bps` — floor division | `fees.rs` | Transformation fees |
+| `checked_fee_from_bps` — checked floor division with `Option` overflow signaling | `commitment_core::fuzzing` | Commitment creation fees |
 | `SafeMath::penalty_amount` — percent ÷ 100 | `math.rs` | `commitment_core::early_exit` |
 | `SafeMath::div(mul(price, bps), 10_000)` | `math.rs` | `commitment_marketplace` listings/auctions |
 

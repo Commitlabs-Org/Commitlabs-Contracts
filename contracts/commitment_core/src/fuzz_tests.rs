@@ -8,10 +8,8 @@ use crate::{
     CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules,
 };
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env, String,
+    contract, contractimpl, testutils::Address as _, token::StellarAssetClient, Address, Env,
+    String,
 };
 
 #[contract]
@@ -121,6 +119,7 @@ fn test_create_commitment_rejects_fee_math_overflow() {
 
     let admin = Address::generate(&e);
     let owner = Address::generate(&e);
+    let second_owner = Address::generate(&e);
     let token_admin = Address::generate(&e);
     let amount = i128::MAX;
 
@@ -128,6 +127,7 @@ fn test_create_commitment_rejects_fee_math_overflow() {
     let asset_address = token_contract.address();
     let token_admin_client = StellarAssetClient::new(&e, &asset_address);
     token_admin_client.mint(&owner, &amount);
+    token_admin_client.mint(&second_owner, &1_000);
 
     client.initialize(&admin, &nft_contract);
     client.set_creation_fee_bps(&admin, &2);
@@ -138,4 +138,10 @@ fn test_create_commitment_rejects_fee_math_overflow() {
     assert_eq!(client.get_total_commitments(), 0);
     assert_eq!(client.get_total_value_locked(), 0);
     assert_eq!(client.get_collected_fees(&asset_address), 0);
+
+    client.set_creation_fee_bps(&admin, &100);
+    assert!(client
+        .try_create_commitment(&second_owner, &1_000, &asset_address, &default_rules(&e))
+        .is_ok());
+    assert_eq!(client.get_total_commitments(), 1);
 }

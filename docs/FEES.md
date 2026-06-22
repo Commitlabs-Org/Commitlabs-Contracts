@@ -68,7 +68,7 @@ Both round toward zero (floor for positive values). The sum of tranche amounts c
 
 | Fee | When | Calculation | Token flow |
 |-----|------|-------------|------------|
-| Creation | `create_commitment` | `fees::fee_from_bps(amount, CreationFeeBps)`; default bps `0` | Owner transfers full `amount` to contract; `creation_fee` credited to `CollectedFees(asset_address)`; NFT minted with `net_amount = amount - creation_fee`; TVL incremented by `net_amount` |
+| Creation | `create_commitment` | `fuzzing::checked_fee_from_bps(amount, CreationFeeBps)`; default bps `0`; overflow maps to `ArithmeticOverflow` with guard reset | Owner transfers full `amount` to contract; `creation_fee` credited to `CollectedFees(asset_address)`; NFT minted with `net_amount = amount - creation_fee`; TVL incremented by `net_amount` |
 | Early exit | `early_exit` | `SafeMath::penalty_amount(current_value, rules.early_exit_penalty)` | Penalty added to `CollectedFees(asset)`; `returned = current_value - penalty` transferred to owner when `returned > 0` |
 
 #### Storage keys

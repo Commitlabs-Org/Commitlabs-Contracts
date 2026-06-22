@@ -317,7 +317,11 @@ fn require_authorized_updater(e: &Env, caller: &Address) {
         .get::<_, bool>(&DataKey::AuthorizedUpdater(caller.clone()))
         .unwrap_or(false)
     {
-        fail(e, CommitmentError::NotAuthorizedUpdater, "require_authorized_updater");
+        fail(
+            e,
+            CommitmentError::NotAuthorizedUpdater,
+            "require_authorized_updater",
+        );
     }
 }
 
@@ -504,11 +508,13 @@ impl CommitmentCoreContract {
             .instance()
             .get(&DataKey::CreationFeeBps)
             .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
+        // Single source of truth for creation-fee math: use the checked helper so
+        // overflow routes through `ArithmeticOverflow` and clears the guard.
+        let creation_fee =
+            fuzzing::checked_fee_from_bps(amount, creation_fee_bps).unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "create");
+            });
         let net_amount = amount.checked_sub(creation_fee).unwrap_or_else(|| {
             set_reentrancy_guard(&e, false);
             fail(&e, CommitmentError::ArithmeticOverflow, "create");
@@ -585,7 +591,9 @@ impl CommitmentCoreContract {
             set_reentrancy_guard(&e, false);
             fail(&e, CommitmentError::ArithmeticOverflow, "create");
         });
-        e.storage().instance().set(&DataKey::TotalValueLocked, &updated_tvl);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &updated_tvl);
 
         let mut all_ids = e
             .storage()
@@ -608,9 +616,7 @@ impl CommitmentCoreContract {
                 set_reentrancy_guard(&e, false);
                 fail(&e, CommitmentError::ArithmeticOverflow, "create");
             });
-            e.storage()
-                .instance()
-                .set(&fee_key, &updated_fees);
+            e.storage().instance().set(&fee_key, &updated_fees);
         }
 
         let nft_token_id = call_nft_mint(
@@ -775,10 +781,9 @@ impl CommitmentCoreContract {
     /// from commitments to target pools.
     pub fn add_allocator(e: Env, caller: Address, allocator: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().set(
-            &DataKey::AuthorizedAllocator(allocator.clone()),
-            &true,
-        );
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedAllocator(allocator.clone()), &true);
         e.events().publish(
             (Symbol::new(&e, "AuthorizedAllocatorAdded"),),
             (allocator, e.ledger().timestamp()),
@@ -790,7 +795,9 @@ impl CommitmentCoreContract {
     /// Restricted to the Admin role.
     pub fn remove_allocator(e: Env, caller: Address, allocator: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().remove(&DataKey::AuthorizedAllocator(allocator.clone()));
+        e.storage()
+            .instance()
+            .remove(&DataKey::AuthorizedAllocator(allocator.clone()));
         e.events().publish(
             (Symbol::new(&e, "AuthorizedAllocatorRemoved"),),
             (allocator, e.ledger().timestamp()),
@@ -814,10 +821,18 @@ impl CommitmentCoreContract {
     pub fn is_allocator(e: Env, address: Address) -> bool {
         let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
         if let Some(a) = admin {
-            if address == a { return true; }
+            if address == a {
+                return true;
+            }
         }
-        if let Some(alloc_contract) = e.storage().instance().get::<_, Address>(&DataKey::AllocationContract) {
-            if address == alloc_contract { return true; }
+        if let Some(alloc_contract) = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::AllocationContract)
+        {
+            if address == alloc_contract {
+                return true;
+            }
         }
         e.storage()
             .instance()
@@ -852,7 +867,9 @@ impl CommitmentCoreContract {
     pub fn is_guardian(e: Env, address: Address) -> bool {
         let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
         if let Some(a) = admin {
-            if address == a { return true; }
+            if address == a {
+                return true;
+            }
         }
         e.storage()
             .instance()
@@ -867,7 +884,9 @@ impl CommitmentCoreContract {
     pub fn is_treasurer(e: Env, address: Address) -> bool {
         let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
         if let Some(a) = admin {
-            if address == a { return true; }
+            if address == a {
+                return true;
+            }
         }
         e.storage()
             .instance()
@@ -882,9 +901,14 @@ impl CommitmentCoreContract {
     pub fn is_operator(e: Env, address: Address) -> bool {
         let admin = e.storage().instance().get::<_, Address>(&DataKey::Admin);
         if let Some(a) = admin {
-            if address == a { return true; }
+            if address == a {
+                return true;
+            }
         }
-        e.storage().instance().get::<_, bool>(&DataKey::AuthorizedOperator(address)).unwrap_or(false)
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::AuthorizedOperator(address))
+            .unwrap_or(false)
     }
 
     /// Update the current value of a commitment.
@@ -948,12 +972,18 @@ impl CommitmentCoreContract {
         set_commitment(&e, &commitment);
 
         // Update TVL by the delta so the aggregate stays consistent with the persisted value.
-        let tvl = e.storage().instance().get::<_, i128>(&DataKey::TotalValueLocked).unwrap_or(0);
+        let tvl = e
+            .storage()
+            .instance()
+            .get::<_, i128>(&DataKey::TotalValueLocked)
+            .unwrap_or(0);
         let updated_tvl = tvl
             .checked_sub(old_value)
             .and_then(|value| value.checked_add(new_value))
             .unwrap_or_else(|| fail(&e, CommitmentError::ArithmeticOverflow, "upd"));
-        e.storage().instance().set(&DataKey::TotalValueLocked, &updated_tvl);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &updated_tvl);
     }
 
     pub fn check_violations(e: Env, commitment_id: String) -> bool {
@@ -1070,7 +1100,9 @@ impl CommitmentCoreContract {
         } else {
             0
         };
-        e.storage().instance().set(&DataKey::TotalValueLocked, &new_tvl);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalValueLocked, &new_tvl);
 
         transfer_assets(
             &e,
@@ -1230,33 +1262,45 @@ impl CommitmentCoreContract {
 
     pub fn add_guardian(e: Env, caller: Address, guardian: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().set(&DataKey::AuthorizedGuardian(guardian), &true);
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedGuardian(guardian), &true);
     }
     pub fn remove_guardian(e: Env, caller: Address, guardian: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().remove(&DataKey::AuthorizedGuardian(guardian));
+        e.storage()
+            .instance()
+            .remove(&DataKey::AuthorizedGuardian(guardian));
     }
     pub fn add_treasurer(e: Env, caller: Address, treasurer: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().set(&DataKey::AuthorizedTreasurer(treasurer), &true);
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedTreasurer(treasurer), &true);
     }
     pub fn remove_treasurer(e: Env, caller: Address, treasurer: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().remove(&DataKey::AuthorizedTreasurer(treasurer));
+        e.storage()
+            .instance()
+            .remove(&DataKey::AuthorizedTreasurer(treasurer));
     }
     pub fn add_operator(e: Env, caller: Address, operator: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().set(&DataKey::AuthorizedOperator(operator), &true);
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedOperator(operator), &true);
     }
     pub fn remove_operator(e: Env, caller: Address, operator: Address) {
         require_admin(&e, &caller);
-        e.storage().instance().remove(&DataKey::AuthorizedOperator(operator));
+        e.storage()
+            .instance()
+            .remove(&DataKey::AuthorizedOperator(operator));
     }
 
     /// Allocates assets from a commitment to a target investment pool.
     ///
     /// This operation is restricted to the admin or an authorized allocator contract.
-    /// It reduces the commitment's internal `current_value` and transfers the 
+    /// It reduces the commitment's internal `current_value` and transfers the
     /// underlying tokens to the target address.
     ///
     /// ### Parameters
@@ -1508,7 +1552,9 @@ impl CommitmentCoreContract {
         }
 
         // Update collected fees
-        e.storage().instance().set(&fee_key, &SafeMath::sub(collected, amount));
+        e.storage()
+            .instance()
+            .set(&fee_key, &SafeMath::sub(collected, amount));
 
         // Transfer fees to recipient
         transfer_assets(
