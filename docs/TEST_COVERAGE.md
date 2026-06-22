@@ -45,6 +45,12 @@ cargo test --workspace
 - Missing fuzz/property-based tests for arithmetic and validation edge cases.
 - Formal verification artifacts not present; invariants are documented in comments only.
 
+## Cross-Contract Lifecycle Coverage
+- `allocation_logic::test_core_create_allocate_update_settle_integration` registers real `commitment_core`, `commitment_nft`, and `allocation_logic` contracts in one `Env`.
+- The scenario covers `create_commitment` -> `allocation_logic::allocate` -> `commitment_core::update_value` -> `commitment_core::settle`.
+- Assertions verify core TVL, token custody/release, NFT mint/settled state, allocation records, and pool liquidity remain aligned across contract boundaries.
+- This closes the main executable gap from the call-graph review around core lifecycle handoffs into NFT and allocation contracts.
+
 ## Suggested additions
 - Add mock token contracts for create_commitment/settle flows.
 - Add fuzz tests for attestation payload parsing.
