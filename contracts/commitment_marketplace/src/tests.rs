@@ -591,6 +591,119 @@ fn test_auction_duration_boundary() {
 }
 
 #[test]
+fn test_dutch_auction_price_decay() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let payment_token = setup_test_token(&e, &client);
+    let token_id = 10u32;
+
+    client.start_dutch_auction(&seller, &token_id, &1000, &200, &100, &payment_token);
+
+    assert_eq!(client.get_dutch_price(&token_id), 1000);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 50;
+    });
+    assert_eq!(client.get_dutch_price(&token_id), 600);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 100;
+    });
+    assert_eq!(client.get_dutch_price(&token_id), 200);
+}
+
+#[test]
+fn test_buy_dutch_near_reserve_settles_and_removes_active_auction() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, fee_recipient, client) = setup_marketplace(&e);
+
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    client.add_payment_token(&payment_token);
+    let token_client = soroban_sdk::token::Client::new(&e, &payment_token);
+    soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&buyer, &1000);
+
+    let token_id = 11u32;
+    client.start_dutch_auction(&seller, &token_id, &1000, &200, &100, &payment_token);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 99;
+    });
+    assert_eq!(client.get_dutch_price(&token_id), 208);
+
+    client.buy_dutch(&buyer, &token_id);
+
+    let auction = client.get_auction(&token_id);
+    assert!(auction.ended);
+    assert_eq!(auction.current_bid, 208);
+    assert_eq!(auction.highest_bidder, Some(buyer.clone()));
+    assert_eq!(client.get_all_auctions().len(), 0);
+    assert_eq!(token_client.balance(&seller), 203);
+    assert_eq!(token_client.balance(&fee_recipient), 5);
+    assert_eq!(token_client.balance(&buyer), 792);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")] // AuctionEnded
+fn test_buy_dutch_after_end_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let payment_token = setup_test_token(&e, &client);
+    let token_id = 12u32;
+
+    client.start_dutch_auction(&seller, &token_id, &1000, &200, &100, &payment_token);
+    e.ledger().with_mut(|li| {
+        li.timestamp = 100;
+    });
+
+    client.buy_dutch(&buyer, &token_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #22)")] // PaymentTokenNotAllowed
+fn test_start_dutch_auction_with_unallowlisted_token_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = Address::generate(&e);
+
+    client.start_dutch_auction(&seller, &13, &1000, &200, &100, &payment_token);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")] // ReentrancyDetected
+fn test_buy_dutch_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let payment_token = setup_test_token(&e, &client);
+    let token_id = 14u32;
+
+    client.start_dutch_auction(&seller, &token_id, &1000, &200, &100, &payment_token);
+    set_contract_reentrancy_guard(&e, &client.address, true);
+
+    client.buy_dutch(&buyer, &token_id);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #17)")] // AuctionNotEnded
 fn test_end_auction_before_time_fails() {
     let e = Env::default();

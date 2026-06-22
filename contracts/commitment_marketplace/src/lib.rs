@@ -115,12 +115,14 @@ pub struct Auction {
     pub token_id: u32,
     pub seller: Address,
     pub starting_price: i128,
+    pub reserve_price: i128,
     pub current_bid: i128,
     pub highest_bidder: Option<Address>,
     pub payment_token: Address,
     pub started_at: u64,
     pub ends_at: u64,
     pub ended: bool,
+    pub is_dutch: bool,
 }
 
 /// Storage keys
@@ -198,6 +200,29 @@ fn require_allowed_payment_token(
     }
 
     Ok(())
+}
+
+fn current_dutch_price(e: &Env, auction: &Auction) -> i128 {
+    let now = e.ledger().timestamp();
+    if now <= auction.started_at {
+        return auction.starting_price;
+    }
+    if now >= auction.ends_at {
+        return auction.reserve_price;
+    }
+
+    let duration = auction.ends_at.saturating_sub(auction.started_at);
+    if duration == 0 {
+        return auction.reserve_price;
+    }
+
+    let elapsed = now.saturating_sub(auction.started_at);
+    let decay_range = SafeMath::sub(auction.starting_price, auction.reserve_price);
+    let elapsed_decay = SafeMath::div(
+        SafeMath::mul(decay_range, elapsed as i128),
+        duration as i128,
+    );
+    SafeMath::sub(auction.starting_price, elapsed_decay)
 }
 
 #[contractimpl]
@@ -1070,12 +1095,14 @@ impl CommitmentMarketplace {
             token_id,
             seller: seller.clone(),
             starting_price,
+            reserve_price: 0,
             current_bid: starting_price,
             highest_bidder: None,
             payment_token: payment_token.clone(),
             started_at,
             ends_at,
             ended: false,
+            is_dutch: false,
         };
 
         e.storage()
@@ -1102,6 +1129,249 @@ impl CommitmentMarketplace {
             (symbol_short!("AucStart"), token_id),
             (seller, starting_price, ends_at),
         );
+
+        Ok(())
+    }
+
+    /// @notice Start a descending Dutch auction for an NFT.
+    /// @param seller Seller's address (must sign the transaction).
+    /// @param token_id NFT token ID.
+    /// @param start_price Initial auction price (must be > reserve_price).
+    /// @param reserve_price Minimum terminal price (must be > 0).
+    /// @param duration_seconds Duration over which price decays linearly.
+    /// @param payment_token Token contract address for payment.
+    /// @dev Reentrancy guard enforced. Price decays linearly from start to reserve.
+    pub fn start_dutch_auction(
+        e: Env,
+        seller: Address,
+        token_id: u32,
+        start_price: i128,
+        reserve_price: i128,
+        duration_seconds: u64,
+        payment_token: Address,
+    ) -> Result<(), MarketplaceError> {
+        let guard: bool = e
+            .storage()
+            .instance()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false);
+        if guard {
+            return Err(MarketplaceError::ReentrancyDetected);
+        }
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+
+        seller.require_auth();
+
+        if start_price <= 0 || reserve_price <= 0 || reserve_price >= start_price {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::InvalidPrice);
+        }
+
+        if duration_seconds == 0 {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::InvalidDuration);
+        }
+
+        if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
+
+        if e.storage().persistent().has(&DataKey::Auction(token_id)) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::ListingExists);
+        }
+
+        let started_at = e.ledger().timestamp();
+        let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            MarketplaceError::InvalidDuration
+        })?;
+
+        let auction = Auction {
+            token_id,
+            seller: seller.clone(),
+            starting_price: start_price,
+            reserve_price,
+            current_bid: start_price,
+            highest_bidder: None,
+            payment_token: payment_token.clone(),
+            started_at,
+            ends_at,
+            ended: false,
+            is_dutch: true,
+        };
+
+        e.storage()
+            .persistent()
+            .set(&DataKey::Auction(token_id), &auction);
+
+        let mut active_auctions: Vec<u32> = e
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveAuctions)
+            .unwrap_or(Vec::new(&e));
+        active_auctions.push_back(token_id);
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveAuctions, &active_auctions);
+
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
+
+        e.events().publish(
+            (symbol_short!("DutStart"), token_id),
+            (seller, start_price, reserve_price, ends_at),
+        );
+
+        Ok(())
+    }
+
+    /// @notice Return the current decayed price for an active Dutch auction.
+    pub fn get_dutch_price(e: Env, token_id: u32) -> Result<i128, MarketplaceError> {
+        let auction: Auction = e
+            .storage()
+            .persistent()
+            .get(&DataKey::Auction(token_id))
+            .ok_or(MarketplaceError::AuctionNotFound)?;
+
+        if !auction.is_dutch {
+            return Err(MarketplaceError::AuctionNotFound);
+        }
+
+        Ok(current_dutch_price(&e, &auction))
+    }
+
+    /// @notice Buy a Dutch auction at the current decayed price.
+    /// @param buyer Buyer's address (must sign the transaction).
+    /// @param token_id NFT token ID.
+    /// @dev First valid buyer wins. Reentrancy guard is set before state changes.
+    pub fn buy_dutch(
+        e: Env,
+        buyer: Address,
+        token_id: u32,
+    ) -> Result<(), MarketplaceError> {
+        let guard: bool = e
+            .storage()
+            .instance()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false);
+        if guard {
+            return Err(MarketplaceError::ReentrancyDetected);
+        }
+        e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+
+        buyer.require_auth();
+
+        let mut auction: Auction = e
+            .storage()
+            .persistent()
+            .get(&DataKey::Auction(token_id))
+            .ok_or_else(|| {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                MarketplaceError::AuctionNotFound
+            })?;
+
+        if !auction.is_dutch || auction.ended {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::AuctionEnded);
+        }
+
+        let current_time = e.ledger().timestamp();
+        if current_time >= auction.ends_at {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::AuctionEnded);
+        }
+
+        if auction.seller == buyer {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::CannotBuyOwnListing);
+        }
+
+        if let Err(err) = require_allowed_payment_token(&e, &auction.payment_token) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
+
+        let fee_basis_points: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::MarketplaceFee)
+            .unwrap_or(0);
+
+        let fee_recipient: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::FeeRecipient)
+            .ok_or_else(|| {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                MarketplaceError::NotInitialized
+            })?;
+
+        let price = current_dutch_price(&e, &auction);
+        auction.current_bid = price;
+        auction.highest_bidder = Some(buyer.clone());
+        auction.ended = true;
+        e.storage()
+            .persistent()
+            .set(&DataKey::Auction(token_id), &auction);
+
+        let mut active_auctions: Vec<u32> = e
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveAuctions)
+            .unwrap_or(Vec::new(&e));
+        if let Some(index) = active_auctions.iter().position(|id| id == token_id) {
+            active_auctions.remove(index as u32);
+        }
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveAuctions, &active_auctions);
+
+        let fee_bps = if fee_basis_points > 10_000 {
+            10_000
+        } else {
+            fee_basis_points
+        };
+        let marketplace_fee =
+            SafeMath::div(SafeMath::mul(price, fee_bps as i128), 10_000_i128);
+        let seller_proceeds = SafeMath::sub(price, marketplace_fee);
+
+        let payment_token_client = token::Client::new(&e, &auction.payment_token);
+        payment_token_client.transfer(&buyer, &auction.seller, &seller_proceeds);
+        if marketplace_fee > 0 {
+            payment_token_client.transfer(&buyer, &fee_recipient, &marketplace_fee);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
+
+        e.events()
+            .publish((symbol_short!("DutBuy"), token_id), (buyer, price));
 
         Ok(())
     }
