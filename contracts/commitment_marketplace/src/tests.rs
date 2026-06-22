@@ -65,6 +65,22 @@ fn setup_allowed_payment_token(e: &Env, client: &CommitmentMarketplaceClient<'_>
     payment_token
 }
 
+fn setup_stellar_payment_token(
+    e: &Env,
+    client: &CommitmentMarketplaceClient<'_>,
+    holders: &[&Address],
+) -> Address {
+    let token_admin = Address::generate(e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    client.add_payment_token(&payment_token);
+    let token_client = soroban_sdk::token::StellarAssetClient::new(e, &payment_token);
+    for holder in holders {
+        token_client.mint(holder, &10_000);
+    }
+    payment_token
+}
+
 // ============================================================================
 // Initialization Tests
 // ============================================================================
@@ -588,6 +604,110 @@ fn test_auction_duration_boundary() {
     client.end_auction(&token_id);
     let auction = client.get_auction(&token_id);
     assert!(auction.ended);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")] // BidTooLow
+fn test_place_bid_below_min_increment_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+    let token_id = 1u32;
+
+    client.update_auction_settings(&100, &0, &0, &0);
+    client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
+    client.place_bid(&bidder, &token_id, &1099);
+}
+
+#[test]
+fn test_place_bid_exact_min_increment_succeeds() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let payment_token = setup_stellar_payment_token(&e, &client, &[&bidder]);
+    let token_id = 1u32;
+
+    client.update_auction_settings(&100, &0, &0, &0);
+    client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
+    client.place_bid(&bidder, &token_id, &1100);
+
+    let auction = client.get_auction(&token_id);
+    assert_eq!(auction.current_bid, 1100);
+    assert_eq!(auction.highest_bidder, Some(bidder));
+    assert_eq!(auction.ends_at, 86400);
+    assert_eq!(auction.extension_seconds, 0);
+}
+
+#[test]
+fn test_place_bid_in_sniping_window_extends_auction() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let payment_token = setup_stellar_payment_token(&e, &client, &[&bidder]);
+    let token_id = 1u32;
+
+    client.update_auction_settings(&0, &60, &300, &600);
+    client.start_auction(&seller, &token_id, &1000, &1000, &payment_token);
+    e.ledger().with_mut(|li| {
+        li.timestamp = 950;
+    });
+
+    client.place_bid(&bidder, &token_id, &1100);
+
+    let auction = client.get_auction(&token_id);
+    assert_eq!(auction.ends_at, 1300);
+    assert_eq!(auction.extension_seconds, 300);
+}
+
+#[test]
+fn test_anti_sniping_extension_respects_total_cap() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let bidder1 = Address::generate(&e);
+    let bidder2 = Address::generate(&e);
+    let payment_token = setup_stellar_payment_token(&e, &client, &[&bidder1, &bidder2]);
+    let token_id = 1u32;
+
+    client.update_auction_settings(&0, &500, &300, &500);
+    client.start_auction(&seller, &token_id, &1000, &1000, &payment_token);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 950;
+    });
+    client.place_bid(&bidder1, &token_id, &1100);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 1250;
+    });
+    client.place_bid(&bidder2, &token_id, &1200);
+
+    let auction = client.get_auction(&token_id);
+    assert_eq!(auction.ends_at, 1500);
+    assert_eq!(auction.extension_seconds, 500);
+    assert_eq!(auction.highest_bidder, Some(bidder2));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")] // InvalidPrice
+fn test_update_auction_settings_negative_increment_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    client.update_auction_settings(&-1, &60, &300, &600);
 }
 
 #[test]

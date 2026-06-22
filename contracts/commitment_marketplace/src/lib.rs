@@ -120,7 +120,18 @@ pub struct Auction {
     pub payment_token: Address,
     pub started_at: u64,
     pub ends_at: u64,
+    pub extension_seconds: u64,
     pub ended: bool,
+}
+
+/// Auction bid increment and anti-sniping settings.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuctionSettings {
+    pub min_bid_increment: i128,
+    pub anti_sniping_window: u64,
+    pub anti_sniping_extension: u64,
+    pub max_anti_sniping_extension: u64,
 }
 
 /// Storage keys
@@ -148,6 +159,8 @@ pub enum DataKey {
     Auction(u32),
     /// Active auctions list
     ActiveAuctions,
+    /// Auction increment and anti-sniping settings
+    AuctionSettings,
     /// Reentrancy guard
     ReentrancyGuard,
 }
@@ -198,6 +211,18 @@ fn require_allowed_payment_token(
     }
 
     Ok(())
+}
+
+fn read_auction_settings(e: &Env) -> AuctionSettings {
+    e.storage()
+        .instance()
+        .get(&DataKey::AuctionSettings)
+        .unwrap_or(AuctionSettings {
+            min_bid_increment: 0,
+            anti_sniping_window: 0,
+            anti_sniping_extension: 0,
+            max_anti_sniping_extension: 0,
+        })
 }
 
 #[contractimpl]
@@ -253,6 +278,16 @@ impl CommitmentMarketplace {
             .instance()
             .set(&DataKey::AllowedPaymentTokens, &allowed_payment_tokens);
 
+        e.storage().instance().set(
+            &DataKey::AuctionSettings,
+            &AuctionSettings {
+                min_bid_increment: 0,
+                anti_sniping_window: 0,
+                anti_sniping_extension: 0,
+                max_anti_sniping_extension: 0,
+            },
+        );
+
         Ok(())
     }
 
@@ -278,6 +313,51 @@ impl CommitmentMarketplace {
 
         e.events()
             .publish((Symbol::new(&e, "FeeUpdated"),), fee_basis_points);
+
+        Ok(())
+    }
+
+    /// @notice Update auction minimum bid increment and anti-sniping settings.
+    /// @param min_bid_increment Absolute minimum amount a new bid must exceed the current bid by. Zero preserves existing strictly-higher bidding.
+    /// @param anti_sniping_window Seconds before `ends_at` that trigger an extension. Zero disables anti-sniping.
+    /// @param anti_sniping_extension Seconds added when a bid lands inside the anti-sniping window.
+    /// @param max_anti_sniping_extension Total extension seconds allowed per auction.
+    /// @dev Only callable by admin. Existing auctions use the latest settings when bids are placed.
+    /// @error MarketplaceError::InvalidPrice if min_bid_increment is negative.
+    /// @security Only callable by admin (require_auth).
+    pub fn update_auction_settings(
+        e: Env,
+        min_bid_increment: i128,
+        anti_sniping_window: u64,
+        anti_sniping_extension: u64,
+        max_anti_sniping_extension: u64,
+    ) -> Result<(), MarketplaceError> {
+        let admin: Address = Self::get_admin(e.clone())?;
+        admin.require_auth();
+
+        if min_bid_increment < 0 {
+            return Err(MarketplaceError::InvalidPrice);
+        }
+
+        let settings = AuctionSettings {
+            min_bid_increment,
+            anti_sniping_window,
+            anti_sniping_extension,
+            max_anti_sniping_extension,
+        };
+
+        e.storage()
+            .instance()
+            .set(&DataKey::AuctionSettings, &settings);
+        e.events().publish(
+            (symbol_short!("AucCfg"),),
+            (
+                min_bid_increment,
+                anti_sniping_window,
+                anti_sniping_extension,
+                max_anti_sniping_extension,
+            ),
+        );
 
         Ok(())
     }
@@ -1075,6 +1155,7 @@ impl CommitmentMarketplace {
             payment_token: payment_token.clone(),
             started_at,
             ends_at,
+            extension_seconds: 0,
             ended: false,
         };
 
@@ -1154,7 +1235,17 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::AuctionEnded);
         }
 
-        if bid_amount <= auction.current_bid {
+        let settings = read_auction_settings(&e);
+        let bid_too_low = if settings.min_bid_increment == 0 {
+            bid_amount <= auction.current_bid
+        } else {
+            match auction.current_bid.checked_add(settings.min_bid_increment) {
+                Some(minimum_bid) => bid_amount < minimum_bid,
+                None => true,
+            }
+        };
+
+        if bid_too_low {
             e.storage()
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
@@ -1181,6 +1272,26 @@ impl CommitmentMarketplace {
 
         auction.current_bid = bid_amount;
         auction.highest_bidder = Some(bidder.clone());
+        if settings.anti_sniping_window > 0
+            && settings.anti_sniping_extension > 0
+            && settings.max_anti_sniping_extension > auction.extension_seconds
+            && auction.ends_at.saturating_sub(current_time) <= settings.anti_sniping_window
+        {
+            let remaining_extension =
+                settings.max_anti_sniping_extension - auction.extension_seconds;
+            let extension = if settings.anti_sniping_extension < remaining_extension {
+                settings.anti_sniping_extension
+            } else {
+                remaining_extension
+            };
+            auction.ends_at = auction.ends_at.checked_add(extension).ok_or_else(|| {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                MarketplaceError::InvalidDuration
+            })?;
+            auction.extension_seconds += extension;
+        }
 
         e.storage()
             .persistent()

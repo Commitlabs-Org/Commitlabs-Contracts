@@ -8,6 +8,7 @@ This page documents the public entry points, access control, and security notes 
 |------------------------|----------------------------------------------|-----------------------|----------------------------------------------------------|
 | initialize             | Set admin, NFT contract, fee, fee recipient  | Admin require_auth    | Fails if already initialized                             |
 | update_fee             | Update marketplace fee                       | Admin require_auth    | Fails if not initialized                                 |
+| update_auction_settings | Update auction bid and anti-sniping config  | Admin require_auth    | Fails if min bid increment is negative                   |
 | list_nft               | List NFT for sale                            | Seller require_auth   | Fails if price <= 0, listing exists, or not initialized  |
 | cancel_listing         | Cancel NFT listing                           | Seller require_auth   | Fails if not found or not seller                         |
 | buy_nft                | Buy NFT from listing                         | Buyer require_auth    | Fails if not found, self-buy, or not initialized         |
@@ -22,6 +23,12 @@ This page documents the public entry points, access control, and security notes 
 | get_offers             | Get all offers for NFT                       | View                  |                                                          |
 | get_auction            | Get auction details                          | View                  | Fails if not found                                      |
 | get_all_auctions       | Get all active auctions                      | View                  |                                                          |
+
+## Auction Bid Policy
+- `update_auction_settings` stores a global absolute `min_bid_increment` plus anti-sniping window, extension, and total extension cap.
+- With default zero settings, `place_bid` preserves the existing behavior: each bid must be strictly greater than `current_bid`.
+- When `min_bid_increment > 0`, `place_bid` requires `bid_amount >= current_bid + min_bid_increment` using checked math.
+- If a valid bid lands within `anti_sniping_window` seconds of `ends_at`, the auction extends by `anti_sniping_extension` seconds, capped by `max_anti_sniping_extension` total seconds per auction.
 
 ## Security
 - All state-changing entry points require authentication (`require_auth`) for the relevant actor, except `end_auction` (which is time-gated).

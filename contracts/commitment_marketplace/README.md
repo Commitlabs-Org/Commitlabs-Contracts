@@ -187,6 +187,17 @@ marketplace.place_bid(
 )
 ```
 
+### Configure Auction Bidding
+
+```rust
+marketplace.update_auction_settings(
+    min_bid_increment,
+    anti_sniping_window,
+    anti_sniping_extension,
+    max_anti_sniping_extension
+)
+```
+
 ### End Auction
 
 ```rust
@@ -347,7 +358,21 @@ fn place_bid(
 ) -> Result<(), MarketplaceError>
 ```
 
-Place a bid on an active auction.
+Place a bid on an active auction. When configured by `update_auction_settings`, bids must satisfy the absolute minimum increment and bids inside the anti-sniping window extend `ends_at` until the per-auction extension cap is reached. With default zero settings, bids only need to remain strictly higher than the current bid.
+
+#### `update_auction_settings`
+
+```rust
+fn update_auction_settings(
+    e: Env,
+    min_bid_increment: i128,
+    anti_sniping_window: u64,
+    anti_sniping_extension: u64,
+    max_anti_sniping_extension: u64,
+) -> Result<(), MarketplaceError>
+```
+
+Configure auction bid increments and anti-sniping extensions.
 
 #### `end_auction`
 
