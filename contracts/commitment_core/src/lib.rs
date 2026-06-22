@@ -139,6 +139,11 @@ pub struct CommitmentCreatedEvent {
 /// - **Safe**: Low risk. Max loss ≤ 10%, Early exit penalty ≥ 15%. Target: Stable yield pools.
 /// - **Balanced**: Medium risk. Max loss ≤ 30%, Early exit penalty ≥ 10%. Target: Mixed yield/growth pools.
 /// - **Aggressive**: High risk. Max loss ≤ 100%, Early exit penalty ≥ 5%. Target: High-yield/volatile pools.
+///
+/// `grace_period_days` relaxes observational violation checks only:
+/// max-loss checks are ignored before `created_at + grace_period_days`, and
+/// duration checks use `expires_at + grace_period_days`. A zero grace period
+/// preserves the original strict max-loss and expiry behavior.
 pub struct CommitmentRules {
     pub duration_days: u32,
     pub max_loss_percent: u32,
@@ -218,6 +223,40 @@ fn check_sufficient_balance(e: &Env, owner: &Address, asset_address: &Address, a
 fn transfer_assets(e: &Env, from: &Address, to: &Address, asset_address: &Address, amount: i128) {
     let token_client = token::Client::new(e, asset_address);
     token_client.transfer(from, to, &amount);
+}
+
+fn grace_seconds(e: &Env, grace_period_days: u32, context: &str) -> u64 {
+    TimeUtils::checked_days_to_seconds(grace_period_days)
+        .unwrap_or_else(|| fail(e, CommitmentError::ExpirationOverflow, context))
+}
+
+fn checked_grace_deadline(e: &Env, anchor: u64, grace_period_days: u32, context: &str) -> u64 {
+    let grace = grace_seconds(e, grace_period_days, context);
+    anchor
+        .checked_add(grace)
+        .unwrap_or_else(|| fail(e, CommitmentError::ExpirationOverflow, context))
+}
+
+fn within_loss_grace(e: &Env, commitment: &Commitment, current_time: u64) -> bool {
+    if commitment.rules.grace_period_days == 0 {
+        return false;
+    }
+
+    current_time < checked_grace_deadline(
+        e,
+        commitment.created_at,
+        commitment.rules.grace_period_days,
+        "chk",
+    )
+}
+
+fn duration_violation_deadline(e: &Env, commitment: &Commitment) -> u64 {
+    checked_grace_deadline(
+        e,
+        commitment.expires_at,
+        commitment.rules.grace_period_days,
+        "chk",
+    )
 }
 
 /// Helper function to call NFT contract mint function.
@@ -956,6 +995,12 @@ impl CommitmentCoreContract {
         e.storage().instance().set(&DataKey::TotalValueLocked, &updated_tvl);
     }
 
+    /// Return whether an active commitment currently violates loss or duration rules.
+    ///
+    /// The grace period suppresses temporary max-loss breaches during the initial
+    /// grace window and extends the duration violation deadline by the same number
+    /// of days. This is observational only; it emits a `Violated` event when a
+    /// violation is present but does not mutate commitment status.
     pub fn check_violations(e: Env, commitment_id: String) -> bool {
         let commitment = read_commitment(&e, &commitment_id)
             .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "chk"));
@@ -963,14 +1008,16 @@ impl CommitmentCoreContract {
             return false;
         }
 
-        let current_time = e.ledger().timestamp();
+        let current_time = TimeUtils::now(&e);
         let loss_percent = if commitment.amount > 0 {
             SafeMath::loss_percent(commitment.amount, commitment.current_value)
         } else {
             0
         };
-        let violated = (loss_percent > commitment.rules.max_loss_percent as i128)
-            || (current_time >= commitment.expires_at);
+        let loss_violated = loss_percent > commitment.rules.max_loss_percent as i128
+            && !within_loss_grace(&e, &commitment, current_time);
+        let duration_violated = current_time >= duration_violation_deadline(&e, &commitment);
+        let violated = loss_violated || duration_violated;
 
         if violated {
             e.events().publish(
@@ -981,6 +1028,11 @@ impl CommitmentCoreContract {
         violated
     }
 
+    /// Return `(has_violations, loss_violated, duration_violated, loss_percent, time_remaining)`.
+    ///
+    /// Grace period semantics match `check_violations`: loss breaches are ignored
+    /// during the initial grace window, and duration uses `expires_at + grace`.
+    /// `time_remaining` counts down to the grace-adjusted duration deadline.
     pub fn get_violation_details(e: Env, commitment_id: String) -> (bool, bool, bool, i128, u64) {
         let commitment = read_commitment(&e, &commitment_id).unwrap_or_else(|| {
             fail(
@@ -990,16 +1042,18 @@ impl CommitmentCoreContract {
             )
         });
 
-        let now = e.ledger().timestamp();
+        let now = TimeUtils::now(&e);
         let loss_percent = if commitment.amount > 0 {
             SafeMath::loss_percent(commitment.amount, commitment.current_value)
         } else {
             0
         };
-        let loss_violated = loss_percent > commitment.rules.max_loss_percent as i128;
-        let duration_violated = now >= commitment.expires_at;
+        let loss_violated = loss_percent > commitment.rules.max_loss_percent as i128
+            && !within_loss_grace(&e, &commitment, now);
+        let duration_deadline = duration_violation_deadline(&e, &commitment);
+        let duration_violated = now >= duration_deadline;
         let has_violations = loss_violated || duration_violated;
-        let time_remaining = commitment.expires_at.saturating_sub(now);
+        let time_remaining = duration_deadline.saturating_sub(now);
 
         (
             has_violations,

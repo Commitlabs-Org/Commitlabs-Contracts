@@ -1330,6 +1330,81 @@ fn test_check_violations_loss_limit_exceeded() {
 }
 
 #[test]
+fn test_check_violations_loss_limit_relaxed_inside_grace_period() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_commitment_loss_grace";
+
+    let created_at = 1000u64;
+    let mut commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        1000,
+        800, // 20% loss - would exceed 10% outside grace
+        10,
+        30,
+        created_at,
+    );
+    commitment.rules.grace_period_days = 5;
+
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.ledger().with_mut(|l| {
+        l.timestamp = created_at + 2 * 86400;
+    });
+
+    let has_violations = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, commitment_id))
+    });
+    let (has_detail_violation, loss_violated, duration_violated, loss_percent, _time_remaining) = e
+        .as_contract(&contract_id, || {
+            CommitmentCoreContract::get_violation_details(
+                e.clone(),
+                String::from_str(&e, commitment_id),
+            )
+        });
+
+    assert!(
+        !has_violations,
+        "Grace period should suppress temporary loss breach"
+    );
+    assert!(
+        !has_detail_violation,
+        "Details should preserve grace semantics"
+    );
+    assert!(!loss_violated, "Loss should not violate inside grace");
+    assert!(!duration_violated, "Duration should not violate before expiry");
+    assert_eq!(loss_percent, 20, "Details still report observed loss percent");
+}
+
+#[test]
+fn test_check_violations_loss_limit_enforced_after_grace_period() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_commitment_loss_after_grace";
+
+    let created_at = 1000u64;
+    let mut commitment =
+        create_test_commitment(&e, commitment_id, &owner, 1000, 800, 10, 30, created_at);
+    commitment.rules.grace_period_days = 5;
+
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.ledger().with_mut(|l| {
+        l.timestamp = created_at + 5 * 86400;
+    });
+
+    let has_violations = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, commitment_id))
+    });
+
+    assert!(has_violations, "Grace ends at the exact grace deadline");
+}
+
+#[test]
 fn test_check_violations_duration_expired() {
     let e = Env::default();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
@@ -1361,6 +1436,71 @@ fn test_check_violations_duration_expired() {
     });
 
     assert!(has_violations, "Should have duration violation");
+}
+
+#[test]
+fn test_check_violations_duration_relaxed_until_expiry_grace_deadline() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_commitment_duration_grace";
+
+    let created_at = 1000u64;
+    let mut commitment =
+        create_test_commitment(&e, commitment_id, &owner, 1000, 980, 10, 30, created_at);
+    commitment.rules.grace_period_days = 3;
+
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.ledger().with_mut(|l| {
+        l.timestamp = commitment.expires_at + 2 * 86400;
+    });
+
+    let (has_violations, loss_violated, duration_violated, _loss_percent, time_remaining) = e
+        .as_contract(&contract_id, || {
+            CommitmentCoreContract::get_violation_details(
+                e.clone(),
+                String::from_str(&e, commitment_id),
+            )
+        });
+
+    assert!(!has_violations, "Expiry grace should suppress duration violation");
+    assert!(!loss_violated, "Loss remains within bounds");
+    assert!(
+        !duration_violated,
+        "Duration should not violate before grace deadline"
+    );
+    assert_eq!(time_remaining, 86400, "One grace day should remain");
+
+    e.ledger().with_mut(|l| {
+        l.timestamp = commitment.expires_at + 3 * 86400;
+    });
+
+    let has_violations = e.as_contract(&contract_id, || {
+        CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, commitment_id))
+    });
+
+    assert!(has_violations, "Duration should violate at grace deadline");
+}
+
+#[test]
+#[should_panic(expected = "Duration would cause expiration timestamp overflow")]
+fn test_check_violations_grace_deadline_overflow_rejected() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let owner = Address::generate(&e);
+    let commitment_id = "test_commitment_grace_overflow";
+
+    let mut commitment =
+        create_test_commitment(&e, commitment_id, &owner, 1000, 980, 10, 30, 1000);
+    commitment.rules.grace_period_days = 1;
+    commitment.expires_at = u64::MAX - 10;
+
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::check_violations(e.clone(), String::from_str(&e, commitment_id))
+    });
 }
 
 #[test]
