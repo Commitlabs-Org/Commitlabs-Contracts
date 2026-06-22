@@ -13,6 +13,12 @@
 
 For full details, see `docs/UPGRADES.md`.
 
+## commitment_core
+- `upgrade(caller, new_wasm_hash)` requires admin authorization and rejects the all-zero WASM hash.
+- `migrate(caller, from_version)` accepts legacy version `0` only when the stored `Version` is also `0`, then writes `CURRENT_VERSION`.
+- Migration backfills `TotalCommitments`, `TotalValueLocked`, `AllCommitmentIds`, and `ReentrancyGuard` only when those keys are missing.
+- Migration preserves commitments, owner lists, fee state, asset custody, and create/settle/early-exit behavior.
+
 ## Migration idempotency guarantees
 - `migrate(caller, from_version)` is admin-only and rejects non-admin callers before writing state.
 - `from_version` must match the stored `Version`; mismatches return `InvalidVersion` and leave `Version` unchanged.

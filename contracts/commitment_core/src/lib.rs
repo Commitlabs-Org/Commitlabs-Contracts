@@ -23,11 +23,14 @@ use shared_utils::{
     Validation,
 };
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, Address, Env,
-    IntoVal, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, Address, BytesN,
+    Env, IntoVal, String, Symbol, Vec,
 };
 
 pub mod fuzzing;
+
+/// Current storage schema version for commitment_core migrations.
+pub const CURRENT_VERSION: u32 = 1;
 
 /// Maximum page size for paginated owner-commitment queries.
 const MAX_PAGE_SIZE: u32 = 50;
@@ -67,6 +70,12 @@ pub enum CommitmentError {
     ArithmeticOverflow = 24,
     /// Generated commitment ID already exists (counter/storage corruption guard)
     DuplicateCommitmentId = 25,
+    /// Invalid WASM hash for upgrade
+    InvalidWasmHash = 26,
+    /// Invalid storage version supplied for migration
+    InvalidVersion = 27,
+    /// Migration already applied
+    AlreadyMigrated = 28,
 }
 
 impl CommitmentError {
@@ -101,6 +110,9 @@ impl CommitmentError {
             CommitmentError::DuplicateCommitmentId => {
                 "Commitment ID already exists; counter or storage may be corrupted"
             }
+            CommitmentError::InvalidWasmHash => "Invalid WASM hash for upgrade",
+            CommitmentError::InvalidVersion => "Invalid storage version supplied for migration",
+            CommitmentError::AlreadyMigrated => "Migration already applied",
         }
     }
 }
@@ -189,6 +201,8 @@ pub enum DataKey {
     CreationFeeBps,
     /// Collected fees per asset (asset -> i128)
     CollectedFees(Address),
+    /// Stored commitment_core schema version
+    Version,
 }
 
 // --- Internal Helpers ---
@@ -283,6 +297,21 @@ fn set_reentrancy_guard(e: &Env, value: bool) {
     e.storage()
         .instance()
         .set(&DataKey::ReentrancyGuard, &value);
+}
+
+fn read_version(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Version)
+        .unwrap_or(0)
+}
+
+fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), CommitmentError> {
+    let zero = BytesN::from_array(e, &[0; 32]);
+    if *wasm_hash == zero {
+        return Err(CommitmentError::InvalidWasmHash);
+    }
+    Ok(())
 }
 
 fn require_admin(e: &Env, caller: &Address) {
@@ -464,6 +493,9 @@ impl CommitmentCoreContract {
         e.storage()
             .instance()
             .set(&DataKey::ReentrancyGuard, &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
         e.storage().instance().set(&Pausable::PAUSED_KEY, &false);
         EmergencyControl::set_emergency_mode(&e, false);
     }
@@ -734,6 +766,64 @@ impl CommitmentCoreContract {
             .instance()
             .get::<_, Address>(&DataKey::Admin)
             .unwrap_or_else(|| fail(&e, CommitmentError::NotInitialized, "get_admin"))
+    }
+
+    /// Get current on-chain storage version (0 if legacy/uninitialized).
+    pub fn get_version(e: Env) -> u32 {
+        read_version(&e)
+    }
+
+    /// Upgrade contract WASM (admin-only).
+    pub fn upgrade(
+        e: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), CommitmentError> {
+        require_admin(&e, &caller);
+        require_valid_wasm_hash(&e, &new_wasm_hash)?;
+        e.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    /// Migrate storage from a previous version to CURRENT_VERSION (admin-only).
+    pub fn migrate(e: Env, caller: Address, from_version: u32) -> Result<(), CommitmentError> {
+        require_admin(&e, &caller);
+
+        let stored_version = read_version(&e);
+        if stored_version == CURRENT_VERSION {
+            return Err(CommitmentError::AlreadyMigrated);
+        }
+        if from_version != stored_version || from_version > CURRENT_VERSION {
+            return Err(CommitmentError::InvalidVersion);
+        }
+
+        if !e.storage().instance().has(&DataKey::TotalCommitments) {
+            e.storage()
+                .instance()
+                .set(&DataKey::TotalCommitments, &0u64);
+        }
+        if !e.storage().instance().has(&DataKey::TotalValueLocked) {
+            e.storage()
+                .instance()
+                .set(&DataKey::TotalValueLocked, &0i128);
+        }
+        if !e.storage().instance().has(&DataKey::AllCommitmentIds) {
+            e.storage()
+                .instance()
+                .set(&DataKey::AllCommitmentIds, &Vec::<String>::new(&e));
+        }
+        if !e.storage().instance().has(&DataKey::ReentrancyGuard) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
+        e.events()
+            .publish((symbol_short!("Migrated"),), (from_version, CURRENT_VERSION));
+        Ok(())
     }
 
     /// Get NFT contract address

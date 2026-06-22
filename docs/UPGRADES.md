@@ -19,7 +19,7 @@ This repository uses Soroban's native in-place upgrade mechanism. Each contract:
 
 ## Version History (Current)
 
-- `commitment_core`: `CURRENT_VERSION = 1` - version tracking + upgrade entrypoints (no storage layout changes).
+- `commitment_core`: `CURRENT_VERSION = 1` - version tracking, admin-only upgrade/migrate entrypoints, and legacy key backfills.
 - `commitment_nft`: `CURRENT_VERSION = 2` - caller-aware lifecycle ABI for `settle` / `mark_inactive`; no storage layout changes.
 - `attestation_engine`: `CURRENT_VERSION = 1` - version tracking + upgrade entrypoints (no storage layout changes).
 - `allocation_logic`: `CURRENT_VERSION = 1` - version tracking + upgrade entrypoints (no storage layout changes).
@@ -27,7 +27,7 @@ This repository uses Soroban's native in-place upgrade mechanism. Each contract:
 
 ## Migration Requirements
 
-- `commitment_core`: ensures counters/guards exist; preserves commitments and owner lists.
+- `commitment_core`: ensures total counters, the all-commitment index, and the reentrancy guard exist; preserves commitments, owner lists, fee state, and settlement/early-exit semantics.
 - `commitment_nft`: ensures token counters and registries exist, then versions the core-only lifecycle ABI; preserves NFTs and ownership data.
 - `attestation_engine`: ensures analytics counters exist; preserves attestations and metrics.
 - `allocation_logic`: ensures pool registry exists; preserves pools and allocations.

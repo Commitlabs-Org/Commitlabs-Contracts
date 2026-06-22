@@ -6,7 +6,7 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short,
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    vec, Address, Env, IntoVal, String,
+    vec, Address, Bytes, BytesN, Env, IntoVal, String,
 };
 
 #[contract]
@@ -443,10 +443,16 @@ fn setup_token_contract(e: &Env) -> Address {
     Address::generate(e)
 }
 
+fn upload_wasm(e: &Env) -> BytesN<32> {
+    let wasm = Bytes::new(e);
+    e.deployer().upload_contract_wasm(wasm)
+}
+
 #[test]
 fn test_initialize() {
     let e = Env::default();
     let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
 
     let admin = Address::generate(&e);
     let nft_contract = Address::generate(&e);
@@ -455,6 +461,108 @@ fn test_initialize() {
     e.as_contract(&contract_id, || {
         CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft_contract.clone());
     });
+
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+}
+
+#[test]
+fn test_migrate_rejects_wrong_from_version_without_mutating_state() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().remove(&DataKey::Version);
+    });
+
+    assert_eq!(
+        client.try_migrate(&admin, &1),
+        Err(Ok(CommitmentError::InvalidVersion))
+    );
+    assert_eq!(client.get_version(), 0);
+}
+
+#[test]
+fn test_migrate_backfills_legacy_keys_and_is_idempotent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+    e.as_contract(&contract_id, || {
+        e.storage().instance().remove(&DataKey::Version);
+        e.storage().instance().remove(&DataKey::ReentrancyGuard);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalCommitments, &7u64);
+    });
+
+    assert_eq!(client.try_migrate(&admin, &0), Ok(Ok(())));
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+    assert_eq!(client.get_total_commitments(), 7);
+
+    assert_eq!(
+        client.try_migrate(&admin, &CURRENT_VERSION),
+        Err(Ok(CommitmentError::AlreadyMigrated))
+    );
+}
+
+#[test]
+fn test_upgrade_invalid_hash_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+
+    let zero = BytesN::from_array(&e, &[0; 32]);
+    assert_eq!(
+        client.try_upgrade(&admin, &zero),
+        Err(Ok(CommitmentError::InvalidWasmHash))
+    );
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_upgrade_non_admin_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+
+    let wasm_hash = upload_wasm(&e);
+    client.upgrade(&attacker, &wasm_hash);
+}
+
+#[test]
+fn test_upgrade_accepts_uploaded_wasm_hash() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    client.initialize(&admin, &nft_contract);
+
+    let wasm_hash = upload_wasm(&e);
+    assert_eq!(client.try_upgrade(&admin, &wasm_hash), Ok(Ok(())));
+    assert_eq!(client.get_version(), CURRENT_VERSION);
 }
 
 #[test]
