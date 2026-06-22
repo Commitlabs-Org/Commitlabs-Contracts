@@ -220,6 +220,19 @@ fn transfer_assets(e: &Env, from: &Address, to: &Address, asset_address: &Addres
     token_client.transfer(from, to, &amount);
 }
 
+fn deallocate_if_configured(e: &Env, commitment_id: &String) {
+    if let Some(allocation_contract) = e
+        .storage()
+        .instance()
+        .get::<_, Address>(&DataKey::AllocationContract)
+    {
+        let mut args = Vec::new(e);
+        args.push_back(e.current_contract_address().into_val(e));
+        args.push_back(commitment_id.clone().into_val(e));
+        e.invoke_contract::<()>(&allocation_contract, &Symbol::new(e, "deallocate"), args);
+    }
+}
+
 /// Helper function to call NFT contract mint function.
 fn call_nft_mint(
     e: &Env,
@@ -1072,6 +1085,8 @@ impl CommitmentCoreContract {
         };
         e.storage().instance().set(&DataKey::TotalValueLocked, &new_tvl);
 
+        deallocate_if_configured(&e, &commitment_id);
+
         transfer_assets(
             &e,
             &e.current_contract_address(),
@@ -1191,6 +1206,8 @@ impl CommitmentCoreContract {
         e.storage()
             .instance()
             .set(&DataKey::TotalValueLocked, &(tvl - original_val));
+
+        deallocate_if_configured(&e, &commitment_id);
 
         if returned > 0 {
             transfer_assets(

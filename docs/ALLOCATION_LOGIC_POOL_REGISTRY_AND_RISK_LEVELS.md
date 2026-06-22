@@ -12,6 +12,10 @@ This page is an operational guide for integrators interacting with the `allocati
 - Allocation entry points are **caller-authorized**:
   - `allocate(caller, ...)` requires `caller.require_auth()`.
   - `rebalance(caller, commitment_id)` requires `caller.require_auth()` and `caller` must match the stored allocation owner for `commitment_id`.
+- Settlement cleanup is **CommitmentCore-authorized**:
+  - `deallocate(caller, commitment_id)` requires `caller.require_auth()`.
+  - `caller` must match the configured `CommitmentCore` address stored at initialization.
+  - User wallets, admins, and arbitrary contracts cannot deallocate a commitment directly.
 
 The contract does not validate commitment ownership against `commitment_core`; allocations are tracked locally within `allocation_logic` (see `docs/ARCHITECTURE.md`).
 
@@ -88,6 +92,22 @@ Aggressive strategy risk split:
 - High bucket: remainder so that `medium + high == amount`
 
 Within each bucket, the bucket amount is distributed across pools with the same deterministic remainder behavior.
+
+## Settlement and Early-Exit Deallocation
+
+When `commitment_core` has an `AllocationContract` configured, successful `settle(commitment_id)` and `early_exit(commitment_id, caller)` calls invoke:
+
+`allocation_logic::deallocate(core_contract_address, commitment_id)`
+
+Deallocation is idempotent for commitments that were never allocated. This preserves the existing no-allocation settle and early-exit flows while allowing allocated commitments to release pool liquidity during the same lifecycle transaction.
+
+For allocated commitments, `deallocate`:
+
+- Loads the stored allocations for `commitment_id`.
+- Subtracts each allocation amount from the corresponding pool's `total_liquidity`.
+- Rejects any subtraction that would make pool liquidity negative.
+- Removes `Allocations(commitment_id)`, `Strategy(commitment_id)`, `TotalAllocated(commitment_id)`, and `AllocationOwner(commitment_id)`.
+- Emits a `dealloc` event with the total released amount.
 
 ### Capacity Enforcement and Failure Mode
 

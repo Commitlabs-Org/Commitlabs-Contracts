@@ -2,8 +2,8 @@
 extern crate std;
 
 use crate::{
-    AllocationStrategiesContract, AllocationStrategiesContractClient, Error, RiskLevel, Strategy,
-    Commitment, CommitmentRules, CURRENT_VERSION,
+    AllocationStrategiesContract, AllocationStrategiesContractClient, Commitment, CommitmentRules,
+    DataKey, Error, Pool, RiskLevel, Strategy, CURRENT_VERSION,
 };
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _, testutils::Ledger, Address, Env, Map, String,
@@ -468,6 +468,113 @@ fn test_rebalance_edge_case_zero_allocation() {
         client.allocate(&user, &commitment_id, &amount, &Strategy::Balanced);
     }));
     assert!(result.is_err());
+}
+
+#[test]
+fn test_deallocate_only_commitment_core_can_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let commitment_id = String::from_str(&env, "dealloc_auth");
+    let amount = 100_000_000i128;
+    create_mock_commitment(&env, &core_id, "dealloc_auth", amount, "active");
+    client.allocate(&owner, &commitment_id, &amount, &Strategy::Balanced);
+
+    let result = client.try_deallocate(&attacker, &commitment_id);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    client.deallocate(&core_id, &commitment_id);
+    assert_eq!(client.get_allocation(&commitment_id).total_allocated, 0);
+}
+
+#[test]
+fn test_deallocate_without_allocation_is_noop() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, core_id, client) = create_contract(&env);
+    let commitment_id = String::from_str(&env, "never_allocated");
+
+    client.deallocate(&core_id, &commitment_id);
+
+    let summary = client.get_allocation(&commitment_id);
+    assert_eq!(summary.total_allocated, 0);
+    assert_eq!(summary.allocations.len(), 0);
+}
+
+#[test]
+fn test_deallocate_clears_multi_pool_allocation_and_liquidity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let owner = Address::generate(&env);
+    let commitment_id = String::from_str(&env, "dealloc_multi");
+    let amount = 120_000_000i128;
+    create_mock_commitment(&env, &core_id, "dealloc_multi", amount, "active");
+
+    let summary = client.allocate(&owner, &commitment_id, &amount, &Strategy::Balanced);
+    assert!(summary.allocations.len() > 1);
+
+    for allocation in summary.allocations.iter() {
+        let pool = client.get_pool(&allocation.pool_id);
+        assert!(pool.total_liquidity >= allocation.amount);
+    }
+
+    client.deallocate(&core_id, &commitment_id);
+
+    let cleared = client.get_allocation(&commitment_id);
+    assert_eq!(cleared.total_allocated, 0);
+    assert_eq!(cleared.allocations.len(), 0);
+
+    for allocation in summary.allocations.iter() {
+        let pool = client.get_pool(&allocation.pool_id);
+        assert_eq!(pool.total_liquidity, 0);
+    }
+}
+
+#[test]
+fn test_deallocate_underflow_rejected_and_guard_cleared() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, core_id, client) = create_contract(&env);
+    setup_test_pools(&env, &client, &admin);
+
+    let owner = Address::generate(&env);
+    let commitment_id = String::from_str(&env, "dealloc_underflow");
+    let amount = 100_000_000i128;
+    create_mock_commitment(&env, &core_id, "dealloc_underflow", amount, "active");
+
+    let summary = client.allocate(&owner, &commitment_id, &amount, &Strategy::Safe);
+    env.as_contract(&client.address, || {
+        for allocation in summary.allocations.iter() {
+            let mut pool: Pool = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Pool(allocation.pool_id))
+                .unwrap();
+            pool.total_liquidity = 0;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(allocation.pool_id), &pool);
+        }
+    });
+
+    let first = summary.allocations.get(0).unwrap();
+    assert_eq!(client.get_pool(&first.pool_id).total_liquidity, 0);
+
+    let result = client.try_deallocate(&core_id, &commitment_id);
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+
+    client.deallocate(&core_id, &String::from_str(&env, "missing_after_error"));
 }
 
 #[test]

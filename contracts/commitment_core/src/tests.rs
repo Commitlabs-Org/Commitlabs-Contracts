@@ -33,6 +33,28 @@ impl MockNftContract {
     pub fn mark_inactive(_e: Env, _caller: Address, _token_id: u32) {}
 }
 
+#[contract]
+struct MockAllocationContract;
+
+#[contractimpl]
+impl MockAllocationContract {
+    pub fn deallocate(e: Env, caller: Address, commitment_id: String) {
+        caller.require_auth();
+        e.storage()
+            .instance()
+            .set(&symbol_short!("dealloc"), &commitment_id);
+        e.storage().instance().set(&symbol_short!("caller"), &caller);
+    }
+
+    pub fn last_deallocated(e: Env) -> Option<String> {
+        e.storage().instance().get(&symbol_short!("dealloc"))
+    }
+
+    pub fn last_caller(e: Env) -> Option<Address> {
+        e.storage().instance().get(&symbol_short!("caller"))
+    }
+}
+
 mod instrumented_nft {
     use super::*;
 
@@ -1972,6 +1994,102 @@ fn test_settle_success_expired() {
         CommitmentCoreContract::list_commitments_by_owner(e.clone(), owner.clone())
     });
     assert_eq!(owner_commitments.len(), 0);
+}
+
+#[test]
+fn test_settle_invokes_configured_allocation_deallocate() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let allocation_contract = e.register_contract(None, MockAllocationContract);
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "settle_dealloc";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let amount = 1000i128;
+    StellarAssetClient::new(&e, &asset_address).mint(&contract_id, &amount);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &nft_contract);
+    client.set_allocation_contract(&admin, &allocation_contract);
+
+    let created_at = 1000u64;
+    let duration_days = 30u32;
+    let expires_at = created_at + (duration_days as u64) * 86400;
+    let mut commitment = create_test_commitment(
+        &e,
+        commitment_id,
+        &owner,
+        amount,
+        amount,
+        10,
+        duration_days,
+        created_at,
+    );
+    commitment.asset_address = asset_address;
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &amount);
+    });
+    e.ledger().with_mut(|l| {
+        l.timestamp = expires_at;
+    });
+
+    client.settle(&String::from_str(&e, commitment_id));
+
+    let allocation_client = MockAllocationContractClient::new(&e, &allocation_contract);
+    assert_eq!(
+        allocation_client.last_deallocated().unwrap(),
+        String::from_str(&e, commitment_id)
+    );
+    assert_eq!(allocation_client.last_caller().unwrap(), contract_id);
+}
+
+#[test]
+fn test_early_exit_invokes_configured_allocation_deallocate() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let nft_contract = e.register_contract(None, MockNftContract);
+    let allocation_contract = e.register_contract(None, MockAllocationContract);
+    let admin = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = "exit_dealloc";
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_address = token_contract.address();
+    let amount = 1000i128;
+    StellarAssetClient::new(&e, &asset_address).mint(&contract_id, &amount);
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    client.initialize(&admin, &nft_contract);
+    client.set_allocation_contract(&admin, &allocation_contract);
+
+    let mut commitment =
+        create_test_commitment(&e, commitment_id, &owner, amount, amount, 10, 30, 1000);
+    commitment.asset_address = asset_address;
+    store_commitment(&e, &contract_id, &commitment);
+
+    e.as_contract(&contract_id, || {
+        e.storage().instance().set(&DataKey::TotalValueLocked, &amount);
+    });
+
+    client.early_exit(&String::from_str(&e, commitment_id), &owner);
+
+    let allocation_client = MockAllocationContractClient::new(&e, &allocation_contract);
+    assert_eq!(
+        allocation_client.last_deallocated().unwrap(),
+        String::from_str(&e, commitment_id)
+    );
+    assert_eq!(allocation_client.last_caller().unwrap(), contract_id);
 }
 
 #[test]

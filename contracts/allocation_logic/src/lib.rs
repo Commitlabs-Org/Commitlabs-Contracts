@@ -677,6 +677,44 @@ impl AllocationStrategiesContract {
         })
     }
 
+    /// Deallocate a commitment after the core contract settles or exits it.
+    ///
+    /// Only the configured CommitmentCore address may trigger this lifecycle
+    /// cleanup. Missing allocations are treated as a no-op so commitments that
+    /// were never allocated can still settle or early-exit normally.
+    pub fn deallocate(env: Env, caller: Address, commitment_id: String) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_initialized(&env)?;
+        Self::require_no_reentrancy(&env)?;
+
+        let commitment_core: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CommitmentCore)
+            .ok_or(Error::NotInitialized)?;
+
+        if caller != commitment_core {
+            return Err(Error::Unauthorized);
+        }
+
+        Pausable::require_not_paused(&env);
+
+        let allocations: Vec<Allocation> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Allocations(commitment_id.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        if allocations.is_empty() {
+            return Ok(());
+        }
+
+        Self::set_reentrancy_guard(&env, true);
+        let result = Self::deallocate_locked(&env, &commitment_id, &allocations);
+        Self::set_reentrancy_guard(&env, false);
+        result
+    }
+
     // ========================================================================
     // VIEW FUNCTIONS
     // ========================================================================
@@ -968,6 +1006,51 @@ impl AllocationStrategiesContract {
             .persistent()
             .get(&DataKey::Pool(pool_id))
             .ok_or(Error::PoolNotFound)
+    }
+
+    fn deallocate_locked(
+        env: &Env,
+        commitment_id: &String,
+        allocations: &Vec<Allocation>,
+    ) -> Result<(), Error> {
+        let mut total_deallocated = 0i128;
+
+        for allocation in allocations.iter() {
+            total_deallocated = total_deallocated
+                .checked_add(allocation.amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+
+            let mut pool = Self::get_pool_internal(env, allocation.pool_id)?;
+            if pool.total_liquidity < allocation.amount {
+                return Err(Error::ArithmeticOverflow);
+            }
+            pool.total_liquidity = pool
+                .total_liquidity
+                .checked_sub(allocation.amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+            pool.updated_at = env.ledger().timestamp();
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(allocation.pool_id), &pool);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Allocations(commitment_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Strategy(commitment_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TotalAllocated(commitment_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AllocationOwner(commitment_id.clone()));
+
+        env.events()
+            .publish((symbol_short!("dealloc"), commitment_id.clone()), total_deallocated);
+
+        Ok(())
     }
 
     fn select_pools(env: &Env, strategy: Strategy) -> Result<Vec<Pool>, Error> {
