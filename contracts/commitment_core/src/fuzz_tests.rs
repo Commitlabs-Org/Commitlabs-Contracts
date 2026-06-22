@@ -2,16 +2,14 @@
 
 use crate::{
     fuzzing::{
-        classify_generated_commitment_id_bytes, observe_amount, observe_commitment_input,
-        AmountShape, CommitmentIdShape,
+        checked_fee_and_net_from_bps, checked_fee_from_bps, classify_generated_commitment_id_bytes,
+        observe_amount, observe_commitment_input, AmountShape, CommitmentIdShape,
     },
     CommitmentCoreContract, CommitmentCoreContractClient, CommitmentRules,
 };
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env, String,
+    contract, contractimpl, testutils::Address as _, token::StellarAssetClient, Address, Env,
+    String,
 };
 
 #[contract]
@@ -88,7 +86,6 @@ fn test_fuzz_amount_seed_shapes() {
     assert_eq!(observe_amount(0, 0).shape, AmountShape::NonPositive);
     assert_eq!(observe_amount(-1, 0).shape, AmountShape::NonPositive);
     assert_eq!(observe_amount(1, 10_001).shape, AmountShape::InvalidFeeBps);
-    assert_eq!(observe_amount(i128::MAX, 2).shape, AmountShape::FeeOverflow);
 
     let max_fee = observe_amount(1, 10_000);
     assert_eq!(max_fee.shape, AmountShape::Valid);
@@ -99,6 +96,78 @@ fn test_fuzz_amount_seed_shapes() {
     assert_eq!(normal.shape, AmountShape::Valid);
     assert_eq!(normal.fee, Some(10));
     assert_eq!(normal.net, Some(990));
+}
+
+#[test]
+fn test_fuzz_checked_fee_conservation_seed_grid() {
+    let amounts = [
+        0i128,
+        1,
+        9_999,
+        10_000,
+        10_001,
+        i128::MAX / 10_000 - 1,
+        i128::MAX / 10_000,
+        i128::MAX / 10_000 + 1,
+        i128::MAX - 10_000,
+        i128::MAX - 1,
+        i128::MAX,
+    ];
+    let bps_values = [0u32, 1, 2, 99, 100, 5_000, 9_999, 10_000];
+
+    for amount in amounts {
+        for fee_bps in bps_values {
+            let fee = checked_fee_from_bps(amount, fee_bps)
+                .expect("valid non-negative amount and bps should not overflow");
+            let (fee_from_pair, net) = checked_fee_and_net_from_bps(amount, fee_bps)
+                .expect("valid non-negative amount and bps should produce fee and net");
+
+            assert_eq!(fee, fee_from_pair);
+            assert!(fee >= 0, "fee must never be negative");
+            assert!(fee <= amount, "fee must never exceed amount");
+            assert!(net >= 0, "net amount must never be negative");
+            assert_eq!(
+                net.checked_add(fee),
+                Some(amount),
+                "net_amount + fee must conserve the original amount"
+            );
+
+            if fee_bps == 0 {
+                assert_eq!(fee, 0);
+                assert_eq!(net, amount);
+            }
+            if fee_bps == 10_000 {
+                assert_eq!(fee, amount);
+                assert_eq!(net, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_checked_fee_rejects_invalid_domain_seed_grid() {
+    assert_eq!(checked_fee_from_bps(-1, 0), None);
+    assert_eq!(checked_fee_from_bps(1, 10_001), None);
+    assert_eq!(checked_fee_and_net_from_bps(-1, 10_000), None);
+    assert_eq!(checked_fee_and_net_from_bps(1, 10_001), None);
+}
+
+#[test]
+fn test_fuzz_amount_observation_handles_max_adjacent_boundaries() {
+    for amount in [i128::MAX - 1, i128::MAX] {
+        let full_fee = observe_amount(amount, 10_000);
+        assert_eq!(full_fee.shape, AmountShape::Valid);
+        assert_eq!(full_fee.fee, Some(amount));
+        assert_eq!(full_fee.net, Some(0));
+
+        let tiny_fee = observe_amount(amount, 1);
+        assert_eq!(tiny_fee.shape, AmountShape::Valid);
+        assert!(tiny_fee.fee.unwrap() <= amount);
+        assert_eq!(
+            tiny_fee.net.unwrap().checked_add(tiny_fee.fee.unwrap()),
+            Some(amount)
+        );
+    }
 }
 
 #[test]

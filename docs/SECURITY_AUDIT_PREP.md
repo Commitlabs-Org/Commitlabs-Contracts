@@ -30,6 +30,17 @@
 - Cross-contract calls (token transfer, NFT mint/settle, commitment_core reads)
 - Storage growth and data consistency for vectors and registries
 
+## Fee Arithmetic Fuzz Invariants
+
+`commitment_core` includes deterministic fuzz-seed tests for basis-point fee arithmetic. For every non-negative amount in the seed grid and every valid `bps` value in `0..=10000`, the checked helper must satisfy:
+
+- `0 <= fee <= amount`
+- `net_amount + fee == amount`
+- `bps == 0` yields `fee == 0` and `net_amount == amount`
+- `bps == 10000` yields `fee == amount` and `net_amount == 0`
+
+The seed grid includes `i128::MAX`-adjacent amounts so the helper computes mathematically valid fees without first overflowing `amount * bps`. Invalid domains, including negative amounts and `bps > 10000`, return `None` instead of producing fee observations.
+
 ## Open items before audit
 - Capture a coverage report and attach to TEST_COVERAGE.md
 - Decide on authorization model for mint/allocate/settle flows
