@@ -504,11 +504,13 @@ impl CommitmentCoreContract {
             .instance()
             .get(&DataKey::CreationFeeBps)
             .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
+        // Single source of truth for creation-fee arithmetic: use the checked
+        // helper so overflow clears the reentrancy guard before failing.
+        let creation_fee =
+            fuzzing::checked_fee_from_bps(amount, creation_fee_bps).unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "create");
+            });
         let net_amount = amount.checked_sub(creation_fee).unwrap_or_else(|| {
             set_reentrancy_guard(&e, false);
             fail(&e, CommitmentError::ArithmeticOverflow, "create");

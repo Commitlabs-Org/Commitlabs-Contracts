@@ -242,6 +242,26 @@ fn test_create_commitment_with_max_fee() {
 }
 
 #[test]
+fn test_create_commitment_fee_overflow_resets_reentrancy_guard() {
+    let (e, admin, contract_id, user, token_address, client) = setup_test();
+
+    client.set_creation_fee_bps(&admin, &10000);
+    let rules = default_rules(&e);
+
+    let overflow_result =
+        client.try_create_commitment(&user, &i128::MAX, &token_address, &rules);
+    assert!(overflow_result.is_err());
+
+    client.set_creation_fee_bps(&admin, &100);
+    let commitment_id =
+        create_commitment_direct(&e, &contract_id, &user, 1_000_000, &token_address, &rules);
+
+    let commitment = client.get_commitment(&commitment_id);
+    assert_eq!(commitment.amount, 990_000);
+    assert_eq!(client.get_collected_fees(&token_address), 10_000);
+}
+
+#[test]
 fn test_create_commitment_fee_rounds_down() {
     let (e, admin, contract_id, user, token_address, client) = setup_test();
     let token_client = TokenClient::new(&e, &token_address);
