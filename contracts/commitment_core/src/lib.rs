@@ -1560,6 +1560,9 @@ mod fee_tests;
 #[cfg(test)]
 mod fuzz_tests;
 
+#[cfg(test)]
+mod security_review_tests;
+
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
 

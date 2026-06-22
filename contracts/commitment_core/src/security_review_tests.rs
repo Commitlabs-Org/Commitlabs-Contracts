@@ -158,9 +158,10 @@ fn sec_update_value_admin_always_authorized() {
         e.storage().instance().set(&DataKey::TotalValueLocked, &1000i128);
     });
 
-    // Verify updater list is empty before calling
+    // Verify no explicit updater is required for the admin before calling
     let client = CommitmentCoreContractClient::new(&e, &contract_id);
-    assert_eq!(client.get_authorized_updaters().len(), 0);
+    assert!(client.is_authorized(&admin));
+    assert!(!client.is_authorized(&owner));
 
     // Admin must succeed
     client.update_value(&admin, &String::from_str(&e, "c1"), &950);
@@ -356,6 +357,55 @@ fn sec_settle_idempotency_double_settle_rejected() {
     });
 }
 
+/// settle must reject immediately when the reentrancy guard is already set.
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn sec_settle_rejects_when_reentrancy_guard_set() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft.clone());
+        set_reentrancy_guard(&e, true);
+        CommitmentCoreContract::settle(e.clone(), String::from_str(&e, "guarded_settle"));
+    });
+}
+
+/// settle must clear the guard before rejecting an unexpired commitment.
+#[test]
+fn sec_settle_not_expired_resets_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "settle_guard_reset");
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft.clone());
+        let commitment = make_commitment(&e, "settle_guard_reset", &owner, 1000, 1000, 10, 30, 1000);
+        set_commitment(&e, &commitment);
+    });
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = 1001;
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    assert!(client.try_settle(&commitment_id).is_err());
+
+    let guard = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    });
+    assert!(!guard, "settle rejection must clear reentrancy guard");
+}
+
 // ---------------------------------------------------------------------------
 // early_exit — ownership enforcement
 // ---------------------------------------------------------------------------
@@ -411,6 +461,58 @@ fn sec_early_exit_admin_not_owner_rejected() {
             admin.clone(),
         );
     });
+}
+
+/// early_exit must reject immediately when the reentrancy guard is already set.
+#[test]
+#[should_panic(expected = "Reentrancy detected")]
+fn sec_early_exit_rejects_when_reentrancy_guard_set() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft = Address::generate(&e);
+    let owner = Address::generate(&e);
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft.clone());
+        set_reentrancy_guard(&e, true);
+        CommitmentCoreContract::early_exit(
+            e.clone(),
+            String::from_str(&e, "guarded_exit"),
+            owner.clone(),
+        );
+    });
+}
+
+/// early_exit must clear the guard before rejecting a non-owner caller.
+#[test]
+fn sec_early_exit_unauthorized_resets_reentrancy_guard() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let admin = Address::generate(&e);
+    let nft = Address::generate(&e);
+    let owner = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "exit_guard_reset");
+
+    e.as_contract(&contract_id, || {
+        CommitmentCoreContract::initialize(e.clone(), admin.clone(), nft.clone());
+        let commitment = make_commitment(&e, "exit_guard_reset", &owner, 1000, 1000, 10, 30, 1000);
+        set_commitment(&e, &commitment);
+    });
+
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+    assert!(client.try_early_exit(&commitment_id, &attacker).is_err());
+
+    let guard = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    });
+    assert!(!guard, "early_exit rejection must clear reentrancy guard");
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +673,11 @@ fn sec_read_only_getters_require_no_auth() {
         assert_eq!(CommitmentCoreContract::get_nft_contract(e.clone()), nft);
         assert!(!CommitmentCoreContract::is_paused(e.clone()));
         assert!(!CommitmentCoreContract::is_emergency_mode(e.clone()));
-        assert_eq!(CommitmentCoreContract::get_authorized_updaters(e.clone()).len(), 0);
+        assert!(CommitmentCoreContract::is_authorized(e.clone(), admin.clone()));
+        assert!(!CommitmentCoreContract::is_authorized(
+            e.clone(),
+            Address::generate(&e)
+        ));
         assert_eq!(CommitmentCoreContract::get_creation_fee_bps(e.clone()), 0);
         assert_eq!(CommitmentCoreContract::get_fee_recipient(e.clone()), None);
     });

@@ -11,6 +11,7 @@
 
 - commitment_core, commitment_nft, allocation_logic, and attestation_engine use reentrancy guards stored in instance storage.
 - commitment_core functions with external calls follow checks-effects-interactions and clear the guard before returning.
+- commitment_core settlement paths (`settle` and `early_exit`) reject immediately if `ReentrancyGuard` is already set and reset the guard before every validation rejection that occurs after the guard is enabled.
 - Reentrancy guard state is reverted on transaction failure; audit should confirm all error paths are safe.
 
 ## Integer overflow / underflow
