@@ -36,6 +36,7 @@
 ## Cross-contract calls
 
 - commitment_core calls token contracts for transfers and commitment_nft for mint/settle.
+- commitment_marketplace validates listing and auction sellers with `commitment_nft::owner_of` and `is_active` before storing listings, auctions, or offers against existing marketplace positions.
 - attestation_engine invokes commitment_core to read commitments.
 - The commitment_core mint call does not include the `early_exit_penalty` parameter expected by commitment_nft::mint. This must be reconciled before audit.
 - The core/NFT/attestation call graph review is documented in `docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md`.

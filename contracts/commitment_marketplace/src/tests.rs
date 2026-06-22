@@ -20,7 +20,7 @@ extern crate std;
 
 use crate::*;
 use soroban_sdk::{
-    symbol_short,
+    contract, contractimpl, contracttype, symbol_short,
     testutils::{Address as _, Events, Ledger},
     vec, Address, Env, IntoVal,
 };
@@ -29,12 +29,48 @@ use soroban_sdk::{
 // Test Setup Helpers
 // ============================================================================
 
+#[contracttype]
+#[derive(Clone)]
+enum MockNftKey {
+    Owner(u32),
+    Active(u32),
+}
+
+#[contract]
+struct MockNftContract;
+
+#[contractimpl]
+impl MockNftContract {
+    pub fn set_token(e: Env, token_id: u32, owner: Address, active: bool) {
+        e.storage()
+            .persistent()
+            .set(&MockNftKey::Owner(token_id), &owner);
+        e.storage()
+            .persistent()
+            .set(&MockNftKey::Active(token_id), &active);
+    }
+
+    pub fn owner_of(e: Env, token_id: u32) -> Result<Address, MarketplaceError> {
+        e.storage()
+            .persistent()
+            .get(&MockNftKey::Owner(token_id))
+            .ok_or(MarketplaceError::NFTContractError)
+    }
+
+    pub fn is_active(e: Env, token_id: u32) -> Result<bool, MarketplaceError> {
+        e.storage()
+            .persistent()
+            .get(&MockNftKey::Active(token_id))
+            .ok_or(MarketplaceError::NFTContractError)
+    }
+}
+
 /// @notice Helper to deploy and initialize the marketplace contract for tests.
 /// @param e Test environment.
 /// @return (admin, fee_recipient, client)
 fn setup_marketplace(e: &Env) -> (Address, Address, CommitmentMarketplaceClient<'_>) {
     let admin = Address::generate(e);
-    let nft_contract = Address::generate(e);
+    let nft_contract = e.register_contract(None, MockNftContract);
     let fee_recipient = Address::generate(e);
 
     // Use register_contract for Soroban SDK
@@ -44,6 +80,18 @@ fn setup_marketplace(e: &Env) -> (Address, Address, CommitmentMarketplaceClient<
     client.initialize(&admin, &nft_contract, &250, &fee_recipient); // 2.5% fee
 
     (admin, fee_recipient, client)
+}
+
+fn set_mock_nft(
+    e: &Env,
+    client: &CommitmentMarketplaceClient<'_>,
+    token_id: u32,
+    owner: &Address,
+    active: bool,
+) {
+    let nft_contract = client.get_nft_contract();
+    let nft_client = MockNftContractClient::new(e, &nft_contract);
+    nft_client.set_token(&token_id, owner, &active);
 }
 
 /// @notice Helper to generate a test token address and allowlist it.
@@ -145,6 +193,7 @@ fn test_list_nft_twice_fails() {
     let seller = Address::generate(&e);
     let payment_token = setup_allowed_payment_token(&e, &client);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.list_nft(&seller, &1, &2000, &payment_token); // Should fail
 }
@@ -160,6 +209,7 @@ fn test_cancel_listing() {
     let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.list_nft(&seller, &token_id, &1000, &payment_token);
     client.cancel_listing(&seller, &token_id);
 
@@ -189,6 +239,7 @@ fn test_get_listing_after_cancel_panics() {
     let token_id = 1u32;
 
     let payment_token = setup_allowed_payment_token(&e, &client);
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.list_nft(&seller, &token_id, &1000, &payment_token);
     client.cancel_listing(&seller, &token_id);
 
@@ -220,6 +271,7 @@ fn test_cancel_listing_not_seller_fails() {
     let not_seller = Address::generate(&e);
     let payment_token = setup_allowed_payment_token(&e, &client);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.cancel_listing(&not_seller, &1); // Should fail
 }
@@ -235,12 +287,44 @@ fn test_get_all_listings() {
     let payment_token = setup_allowed_payment_token(&e, &client);
 
     // List 3 NFTs
+    set_mock_nft(&e, &client, 1, &seller, true);
+    set_mock_nft(&e, &client, 2, &seller, true);
+    set_mock_nft(&e, &client, 3, &seller, true);
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.list_nft(&seller, &2, &2000, &payment_token);
     client.list_nft(&seller, &3, &3000, &payment_token);
 
     let listings = client.get_all_listings();
     assert_eq!(listings.len(), 3);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")] // NotSeller
+fn test_list_nft_rejects_unowned_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let actual_owner = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    set_mock_nft(&e, &client, 1, &actual_owner, true);
+    client.list_nft(&seller, &1, &1000, &payment_token);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // NFTNotActive
+fn test_list_nft_rejects_inactive_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    set_mock_nft(&e, &client, 1, &seller, false);
+    client.list_nft(&seller, &1, &1000, &payment_token);
 }
 
 // ============================================================================
@@ -261,6 +345,7 @@ fn test_buy_nft_flow() {
     let price = 1000_0000000i128;
 
     // List NFT
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.list_nft(&seller, &token_id, &price, &payment_token);
 
     // Note: In a real test, you'd need to:
@@ -290,6 +375,7 @@ fn test_buy_own_listing_fails() {
     let seller = Address::generate(&e);
     let payment_token = setup_allowed_payment_token(&e, &client);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.buy_nft(&seller, &1); // Seller trying to buy their own listing
 }
@@ -338,6 +424,7 @@ fn test_make_offer_own_listing_fails() {
     let seller = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.make_offer(&seller, &1, &800, &payment_token); // Seller making offer on own listing
 }
@@ -353,8 +440,28 @@ fn test_make_offer_own_auction_fails() {
     let seller = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
     client.make_offer(&seller, &1, &1100, &payment_token); // Seller making offer on own auction
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")] // NotSeller
+fn test_make_offer_on_listing_revalidates_nft_owner() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let new_owner = Address::generate(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e, &client);
+
+    set_mock_nft(&e, &client, 1, &seller, true);
+    client.list_nft(&seller, &1, &1000, &payment_token);
+    set_mock_nft(&e, &client, 1, &new_owner, true);
+
+    client.make_offer(&offerer, &1, &1100, &payment_token);
 }
 
 #[test]
@@ -469,6 +576,7 @@ fn test_place_bid() {
     let starting_price = 1000_0000000i128;
     let _bid_amount = 1200_0000000i128;
 
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &starting_price, &86400, &payment_token);
 
     // Note: In real test, setup token contract and balances
@@ -491,6 +599,7 @@ fn test_place_bid_too_low_fails() {
     let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
     client.place_bid(&bidder, &token_id, &500); // Lower than starting price
 }
@@ -509,6 +618,7 @@ fn test_place_bid_not_high_enough_fails() {
     let token_id = 1u32;
     let starting_price = 1000i128;
 
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &starting_price, &86400, &payment_token);
 
     // current_bid starts at starting_price; bidding the exact same amount is <= current_bid,
@@ -530,6 +640,7 @@ fn test_place_bid_after_auction_ends_fails() {
     let token_id = 1u32;
     let duration = 86400u64; // 1 day
 
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &1000, &duration, &payment_token);
 
     // Fast forward time past auction end
@@ -555,6 +666,7 @@ fn test_auction_duration_boundary() {
     let starting_price = 1000i128;
 
     // Auction starts at timestamp 0, ends_at = 0 + duration = 86400
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &starting_price, &duration, &payment_token);
 
     // At timestamp 0 (start), bidding equal-to-current is rejected with BidTooLow, not AuctionEnded.
@@ -601,6 +713,7 @@ fn test_end_auction_before_time_fails() {
     let seller = Address::generate(&e);
     let payment_token = setup_allowed_payment_token(&e, &client);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
     client.end_auction(&1); // Try to end immediately
 }
@@ -616,6 +729,7 @@ fn test_end_auction_twice_fails() {
     let seller = Address::generate(&e);
     let payment_token = setup_allowed_payment_token(&e, &client);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
 
     e.ledger().with_mut(|li| {
@@ -637,6 +751,7 @@ fn test_auction_active_vs_ended() {
     let payment_token = setup_test_token(&e, &client);
     let token_id = 1u32;
 
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
 
     // Should be in active auctions
@@ -670,12 +785,44 @@ fn test_get_all_auctions() {
     let payment_token = setup_allowed_payment_token(&e, &client);
 
     // Start 3 auctions
+    set_mock_nft(&e, &client, 1, &seller, true);
+    set_mock_nft(&e, &client, 2, &seller, true);
+    set_mock_nft(&e, &client, 3, &seller, true);
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
     client.start_auction(&seller, &2, &2000, &86400, &payment_token);
     client.start_auction(&seller, &3, &3000, &86400, &payment_token);
 
     let auctions = client.get_all_auctions();
     assert_eq!(auctions.len(), 3);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")] // NotSeller
+fn test_start_auction_rejects_unowned_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let actual_owner = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    set_mock_nft(&e, &client, 1, &actual_owner, true);
+    client.start_auction(&seller, &1, &1000, &86400, &payment_token);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // NFTNotActive
+fn test_start_auction_rejects_inactive_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    set_mock_nft(&e, &client, 1, &seller, false);
+    client.start_auction(&seller, &1, &1000, &86400, &payment_token);
 }
 
 // ============================================================================
@@ -988,6 +1135,7 @@ fn test_list_then_start_auction_same_token() {
     let token_id = 1u32;
 
     // List NFT
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.list_nft(&seller, &token_id, &1000, &payment_token);
 
     // Cancel listing
@@ -1061,6 +1209,7 @@ fn test_cancel_listing_reentrancy_guard() {
     let seller = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
     let token_id = 1u32;
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.list_nft(&seller, &token_id, &1000, &payment_token);
     e.as_contract(&client.address, || {
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
@@ -1079,6 +1228,7 @@ fn test_buy_nft_reentrancy_guard() {
     let buyer = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
     let token_id = 1u32;
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.list_nft(&seller, &token_id, &1000, &payment_token);
     e.as_contract(&client.address, || {
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
@@ -1112,6 +1262,7 @@ fn test_accept_offer_reentrancy_guard() {
     let offerer = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
     let token_id = 1u32;
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.list_nft(&seller, &token_id, &1000, &payment_token);
     client.make_offer(&offerer, &token_id, &500, &payment_token);
     e.as_contract(&client.address, || {
@@ -1146,6 +1297,7 @@ fn test_place_bid_reentrancy_guard() {
     let bidder = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
     let token_id = 1u32;
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
     e.as_contract(&client.address, || {
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
@@ -1163,6 +1315,7 @@ fn test_end_auction_reentrancy_guard() {
     let seller = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
     let token_id = 1u32;
+    set_mock_nft(&e, &client, token_id, &seller, true);
     client.start_auction(&seller, &token_id, &1000, &1, &payment_token);
     e.ledger().with_mut(|li| {
         li.timestamp = 2;
@@ -1187,6 +1340,7 @@ fn test_gas_listing_operations() {
     let start = e.ledger().sequence();
 
     for i in 0..10 {
+        set_mock_nft(&e, &client, i, &seller, true);
         client.list_nft(&seller, &i, &1000, &payment_token);
     }
 
@@ -1269,6 +1423,7 @@ fn test_buy_nft_after_payment_token_is_removed_fails() {
     client.add_payment_token(&payment_token);
     soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&buyer, &10_000);
 
+    set_mock_nft(&e, &client, 1, &seller, true);
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.remove_payment_token(&payment_token);
     client.buy_nft(&buyer, &1);

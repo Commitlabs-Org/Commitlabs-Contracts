@@ -16,14 +16,14 @@
 //! - See [`DataKey`] for all storage keys mutated by each entry point.
 //!
 //! ## Audit Notes
-//! - No cross-contract NFT ownership checks are performed in this implementation (see comments in code).
+//! - Listing and auction creation verify NFT ownership and active status against the configured NFT contract.
 //! - All token transfers use Soroban token interface.
 
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    IntoVal, Symbol, TryIntoVal, Val, Vec,
 };
 use shared_utils::math::SafeMath;
 
@@ -200,6 +200,56 @@ fn require_allowed_payment_token(
     Ok(())
 }
 
+fn require_nft_owner_and_active(
+    e: &Env,
+    token_id: u32,
+    seller: &Address,
+) -> Result<(), MarketplaceError> {
+    let nft_contract: Address = e
+        .storage()
+        .instance()
+        .get(&DataKey::NFTContract)
+        .ok_or(MarketplaceError::NotInitialized)?;
+
+    let mut owner_args = Vec::new(e);
+    owner_args.push_back(token_id.into_val(e));
+    let owner_val: Val = match e.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &nft_contract,
+        &Symbol::new(e, "owner_of"),
+        owner_args,
+    ) {
+        Ok(Ok(val)) => val,
+        _ => return Err(MarketplaceError::NFTContractError),
+    };
+    let owner: Address = owner_val
+        .try_into_val(e)
+        .map_err(|_| MarketplaceError::NFTContractError)?;
+
+    if owner != *seller {
+        return Err(MarketplaceError::NotSeller);
+    }
+
+    let mut active_args = Vec::new(e);
+    active_args.push_back(token_id.into_val(e));
+    let active_val: Val = match e.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &nft_contract,
+        &Symbol::new(e, "is_active"),
+        active_args,
+    ) {
+        Ok(Ok(val)) => val,
+        _ => return Err(MarketplaceError::NFTContractError),
+    };
+    let is_active: bool = active_val
+        .try_into_val(e)
+        .map_err(|_| MarketplaceError::NFTContractError)?;
+
+    if !is_active {
+        return Err(MarketplaceError::NFTNotActive);
+    }
+
+    Ok(())
+}
+
 #[contractimpl]
 impl CommitmentMarketplace {
     // ========================================================================
@@ -261,6 +311,16 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if not initialized.
     pub fn get_admin(e: Env) -> Result<Address, MarketplaceError> {
         read_admin(&e)
+    }
+
+    /// @notice Get the configured CommitmentNFT contract address.
+    /// @return NFT contract address.
+    /// @error MarketplaceError::NotInitialized if not initialized.
+    pub fn get_nft_contract(e: Env) -> Result<Address, MarketplaceError> {
+        e.storage()
+            .instance()
+            .get(&DataKey::NFTContract)
+            .ok_or(MarketplaceError::NotInitialized)
     }
 
     /// @notice Update the marketplace fee (basis points).
@@ -362,7 +422,7 @@ impl CommitmentMarketplace {
     /// @param token_id NFT token ID to list.
     /// @param price Sale price (must be > 0).
     /// @param payment_token Token contract address for payment.
-    /// @dev Reentrancy guard enforced. No cross-contract NFT ownership check in this implementation.
+    /// @dev Reentrancy guard enforced. Verifies NFT ownership and active status.
     /// @error MarketplaceError::InvalidPrice if price <= 0.
     /// @error MarketplaceError::ListingExists if listing already exists.
     /// @error MarketplaceError::NotInitialized if contract not initialized.
@@ -410,21 +470,12 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::ListingExists);
         }
 
-        // Verify seller owns the NFT (external call - after checks)
-        let _nft_contract: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::NFTContract)
-            .ok_or_else(|| {
-                e.storage()
-                    .instance()
-                    .set(&DataKey::ReentrancyGuard, &false);
-                MarketplaceError::NotInitialized
-            })?;
-
-        // Note: This would require the NFT contract client
-        // For now, we assume the caller has verified ownership
-        // In production, you'd call: nft_contract.owner_of(&token_id)
+        if let Err(err) = require_nft_owner_and_active(&e, token_id, &seller) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
+        }
 
         // EFFECTS
         let listing = Listing {
@@ -756,6 +807,12 @@ impl CommitmentMarketplace {
                     .set(&DataKey::ReentrancyGuard, &false);
                 return Err(MarketplaceError::CannotBuyOwnListing);
             }
+            if let Err(err) = require_nft_owner_and_active(&e, token_id, &listing.seller) {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                return Err(err);
+            }
         }
 
         if let Some(auction) = e
@@ -768,6 +825,12 @@ impl CommitmentMarketplace {
                     .instance()
                     .set(&DataKey::ReentrancyGuard, &false);
                 return Err(MarketplaceError::CannotBuyOwnListing);
+            }
+            if let Err(err) = require_nft_owner_and_active(&e, token_id, &auction.seller) {
+                e.storage()
+                    .instance()
+                    .set(&DataKey::ReentrancyGuard, &false);
+                return Err(err);
             }
         }
 
@@ -1057,6 +1120,13 @@ impl CommitmentMarketplace {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::ListingExists);
+        }
+
+        if let Err(err) = require_nft_owner_and_active(&e, token_id, &seller) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(err);
         }
 
         // EFFECTS
