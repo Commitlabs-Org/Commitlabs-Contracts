@@ -28,16 +28,30 @@ The following emergency functions are implemented in the `CommitmentCore` contra
     - **Access**: Admin only + Emergency mode must be ON.
     - **Use case**: Fixing state corruption or adjusting parameters during recovery.
 
+The following emergency controls are implemented in the `CommitmentMarketplace` contract:
+
+1.  **`pause(caller: Address)`**:
+    - **Description**: Pauses marketplace settlement paths.
+    - **Access**: Admin only.
+    - **Effect**:
+      - Disables `list_nft`, `buy_nft`, `accept_offer`, `place_bid`, and `end_auction`.
+      - Leaves read-only getters available for incident response and off-chain monitoring.
+
+2.  **`unpause(caller: Address)`**:
+    - **Description**: Re-enables marketplace settlement paths after an incident.
+    - **Access**: Admin only.
+
 ## Recovery Procedures
 
 In the event of an emergency:
 
 1.  **Activate Emergency Mode**: Call `set_emergency_mode(true)` immediately to pause all protocol activity.
+    If the incident affects marketplace settlement, also call `CommitmentMarketplace::pause(admin)`.
 2.  **Assess Situation**: Identify the cause of the emergency (hack, bug, etc.).
 3.  **Secure Funds**: If necessary, use `emergency_withdraw` to move assets to a multi-sig or cold storage.
 4.  **Resolve Issue**: Develop and deploy a fix or a new version of the contract.
 5.  **Restore State**: Use `emergency_update_commitment` or `emergency_settle` to restore the state for users.
-6.  **Deactivate Emergency Mode**: Call `set_emergency_mode(false)` once the situation is resolved and it is safe to resume operations.
+6.  **Deactivate Emergency Mode**: Call `set_emergency_mode(false)` and `CommitmentMarketplace::unpause(admin)` once the situation is resolved and it is safe to resume operations.
 
 ## Contact Information
 

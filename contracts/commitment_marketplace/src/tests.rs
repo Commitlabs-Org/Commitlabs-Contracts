@@ -116,6 +116,32 @@ fn test_update_fee() {
     assert_eq!(last_event.0, client.address);
 }
 
+#[test]
+fn test_pause_unpause_admin_controls_marketplace_state() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+
+    assert!(!client.is_paused());
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")] // Unauthorized
+fn test_pause_non_admin_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let non_admin = Address::generate(&e);
+
+    client.pause(&non_admin);
+}
+
 // ============================================================================
 // Listing Tests
 // ============================================================================
@@ -243,6 +269,43 @@ fn test_get_all_listings() {
     assert_eq!(listings.len(), 3);
 }
 
+#[test]
+#[should_panic(expected = "Contract is paused")]
+fn test_list_nft_paused_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.pause(&admin);
+    client.list_nft(&seller, &1, &1000, &payment_token);
+}
+
+#[test]
+fn test_read_only_getters_work_while_paused() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.list_nft(&seller, &1, &1000, &payment_token);
+    client.start_auction(&seller, &2, &1000, &86400, &payment_token);
+    client.make_offer(&seller, &3, &500, &payment_token);
+    client.pause(&admin);
+
+    assert!(client.is_paused());
+    assert_eq!(client.get_listing(&1).token_id, 1);
+    assert_eq!(client.get_all_listings().len(), 1);
+    assert_eq!(client.get_auction(&2).token_id, 2);
+    assert_eq!(client.get_all_auctions().len(), 1);
+    assert_eq!(client.get_offers(&3).len(), 1);
+    assert!(client.is_payment_token_allowed(&payment_token));
+}
+
 // ============================================================================
 // Buy Tests (Note: These are simplified - real tests need token contract)
 // ============================================================================
@@ -292,6 +355,22 @@ fn test_buy_own_listing_fails() {
 
     client.list_nft(&seller, &1, &1000, &payment_token);
     client.buy_nft(&seller, &1); // Seller trying to buy their own listing
+}
+
+#[test]
+#[should_panic(expected = "Contract is paused")]
+fn test_buy_nft_paused_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.list_nft(&seller, &1, &1000, &payment_token);
+    client.pause(&admin);
+    client.buy_nft(&buyer, &1);
 }
 
 // ============================================================================
@@ -370,6 +449,22 @@ fn test_accept_offer_own_listing_fails() {
 
     client.make_offer(&seller, &1, &1000, &payment_token);
     client.accept_offer(&seller, &1, &seller); // Seller accepting own offer
+}
+
+#[test]
+#[should_panic(expected = "Contract is paused")]
+fn test_accept_offer_paused_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_test_token(&e, &client);
+
+    client.make_offer(&offerer, &1, &1000, &payment_token);
+    client.pause(&admin);
+    client.accept_offer(&seller, &1, &offerer);
 }
 
 
@@ -541,6 +636,22 @@ fn test_place_bid_after_auction_ends_fails() {
 }
 
 #[test]
+#[should_panic(expected = "Contract is paused")]
+fn test_place_bid_paused_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.start_auction(&seller, &1, &1000, &86400, &payment_token);
+    client.pause(&admin);
+    client.place_bid(&bidder, &1, &1500);
+}
+
+#[test]
 fn test_auction_duration_boundary() {
     let e = Env::default();
     e.mock_all_auths();
@@ -604,6 +715,26 @@ fn test_end_auction_before_time_fails() {
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
     client.end_auction(&1); // Try to end immediately
 }
+
+#[test]
+#[should_panic(expected = "Contract is paused")]
+fn test_end_auction_paused_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.start_auction(&seller, &1, &1000, &86400, &payment_token);
+    e.ledger().with_mut(|li| {
+        li.timestamp = 86400 + 1;
+    });
+
+    client.pause(&admin);
+    client.end_auction(&1);
+}
+
 
 #[test]
 #[should_panic(expected = "Error(Contract, #16)")] // AuctionEnded

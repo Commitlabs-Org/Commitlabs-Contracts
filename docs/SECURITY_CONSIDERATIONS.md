@@ -3,6 +3,7 @@
 ## Access control review
 
 - Admin-only functions in allocation_logic and attestation_engine require `require_auth` and compare caller to stored admin.
+- commitment_marketplace `pause` and `unpause` are admin-only and gate settlement paths during incident response.
 - commitment_nft `set_core_contract` enforces admin auth, and `settle` / `mark_inactive` now require authorization from the configured core contract; `mint` still relies on a caller-supplied address and should remain in audit scope.
 - commitment_core state-changing functions (`create_commitment`, `settle`, `early_exit`, `allocate`, `update_value`) do not call `require_auth` and accept caller-provided addresses.
 - Attestation recording requires caller authorization (`is_authorized_verifier`) and `require_auth`.
@@ -10,6 +11,7 @@
 ## Reentrancy protection
 
 - commitment_core, commitment_nft, allocation_logic, and attestation_engine use reentrancy guards stored in instance storage.
+- commitment_marketplace gates `list_nft`, `buy_nft`, `accept_offer`, `place_bid`, and `end_auction` with Pausable checks before settlement state changes or token transfers.
 - commitment_core functions with external calls follow checks-effects-interactions and clear the guard before returning.
 - Reentrancy guard state is reverted on transaction failure; audit should confirm all error paths are safe.
 

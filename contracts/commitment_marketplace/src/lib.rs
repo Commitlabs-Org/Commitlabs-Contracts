@@ -25,7 +25,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
-use shared_utils::math::SafeMath;
+use shared_utils::{math::SafeMath, Pausable};
 
 // ============================================================================
 // Error Types
@@ -80,6 +80,8 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// Caller is not authorized for admin-only marketplace controls
+    Unauthorized = 23,
 }
 
 // ============================================================================
@@ -252,6 +254,7 @@ impl CommitmentMarketplace {
         e.storage()
             .instance()
             .set(&DataKey::AllowedPaymentTokens, &allowed_payment_tokens);
+        e.storage().instance().set(&Pausable::PAUSED_KEY, &false);
 
         Ok(())
     }
@@ -280,6 +283,39 @@ impl CommitmentMarketplace {
             .publish((Symbol::new(&e, "FeeUpdated"),), fee_basis_points);
 
         Ok(())
+    }
+
+    /// Pause marketplace settlement paths during incident response.
+    ///
+    /// Admin-only. Read-only getters remain callable while paused.
+    pub fn pause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+
+        Pausable::pause(&e);
+        Ok(())
+    }
+
+    /// Unpause marketplace settlement paths after incident response is complete.
+    ///
+    /// Admin-only.
+    pub fn unpause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+
+        Pausable::unpause(&e);
+        Ok(())
+    }
+
+    /// Return true when marketplace settlement paths are paused.
+    pub fn is_paused(e: Env) -> bool {
+        Pausable::is_paused(&e)
     }
 
     /// Add a token contract to the payment-token allowlist.
@@ -384,6 +420,7 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::ReentrancyDetected);
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+        Pausable::require_not_paused(&e);
 
         // CHECKS
         seller.require_auth();
@@ -552,6 +589,7 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::ReentrancyDetected);
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+        Pausable::require_not_paused(&e);
 
         // CHECKS
         buyer.require_auth();
@@ -839,6 +877,7 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::ReentrancyDetected);
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+        Pausable::require_not_paused(&e);
 
         // CHECKS
         seller.require_auth();
@@ -1131,6 +1170,7 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::ReentrancyDetected);
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+        Pausable::require_not_paused(&e);
 
         // CHECKS
         bidder.require_auth();
@@ -1230,6 +1270,7 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::ReentrancyDetected);
         }
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+        Pausable::require_not_paused(&e);
 
         // CHECKS
         let mut auction: Auction = e
