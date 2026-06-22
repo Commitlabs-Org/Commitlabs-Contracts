@@ -14,12 +14,18 @@ fn test_admin_only_add_remove_oracle() {
     });
 
     // Only admin can add
-    assert_eq!(client.try_add_oracle(&not_admin, &oracle1), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(
+        client.try_add_oracle(&not_admin, &oracle1),
+        Err(Ok(OracleError::Unauthorized))
+    );
     assert_eq!(client.try_add_oracle(&admin, &oracle1), Ok(Ok(())));
     assert!(client.is_oracle_whitelisted(&oracle1));
 
     // Only admin can remove
-    assert_eq!(client.try_remove_oracle(&not_admin, &oracle1), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(
+        client.try_remove_oracle(&not_admin, &oracle1),
+        Err(Ok(OracleError::Unauthorized))
+    );
     assert_eq!(client.try_remove_oracle(&admin, &oracle1), Ok(Ok(())));
     assert!(!client.is_oracle_whitelisted(&oracle1));
 
@@ -48,21 +54,29 @@ fn test_admin_transfer_and_oracle_control() {
     });
 
     // Only admin1 can add
-    assert_eq!(client.try_add_oracle(&admin2, &oracle), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(
+        client.try_add_oracle(&admin2, &oracle),
+        Err(Ok(OracleError::Unauthorized))
+    );
     assert_eq!(client.try_add_oracle(&admin1, &oracle), Ok(Ok(())));
     assert!(client.is_oracle_whitelisted(&oracle));
 
     // Transfer admin
-    assert_eq!(client.try_set_admin(&admin2, &admin2), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(
+        client.try_set_admin(&admin2, &admin2),
+        Err(Ok(OracleError::Unauthorized))
+    );
     assert_eq!(client.try_set_admin(&admin1, &admin2), Ok(Ok(())));
     assert_eq!(client.get_admin(), admin2);
 
     // Now only admin2 can remove
-    assert_eq!(client.try_remove_oracle(&admin1, &oracle), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(
+        client.try_remove_oracle(&admin1, &oracle),
+        Err(Ok(OracleError::Unauthorized))
+    );
     assert_eq!(client.try_remove_oracle(&admin2, &oracle), Ok(Ok(())));
     assert!(!client.is_oracle_whitelisted(&oracle));
 }
-
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
@@ -147,8 +161,7 @@ fn test_set_price_whitelisted() {
 }
 
 #[test]
-#[should_panic(expected = "Oracle not whitelisted")]
-fn test_set_price_unauthorized_fails() {
+fn test_set_price_non_whitelisted_returns_typed_error() {
     let e = Env::default();
     e.mock_all_auths();
     let admin = Address::generate(&e);
@@ -161,7 +174,19 @@ fn test_set_price_unauthorized_fails() {
         PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
     });
 
-    client.set_price(&unauthorized, &asset, &1000, &8);
+    assert_eq!(
+        client.try_set_price(&unauthorized, &asset, &1000, &8),
+        Err(Ok(OracleError::OracleNotWhitelisted))
+    );
+}
+
+#[test]
+fn test_get_admin_uninitialized_returns_typed_error() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    assert_eq!(client.try_get_admin(), Err(Ok(OracleError::NotInitialized)));
 }
 
 #[test]
@@ -672,7 +697,7 @@ fn test_get_price_for_commitment_fresh() {
     });
 
     client.set_price(&oracle, &asset, &1000_00000000, &8);
-    
+
     // Should succeed with fresh price (within 5 minutes)
     let data = client.get_price_for_commitment(&asset, &Some(10)); // 10% max variation
     assert_eq!(data.price, 1000_00000000);
@@ -696,7 +721,7 @@ fn test_get_price_for_commitment_stale() {
     });
 
     client.set_price(&oracle, &asset, &1000_00000000, &8);
-    
+
     // Advance time past 5 minutes (300 seconds)
     e.ledger().with_mut(|li| {
         li.timestamp += 301;
@@ -749,7 +774,7 @@ fn test_get_price_for_marketplace_valid() {
     });
 
     client.set_price(&oracle, &asset, &50_00000000, &8); // $50 USD in 8 decimals
-    
+
     // Should succeed with price above minimum
     let data = client.get_price_for_marketplace(&asset, &Some(10_00000000)); // $10 minimum
     assert_eq!(data.price, 50_00000000);
@@ -773,7 +798,7 @@ fn test_get_price_for_marketplace_below_minimum() {
     });
 
     client.set_price(&oracle, &asset, &5_00000000, &8); // $5 USD in 8 decimals
-    
+
     // Should fail due to price below minimum
     let _ = client.get_price_for_marketplace(&asset, &Some(10_00000000)); // $10 minimum
 }
@@ -795,7 +820,7 @@ fn test_get_price_for_marketplace_different_decimals() {
 
     // Set price in 6 decimals ($100 USD = 100_000000)
     client.set_price(&oracle, &asset, &100_000000, &6);
-    
+
     // Should succeed when converting to 8 decimals for minimum check
     let data = client.get_price_for_marketplace(&asset, &Some(50_00000000)); // $50 minimum
     assert_eq!(data.price, 100_000000);
@@ -832,7 +857,7 @@ fn test_get_batch_prices_success() {
     // Should succeed with all fresh prices
     let results = client.get_batch_prices(&assets, &600); // 10 minutes max staleness
     assert_eq!(results.len(), 3);
-    
+
     // Verify results
     for (asset, data) in results.iter() {
         if asset == asset1 {
@@ -868,13 +893,13 @@ fn test_get_batch_prices_one_stale() {
     // Set prices
     client.set_price(&oracle, &asset1, &1000_00000000, &8);
     client.set_price(&oracle, &asset2, &2000_00000000, &8);
-    
+
     // Advance time and update only one price
     e.ledger().with_mut(|li| {
         li.timestamp += 120; // 2 minutes
     });
     client.set_price(&oracle, &asset2, &2100_00000000, &8);
-    
+
     // Advance time past batch staleness limit
     e.ledger().with_mut(|li| {
         li.timestamp += 500; // Total > 10 minutes
@@ -904,12 +929,12 @@ fn test_get_price_high_value_normal_value() {
     });
 
     client.set_price(&oracle, &asset, &1000_00000000, &8);
-    
+
     // Normal value operation ($50 USD) should use 15-minute staleness
     let data = client.get_price_high_value(
-        &asset, 
+        &asset,
         &50_00000000, // $50 USD in 8 decimals
-        &10 // 10% max deviation
+        &10,          // 10% max deviation
     );
     assert_eq!(data.price, 1000_00000000);
 }
@@ -930,12 +955,12 @@ fn test_get_price_high_value_high_value() {
     });
 
     client.set_price(&oracle, &asset, &1000_00000000, &8);
-    
+
     // High value operation ($2000 USD) should use 5-minute staleness
     let data = client.get_price_high_value(
-        &asset, 
+        &asset,
         &200_000_000_000, // $2000 USD in 8 decimals
-        &10 // 10% max deviation
+        &10,              // 10% max deviation
     );
     assert_eq!(data.price, 1000_00000000);
 }
@@ -957,7 +982,7 @@ fn test_get_price_high_value_very_high_value_stale() {
     });
 
     client.set_price(&oracle, &asset, &1000_00000000, &8);
-    
+
     // Advance time past 1 minute (very high value requires 1-minute freshness)
     e.ledger().with_mut(|li| {
         li.timestamp += 61;
@@ -965,9 +990,9 @@ fn test_get_price_high_value_very_high_value_stale() {
 
     // Very high value operation ($20000 USD) should fail with stale price
     let _ = client.get_price_high_value(
-        &asset, 
+        &asset,
         &2_000_000_000_000, // $20000 USD in 8 decimals
-        &10 // 10% max deviation
+        &10,                // 10% max deviation
     );
 }
 
@@ -1048,14 +1073,14 @@ fn test_oracle_consumer_integration_scenario() {
     let eth_price = client.get_price_high_value(
         &eth_asset,
         &commitment_value,
-        &5 // 5% max deviation
+        &5, // 5% max deviation
     );
     assert_eq!(eth_price.price, 3000_00000000);
 
     // Simulate marketplace listing with minimum price
     let usdc_price = client.get_price_for_marketplace(
         &usdc_asset,
-        &Some(100_000000) // $1 minimum
+        &Some(100_000000), // $1 minimum
     );
     assert_eq!(usdc_price.price, 1_00000000);
 
@@ -1063,7 +1088,7 @@ fn test_oracle_consumer_integration_scenario() {
     let mut assets = Vec::new(&e);
     assets.push_back(usdc_asset.clone());
     assets.push_back(eth_asset.clone());
-    
+
     let portfolio_prices = client.get_batch_prices(&assets, &300); // 5 minutes
     assert_eq!(portfolio_prices.len(), 2);
 

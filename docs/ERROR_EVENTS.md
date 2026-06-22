@@ -33,6 +33,12 @@ Data   : (context : String, message : String, timestamp : u64)
 
 ## Error Code Reference
 
+`price_oracle` exposes contract-specific `OracleError` values for admin and
+publisher authorization failures. In particular, uninitialized admin reads
+return `NotInitialized`, and non-whitelisted price publishers return
+`OracleNotWhitelisted`, so off-chain callers can decode those failures without
+depending on panic strings.
+
 ### Validation (1–99)
 
 | Code | Constant           | Message                                    |

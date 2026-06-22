@@ -27,6 +27,8 @@ Oracle rotation is performed by removing an old oracle address and adding a new 
 
 ## Security Notes
 - Only the admin can modify the whitelist. Attempts by non-admins will fail with `Unauthorized`.
+- Uninitialized admin reads fail with the typed `NotInitialized` error instead of a string panic.
+- Price submissions from non-whitelisted publishers fail with the typed `OracleNotWhitelisted` error instead of a string panic.
 - Whitelisted oracles are trusted to publish honest prices. Compromised oracles can overwrite the latest price for any asset.
 - Downstream contracts should always use `get_price_valid` and set appropriate staleness windows.
 
