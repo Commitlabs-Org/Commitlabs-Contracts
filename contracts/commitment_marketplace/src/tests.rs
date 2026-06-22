@@ -65,6 +65,10 @@ fn setup_allowed_payment_token(e: &Env, client: &CommitmentMarketplaceClient<'_>
     payment_token
 }
 
+fn offer_expiry(e: &Env) -> u64 {
+    e.ledger().timestamp() + 86_400
+}
+
 // ============================================================================
 // Initialization Tests
 // ============================================================================
@@ -309,7 +313,7 @@ fn test_make_offer_zero_amount_fails() {
     let offerer = Address::generate(&e);
     let payment_token = setup_allowed_payment_token(&e, &client);
 
-    client.make_offer(&offerer, &1, &0, &payment_token);
+    client.make_offer(&offerer, &1, &0, &payment_token, &offer_expiry(&e));
 }
 
 #[test]
@@ -323,8 +327,8 @@ fn test_make_duplicate_offer_fails() {
     let offerer = Address::generate(&e);
     let payment_token = setup_allowed_payment_token(&e, &client);
 
-    client.make_offer(&offerer, &1, &500, &payment_token);
-    client.make_offer(&offerer, &1, &600, &payment_token); // Should fail
+    client.make_offer(&offerer, &1, &500, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer, &1, &600, &payment_token, &offer_expiry(&e)); // Should fail
 }
 
 #[test]
@@ -339,7 +343,7 @@ fn test_make_offer_own_listing_fails() {
     let payment_token = setup_test_token(&e, &client);
 
     client.list_nft(&seller, &1, &1000, &payment_token);
-    client.make_offer(&seller, &1, &800, &payment_token); // Seller making offer on own listing
+    client.make_offer(&seller, &1, &800, &payment_token, &offer_expiry(&e)); // Seller making offer on own listing
 }
 
 #[test]
@@ -354,7 +358,7 @@ fn test_make_offer_own_auction_fails() {
     let payment_token = setup_test_token(&e, &client);
 
     client.start_auction(&seller, &1, &1000, &86400, &payment_token);
-    client.make_offer(&seller, &1, &1100, &payment_token); // Seller making offer on own auction
+    client.make_offer(&seller, &1, &1100, &payment_token, &offer_expiry(&e)); // Seller making offer on own auction
 }
 
 #[test]
@@ -368,7 +372,7 @@ fn test_accept_offer_own_listing_fails() {
     let seller = Address::generate(&e);
     let payment_token = setup_test_token(&e, &client);
 
-    client.make_offer(&seller, &1, &1000, &payment_token);
+    client.make_offer(&seller, &1, &1000, &payment_token, &offer_expiry(&e));
     client.accept_offer(&seller, &1, &seller); // Seller accepting own offer
 }
 
@@ -386,8 +390,8 @@ fn test_multiple_offers_same_token() {
     let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
-    client.make_offer(&offerer1, &token_id, &500, &payment_token);
-    client.make_offer(&offerer2, &token_id, &600, &payment_token);
+    client.make_offer(&offerer1, &token_id, &500, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer2, &token_id, &600, &payment_token, &offer_expiry(&e));
 
     let offers = client.get_offers(&token_id);
     assert_eq!(offers.len(), 2);
@@ -404,7 +408,7 @@ fn test_cancel_offer() {
     let payment_token = setup_allowed_payment_token(&e, &client);
     let token_id = 1u32;
 
-    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &offer_expiry(&e));
     client.cancel_offer(&offerer, &token_id);
 
     let offers = client.get_offers(&token_id);
@@ -421,6 +425,108 @@ fn test_cancel_nonexistent_offer_fails() {
 
     let offerer = Address::generate(&e);
     client.cancel_offer(&offerer, &999);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")] // OfferExpired
+fn test_make_offer_with_past_expiry_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+    let token_id = 1u32;
+
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = 1_000;
+    });
+
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &1_000);
+}
+
+#[test]
+fn test_accept_offer_before_expiry_succeeds() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let offerer = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    let token_id = 1u32;
+    client.add_payment_token(&payment_token);
+    soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&offerer, &10_000);
+
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = 1_000;
+    });
+
+    let expires_at = 2_000;
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &expires_at);
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = expires_at - 1;
+    });
+
+    client.accept_offer(&seller, &token_id, &offerer);
+    assert_eq!(client.get_offers(&token_id).len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")] // OfferExpired
+fn test_accept_offer_after_expiry_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let offerer = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+    let token_id = 1u32;
+
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = 1_000;
+    });
+
+    let expires_at = 2_000;
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &expires_at);
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = expires_at;
+    });
+
+    client.accept_offer(&seller, &token_id, &offerer);
+}
+
+#[test]
+fn test_prune_expired_offers_removes_only_expired_entries() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let expired_offerer = Address::generate(&e);
+    let active_offerer = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+    let token_id = 1u32;
+
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = 1_000;
+    });
+
+    client.make_offer(&expired_offerer, &token_id, &500, &payment_token, &1_500);
+    client.make_offer(&active_offerer, &token_id, &600, &payment_token, &3_000);
+
+    e.ledger().with_mut(|ledger| {
+        ledger.timestamp = 2_000;
+    });
+
+    assert_eq!(client.prune_expired_offers(&token_id), 1);
+    let offers = client.get_offers(&token_id);
+    assert_eq!(offers.len(), 1);
+    let remaining = offers.get(0).unwrap();
+    assert_eq!(remaining.offerer, active_offerer);
+    assert_eq!(remaining.expires_at, 3_000);
 }
 
 // ============================================================================
@@ -696,10 +802,10 @@ fn test_make_duplicate_offer_same_token_different_amount_fails() {
     let token_id = 1u32;
 
     // Make first offer
-    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &offer_expiry(&e));
     
     // Try to make another offer with different amount - should fail
-    client.make_offer(&offerer, &token_id, &1000, &payment_token);
+    client.make_offer(&offerer, &token_id, &1000, &payment_token, &offer_expiry(&e));
 }
 
 #[test]
@@ -715,13 +821,13 @@ fn test_make_duplicate_offer_different_tokens_same_user_fails() {
     let payment_token2 = setup_test_token(&e, &client);
 
     // Make offer on token 1
-    client.make_offer(&offerer, &1, &500, &payment_token1);
+    client.make_offer(&offerer, &1, &500, &payment_token1, &offer_expiry(&e));
     
     // Make offer on token 2 - should work (different token)
-    client.make_offer(&offerer, &2, &600, &payment_token2);
+    client.make_offer(&offerer, &2, &600, &payment_token2, &offer_expiry(&e));
     
     // Try to make another offer on token 1 - should fail
-    client.make_offer(&offerer, &1, &700, &payment_token1);
+    client.make_offer(&offerer, &1, &700, &payment_token1, &offer_expiry(&e));
 }
 
 #[test]
@@ -738,9 +844,9 @@ fn test_different_users_can_offer_same_token() {
     let token_id = 1u32;
 
     // Multiple users can offer on the same token
-    client.make_offer(&offerer1, &token_id, &500, &payment_token);
-    client.make_offer(&offerer2, &token_id, &600, &payment_token);
-    client.make_offer(&offerer3, &token_id, &700, &payment_token);
+    client.make_offer(&offerer1, &token_id, &500, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer2, &token_id, &600, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer3, &token_id, &700, &payment_token, &offer_expiry(&e));
 
     let offers = client.get_offers(&token_id);
     assert_eq!(offers.len(), 3);
@@ -761,9 +867,9 @@ fn test_cancel_offer_removes_correct_offer_only() {
     let token_id = 1u32;
 
     // Make multiple offers
-    client.make_offer(&offerer1, &token_id, &500, &payment_token);
-    client.make_offer(&offerer2, &token_id, &600, &payment_token);
-    client.make_offer(&offerer3, &token_id, &700, &payment_token);
+    client.make_offer(&offerer1, &token_id, &500, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer2, &token_id, &600, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer3, &token_id, &700, &payment_token, &offer_expiry(&e));
 
     // Cancel middle offer
     client.cancel_offer(&offerer2, &token_id);
@@ -799,7 +905,7 @@ fn test_cancel_last_offer_removes_storage() {
     let token_id = 1u32;
 
     // Make offer
-    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &offer_expiry(&e));
     
     // Verify offer exists
     let offers = client.get_offers(&token_id);
@@ -827,7 +933,7 @@ fn test_cancel_offer_after_accept_fails() {
     let token_id = 1u32;
 
     // Make offer
-    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &offer_expiry(&e));
     client.cancel_offer(&offerer, &token_id);
     client.cancel_offer(&offerer, &token_id);
 }
@@ -843,9 +949,9 @@ fn test_cancel_multiple_offers_same_user_different_tokens() {
     let payment_token = setup_test_token(&e, &client);
 
     // Make offers on different tokens
-    client.make_offer(&offerer, &1, &500, &payment_token);
-    client.make_offer(&offerer, &2, &600, &payment_token);
-    client.make_offer(&offerer, &3, &700, &payment_token);
+    client.make_offer(&offerer, &1, &500, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer, &2, &600, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer, &3, &700, &payment_token, &offer_expiry(&e));
 
     // Cancel one offer
     client.cancel_offer(&offerer, &2);
@@ -871,7 +977,7 @@ fn test_non_maker_cannot_cancel_offer() {
     let token_id = 1u32;
 
     // Make offer
-    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &offer_expiry(&e));
     
     // Try to cancel with different address - should fail
     client.cancel_offer(&non_maker, &token_id);
@@ -891,8 +997,8 @@ fn test_different_offerer_cannot_cancel_other_offer() {
     let token_id = 1u32;
 
     // Make offers from different users
-    client.make_offer(&offerer1, &token_id, &500, &payment_token);
-    client.make_offer(&offerer2, &token_id, &600, &payment_token);
+    client.make_offer(&offerer1, &token_id, &500, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer2, &token_id, &600, &payment_token, &offer_expiry(&e));
 
     let non_maker = Address::generate(&e);
     client.cancel_offer(&non_maker, &token_id);
@@ -911,8 +1017,8 @@ fn test_maker_can_cancel_own_offer_multiple_exist() {
     let token_id = 1u32;
 
     // Make offers from different users
-    client.make_offer(&offerer1, &token_id, &500, &payment_token);
-    client.make_offer(&offerer2, &token_id, &600, &payment_token);
+    client.make_offer(&offerer1, &token_id, &500, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer2, &token_id, &600, &payment_token, &offer_expiry(&e));
     
     // offerer1 should be able to cancel their own offer
     client.cancel_offer(&offerer1, &token_id);
@@ -951,10 +1057,10 @@ fn test_authorization_scenarios_comprehensive() {
     let payment_token = setup_test_token(&e, &client);
 
     // Create offers on multiple tokens
-    client.make_offer(&offerer1, &1, &100, &payment_token);
-    client.make_offer(&offerer2, &1, &200, &payment_token);
-    client.make_offer(&offerer1, &2, &300, &payment_token);
-    client.make_offer(&offerer3, &3, &400, &payment_token);
+    client.make_offer(&offerer1, &1, &100, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer2, &1, &200, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer1, &2, &300, &payment_token, &offer_expiry(&e));
+    client.make_offer(&offerer3, &3, &400, &payment_token, &offer_expiry(&e));
 
     // Each offerer can cancel their own offers
     client.cancel_offer(&offerer1, &1); // Cancels offerer1's offer on token 1
@@ -1098,7 +1204,7 @@ fn test_make_offer_reentrancy_guard() {
     e.as_contract(&client.address, || {
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
     });
-    client.make_offer(&offerer, &1, &500, &payment_token);
+    client.make_offer(&offerer, &1, &500, &payment_token, &offer_expiry(&e));
 }
 
 /// @notice Test: accept_offer fails if reentrancy guard is set.
@@ -1113,7 +1219,7 @@ fn test_accept_offer_reentrancy_guard() {
     let payment_token = setup_test_token(&e, &client);
     let token_id = 1u32;
     client.list_nft(&seller, &token_id, &1000, &payment_token);
-    client.make_offer(&offerer, &token_id, &500, &payment_token);
+    client.make_offer(&offerer, &token_id, &500, &payment_token, &offer_expiry(&e));
     e.as_contract(&client.address, || {
         e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
     });
@@ -1238,7 +1344,7 @@ fn test_make_offer_with_unallowlisted_token_fails() {
     let offerer = Address::generate(&e);
     let payment_token = Address::generate(&e);
 
-    client.make_offer(&offerer, &1, &1000, &payment_token);
+    client.make_offer(&offerer, &1, &1000, &payment_token, &offer_expiry(&e));
 }
 
 #[test]

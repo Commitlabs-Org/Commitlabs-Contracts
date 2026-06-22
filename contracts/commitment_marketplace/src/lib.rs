@@ -64,6 +64,8 @@ pub enum MarketplaceError {
     OfferExists = 13,
     /// Not offer maker
     NotOfferMaker = 14,
+    /// Offer has expired or expiry is not in the future
+    OfferExpired = 23,
     /// Auction not found
     AuctionNotFound = 15,
     /// Auction already ended
@@ -106,6 +108,7 @@ pub struct Offer {
     pub amount: i128,
     pub payment_token: Address,
     pub created_at: u64,
+    pub expires_at: u64,
 }
 
 /// Auction information
@@ -709,6 +712,7 @@ impl CommitmentMarketplace {
     /// @dev Reentrancy guard enforced.
     /// @error MarketplaceError::InvalidOfferAmount if amount <= 0.
     /// @error MarketplaceError::OfferExists if offerer already has an offer.
+    /// @error MarketplaceError::OfferExpired if expires_at is not in the future.
     /// @security Only callable by `offerer` (require_auth).
     pub fn make_offer(
         e: Env,
@@ -716,6 +720,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         amount: i128,
         payment_token: Address,
+        expires_at: u64,
     ) -> Result<(), MarketplaceError> {
         // Reentrancy protection
         let guard: bool = e
@@ -736,6 +741,14 @@ impl CommitmentMarketplace {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidOfferAmount);
+        }
+
+        let now = e.ledger().timestamp();
+        if expires_at <= now {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::OfferExpired);
         }
 
         if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
@@ -777,7 +790,8 @@ impl CommitmentMarketplace {
             offerer: offerer.clone(),
             amount,
             payment_token: payment_token.clone(),
-            created_at: e.ledger().timestamp(),
+            created_at: now,
+            expires_at,
         };
 
         let mut offers: Vec<Offer> = e
@@ -809,7 +823,7 @@ impl CommitmentMarketplace {
         // Emit event
         e.events().publish(
             (symbol_short!("OfferMade"), token_id),
-            (offerer, amount, payment_token),
+            (offerer, amount, payment_token, expires_at),
         );
 
         Ok(())
@@ -873,6 +887,12 @@ impl CommitmentMarketplace {
             })?;
 
         let offer = offers.get(offer_index as u32).unwrap();
+        if offer.expires_at <= e.ledger().timestamp() {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::OfferExpired);
+        }
 
         let fee_basis_points: u32 = e
             .storage()
@@ -982,6 +1002,42 @@ impl CommitmentMarketplace {
             .publish((symbol_short!("OfferCanc"), token_id), offerer);
 
         Ok(())
+    }
+
+    /// @notice Remove expired offers for a token.
+    /// @param token_id NFT token ID whose expired offers should be pruned.
+    /// @return Number of expired offers removed.
+    /// @dev Permissionless; only offers with `expires_at <= ledger.timestamp()` are removed.
+    pub fn prune_expired_offers(e: Env, token_id: u32) -> u32 {
+        let offers: Vec<Offer> = e
+            .storage()
+            .persistent()
+            .get(&DataKey::Offers(token_id))
+            .unwrap_or(Vec::new(&e));
+
+        let now = e.ledger().timestamp();
+        let mut active = Vec::new(&e);
+        let mut removed = 0u32;
+
+        for offer in offers.iter() {
+            if offer.expires_at <= now {
+                removed += 1;
+            } else {
+                active.push_back(offer);
+            }
+        }
+
+        if active.is_empty() {
+            e.storage().persistent().remove(&DataKey::Offers(token_id));
+        } else {
+            e.storage()
+                .persistent()
+                .set(&DataKey::Offers(token_id), &active);
+        }
+
+        e.events()
+            .publish((symbol_short!("OfferPrun"), token_id), removed);
+        removed
     }
 
     /// @notice Get all offers for a specific NFT token.

@@ -11,9 +11,10 @@ This page documents the public entry points, access control, and security notes 
 | list_nft               | List NFT for sale                            | Seller require_auth   | Fails if price <= 0, listing exists, or not initialized  |
 | cancel_listing         | Cancel NFT listing                           | Seller require_auth   | Fails if not found or not seller                         |
 | buy_nft                | Buy NFT from listing                         | Buyer require_auth    | Fails if not found, self-buy, or not initialized         |
-| make_offer             | Make offer on NFT                            | Offerer require_auth  | Fails if amount <= 0 or duplicate offer                  |
-| accept_offer           | Accept offer on NFT                          | Seller require_auth   | Fails if offer not found or not initialized              |
+| make_offer             | Make offer on NFT with expiry timestamp      | Offerer require_auth  | Fails if amount <= 0, duplicate offer, or expiry is not future |
+| accept_offer           | Accept offer on NFT                          | Seller require_auth   | Fails if offer not found, expired, or not initialized    |
 | cancel_offer           | Cancel offer                                 | Offerer require_auth  | Fails if offer not found                                 |
+| prune_expired_offers   | Remove expired offers for an NFT             | Permissionless        | Removes only offers with `expires_at <= ledger.timestamp()` |
 | start_auction          | Start auction for NFT                        | Seller require_auth   | Fails if price/duration invalid or auction exists        |
 | place_bid              | Place bid on auction                         | Bidder require_auth   | Fails if bid too low, ended, or self-bid                 |
 | end_auction            | End auction and settle                       | Anyone (time-gated)   | Fails if not ended, already ended, or not found          |
@@ -29,6 +30,12 @@ This page documents the public entry points, access control, and security notes 
 - Arithmetic is performed using checked math; integer division truncates toward zero.
 - No cross-contract NFT ownership checks or transfers are performed in this implementation (see contract comments).
 - All token transfers use Soroban token interface.
+
+## Offer Expiry
+- `make_offer` requires an `expires_at` ledger timestamp strictly greater than the current ledger timestamp.
+- `accept_offer` rejects an expired offer with `MarketplaceError::OfferExpired`; expiry is inclusive, so an offer is expired when `ledger.timestamp() >= expires_at`.
+- `get_offers` returns stored offers as-is so indexers can show both active and stale offers before pruning.
+- `prune_expired_offers(token_id)` is permissionless and removes only expired offers for that token, bounding `Offers(token_id)` storage growth without letting third parties remove still-active offers.
 
 ## Reentrancy Guard
 - All mutating entry points set/check/clear a `ReentrancyGuard` storage key.

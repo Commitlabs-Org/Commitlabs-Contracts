@@ -90,13 +90,13 @@ Any address ──────────────▶ Offer stored (per toke
 
 ### 3.1 Function Reference
 
-#### `make_offer(offerer, token_id, amount, payment_token)`
+#### `make_offer(offerer, token_id, amount, payment_token, expires_at)`
 
 - **Auth**: `offerer.require_auth()`
 - **Reentrancy guard**: yes
-- **Preconditions**: `amount > 0`, no existing offer from `offerer` for this token
+- **Preconditions**: `amount > 0`, `expires_at > ledger.timestamp()`, no existing offer from `offerer` for this token
 - **Effect**: appends `Offer` to `DataKey::Offers(token_id)`
-- **Event**: `("OfferMade", token_id) → (offerer, amount, payment_token)`
+- **Event**: `("OfferMade", token_id) → (offerer, amount, payment_token, expires_at)`
 
 #### `cancel_offer(offerer, token_id)`
 

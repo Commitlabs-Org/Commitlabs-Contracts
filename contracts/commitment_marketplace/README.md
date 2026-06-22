@@ -149,7 +149,8 @@ marketplace.make_offer(
     offerer_address,
     token_id,
     amount,
-    payment_token_address
+    payment_token_address,
+    expires_at
 )
 ```
 
@@ -281,10 +282,11 @@ fn make_offer(
     token_id: u32,
     amount: i128,
     payment_token: Address,
+    expires_at: u64,
 ) -> Result<(), MarketplaceError>
 ```
 
-Make an offer on an NFT.
+Make an offer on an NFT. `expires_at` must be greater than the current ledger timestamp.
 
 #### `accept_offer`
 
