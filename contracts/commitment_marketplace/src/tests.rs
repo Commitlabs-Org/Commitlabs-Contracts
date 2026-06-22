@@ -22,7 +22,7 @@ use crate::*;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger},
-    vec, Address, Env, IntoVal,
+    vec, Address, Bytes, BytesN, Env, IntoVal,
 };
 
 // ============================================================================
@@ -65,6 +65,11 @@ fn setup_allowed_payment_token(e: &Env, client: &CommitmentMarketplaceClient<'_>
     payment_token
 }
 
+fn upload_wasm(e: &Env) -> BytesN<32> {
+    let wasm = Bytes::new(e);
+    e.deployer().upload_contract_wasm(wasm)
+}
+
 // ============================================================================
 // Initialization Tests
 // ============================================================================
@@ -84,6 +89,80 @@ fn test_initialize_marketplace() {
     client.initialize(&admin, &nft_contract, &250, &fee_recipient);
 
     assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+}
+
+#[test]
+fn test_migrate_rejects_wrong_from_version_without_mutating_state() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    e.as_contract(&client.address, || {
+        e.storage().instance().remove(&DataKey::Version);
+    });
+
+    let result = client.try_migrate(&admin, &1);
+    assert_eq!(result, Err(Ok(MarketplaceError::InvalidVersion)));
+    assert_eq!(client.get_version(), 0);
+}
+
+#[test]
+fn test_migrate_initializes_legacy_storage_and_is_idempotent() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+    let seller = Address::generate(&e);
+    client.list_nft(&seller, &7, &1_000, &payment_token);
+
+    e.as_contract(&client.address, || {
+        e.storage().instance().remove(&DataKey::Version);
+        e.storage().instance().remove(&DataKey::ReentrancyGuard);
+    });
+
+    client.migrate(&admin, &0);
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+    assert!(client.is_payment_token_allowed(&payment_token));
+    assert_eq!(client.get_all_listings().len(), 1);
+
+    let result = client.try_migrate(&admin, &CURRENT_VERSION);
+    assert_eq!(result, Err(Ok(MarketplaceError::AlreadyMigrated)));
+    assert_eq!(client.get_version(), CURRENT_VERSION);
+}
+
+#[test]
+fn test_upgrade_authorization_and_invalid_hash() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let attacker = Address::generate(&e);
+    let wasm_hash = upload_wasm(&e);
+
+    assert_eq!(
+        client.try_upgrade(&attacker, &wasm_hash),
+        Err(Ok(MarketplaceError::Unauthorized))
+    );
+
+    let zero = BytesN::from_array(&e, &[0; 32]);
+    assert_eq!(
+        client.try_upgrade(&admin, &zero),
+        Err(Ok(MarketplaceError::InvalidWasmHash))
+    );
+}
+
+#[test]
+fn test_upgrade_accepts_uploaded_wasm_hash() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (admin, _, client) = setup_marketplace(&e);
+    let wasm_hash = upload_wasm(&e);
+
+    assert_eq!(client.try_upgrade(&admin, &wasm_hash), Ok(Ok(())));
+    assert_eq!(client.get_version(), CURRENT_VERSION);
 }
 
 #[test]

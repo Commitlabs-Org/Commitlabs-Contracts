@@ -22,10 +22,13 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Symbol, Vec,
 };
 use shared_utils::math::SafeMath;
+
+/// Current storage schema version for marketplace migrations.
+pub const CURRENT_VERSION: u32 = 1;
 
 // ============================================================================
 // Error Types
@@ -80,6 +83,14 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// Invalid WASM hash for upgrade
+    InvalidWasmHash = 23,
+    /// Invalid storage version supplied for migration
+    InvalidVersion = 24,
+    /// Migration already applied
+    AlreadyMigrated = 25,
+    /// Caller is not authorized for admin-only operation
+    Unauthorized = 26,
 }
 
 // ============================================================================
@@ -148,6 +159,8 @@ pub enum DataKey {
     Auction(u32),
     /// Active auctions list
     ActiveAuctions,
+    /// Stored marketplace schema version
+    Version,
     /// Reentrancy guard
     ReentrancyGuard,
 }
@@ -167,6 +180,15 @@ fn read_admin(e: &Env) -> Result<Address, MarketplaceError> {
         .instance()
         .get(&DataKey::Admin)
         .ok_or(MarketplaceError::NotInitialized)
+}
+
+fn require_admin(e: &Env, caller: &Address) -> Result<(), MarketplaceError> {
+    caller.require_auth();
+    let admin = read_admin(e)?;
+    if *caller != admin {
+        return Err(MarketplaceError::Unauthorized);
+    }
+    Ok(())
 }
 
 fn read_allowed_payment_tokens(e: &Env) -> Vec<Address> {
@@ -197,6 +219,21 @@ fn require_allowed_payment_token(
         return Err(MarketplaceError::PaymentTokenNotAllowed);
     }
 
+    Ok(())
+}
+
+fn read_version(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Version)
+        .unwrap_or(0)
+}
+
+fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), MarketplaceError> {
+    let zero = BytesN::from_array(e, &[0; 32]);
+    if *wasm_hash == zero {
+        return Err(MarketplaceError::InvalidWasmHash);
+    }
     Ok(())
 }
 
@@ -252,6 +289,9 @@ impl CommitmentMarketplace {
         e.storage()
             .instance()
             .set(&DataKey::AllowedPaymentTokens, &allowed_payment_tokens);
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
 
         Ok(())
     }
@@ -261,6 +301,76 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if not initialized.
     pub fn get_admin(e: Env) -> Result<Address, MarketplaceError> {
         read_admin(&e)
+    }
+
+    /// @notice Get current marketplace storage version.
+    /// @return Current schema version, or 0 for legacy/uninitialized storage.
+    pub fn get_version(e: Env) -> u32 {
+        read_version(&e)
+    }
+
+    /// @notice Upgrade the marketplace contract WASM.
+    /// @param caller Admin address authorizing the upgrade.
+    /// @param new_wasm_hash Hash of the uploaded replacement WASM.
+    /// @dev Admin-only. Rejects the all-zero hash before calling Soroban deployer.
+    /// @error MarketplaceError::Unauthorized if caller is not the stored admin.
+    /// @error MarketplaceError::InvalidWasmHash if new_wasm_hash is all zeros.
+    pub fn upgrade(
+        e: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), MarketplaceError> {
+        require_admin(&e, &caller)?;
+        require_valid_wasm_hash(&e, &new_wasm_hash)?;
+        e.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    /// @notice Migrate legacy marketplace storage to CURRENT_VERSION.
+    /// @param caller Admin address authorizing the migration.
+    /// @param from_version Version the caller expects to migrate from.
+    /// @dev Idempotent: rejects once storage is already at CURRENT_VERSION.
+    /// @error MarketplaceError::Unauthorized if caller is not the stored admin.
+    /// @error MarketplaceError::AlreadyMigrated if storage is already current.
+    /// @error MarketplaceError::InvalidVersion if from_version does not match stored version.
+    pub fn migrate(e: Env, caller: Address, from_version: u32) -> Result<(), MarketplaceError> {
+        require_admin(&e, &caller)?;
+
+        let stored_version = read_version(&e);
+        if stored_version == CURRENT_VERSION {
+            return Err(MarketplaceError::AlreadyMigrated);
+        }
+        if from_version != stored_version || from_version > CURRENT_VERSION {
+            return Err(MarketplaceError::InvalidVersion);
+        }
+
+        if !e.storage().instance().has(&DataKey::ActiveListings) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ActiveListings, &Vec::<u32>::new(&e));
+        }
+        if !e.storage().instance().has(&DataKey::ActiveAuctions) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ActiveAuctions, &Vec::<u32>::new(&e));
+        }
+        if !e.storage().instance().has(&DataKey::AllowedPaymentTokens) {
+            e.storage()
+                .instance()
+                .set(&DataKey::AllowedPaymentTokens, &Vec::<Address>::new(&e));
+        }
+        if !e.storage().instance().has(&DataKey::ReentrancyGuard) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
+        e.events()
+            .publish((symbol_short!("Migrated"),), (from_version, CURRENT_VERSION));
+        Ok(())
     }
 
     /// @notice Update the marketplace fee (basis points).

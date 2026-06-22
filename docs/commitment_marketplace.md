@@ -8,6 +8,9 @@ This page documents the public entry points, access control, and security notes 
 |------------------------|----------------------------------------------|-----------------------|----------------------------------------------------------|
 | initialize             | Set admin, NFT contract, fee, fee recipient  | Admin require_auth    | Fails if already initialized                             |
 | update_fee             | Update marketplace fee                       | Admin require_auth    | Fails if not initialized                                 |
+| upgrade                | Upgrade marketplace WASM                     | Caller must be admin  | Fails if caller is not admin or hash is invalid          |
+| migrate                | Migrate legacy storage to current version    | Caller must be admin  | Fails if version is invalid or already migrated          |
+| get_version            | Get marketplace storage version              | View                  | Returns 0 for legacy/uninitialized storage               |
 | list_nft               | List NFT for sale                            | Seller require_auth   | Fails if price <= 0, listing exists, or not initialized  |
 | cancel_listing         | Cancel NFT listing                           | Seller require_auth   | Fails if not found or not seller                         |
 | buy_nft                | Buy NFT from listing                         | Buyer require_auth    | Fails if not found, self-buy, or not initialized         |
@@ -29,6 +32,13 @@ This page documents the public entry points, access control, and security notes 
 - Arithmetic is performed using checked math; integer division truncates toward zero.
 - No cross-contract NFT ownership checks or transfers are performed in this implementation (see contract comments).
 - All token transfers use Soroban token interface.
+
+## Upgrade and Migration
+- `initialize` stores `Version = CURRENT_VERSION` for fresh deployments.
+- `upgrade(caller, new_wasm_hash)` requires the stored admin as `caller`, rejects the all-zero WASM hash, and then calls Soroban's current-contract WASM update.
+- `migrate(caller, from_version)` is admin-only and migrates legacy version `0` storage to `CURRENT_VERSION`.
+- `migrate` rejects mismatched `from_version`, downgrades, and repeated migrations with deterministic errors.
+- Migration preserves existing listings, auctions, offers, and payment-token allowlist state while backfilling missing instance keys such as active indexes and the reentrancy guard.
 
 ## Reentrancy Guard
 - All mutating entry points set/check/clear a `ReentrancyGuard` storage key.

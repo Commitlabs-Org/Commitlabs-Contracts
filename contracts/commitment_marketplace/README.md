@@ -389,6 +389,38 @@ fn update_fee(
 
 Update marketplace fee (admin only).
 
+#### `upgrade`
+
+```rust
+fn upgrade(
+    e: Env,
+    caller: Address,
+    new_wasm_hash: BytesN<32>,
+) -> Result<(), MarketplaceError>
+```
+
+Upgrade marketplace WASM. `caller` must be the stored admin and `new_wasm_hash` must not be all zeros.
+
+#### `migrate`
+
+```rust
+fn migrate(
+    e: Env,
+    caller: Address,
+    from_version: u32,
+) -> Result<(), MarketplaceError>
+```
+
+Migrate legacy marketplace storage to `CURRENT_VERSION`; rejects mismatched versions and repeated migrations.
+
+#### `get_version`
+
+```rust
+fn get_version(e: Env) -> u32
+```
+
+Get the current marketplace storage version.
+
 #### `get_admin`
 
 ```rust
