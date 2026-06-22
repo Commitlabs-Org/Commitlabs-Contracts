@@ -31,6 +31,8 @@ pub mod fuzzing;
 
 /// Maximum page size for paginated owner-commitment queries.
 const MAX_PAGE_SIZE: u32 = 50;
+/// Commitment creation timestamps are indexed into UTC-day buckets.
+const COMMITMENT_CREATED_BUCKET_SECONDS: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -183,6 +185,10 @@ pub enum DataKey {
     AuthorizedOperator(Address),
     /// All commitment IDs for time-range queries (analytics). Appended on create.
     AllCommitmentIds,
+    /// Non-empty creation-day buckets. Used to avoid scanning every commitment for range queries.
+    CommitmentCreatedBucketDays,
+    /// Commitment IDs created during a specific UTC-day bucket.
+    CommitmentsCreatedInBucket(u64),
     /// Fee recipient (protocol treasury) for fee withdrawals
     FeeRecipient,
     /// Creation fee rate in basis points (0-10000)
@@ -218,6 +224,35 @@ fn check_sufficient_balance(e: &Env, owner: &Address, asset_address: &Address, a
 fn transfer_assets(e: &Env, from: &Address, to: &Address, asset_address: &Address, amount: i128) {
     let token_client = token::Client::new(e, asset_address);
     token_client.transfer(from, to, &amount);
+}
+
+fn created_bucket_day(created_at: u64) -> u64 {
+    created_at / COMMITMENT_CREATED_BUCKET_SECONDS
+}
+
+fn add_commitment_to_created_bucket(e: &Env, commitment: &Commitment) {
+    let bucket_day = created_bucket_day(commitment.created_at);
+    let bucket_key = DataKey::CommitmentsCreatedInBucket(bucket_day);
+    let mut bucket_ids = e
+        .storage()
+        .instance()
+        .get::<_, Vec<String>>(&bucket_key)
+        .unwrap_or(Vec::new(e));
+
+    if bucket_ids.is_empty() {
+        let mut bucket_days = e
+            .storage()
+            .instance()
+            .get::<_, Vec<u64>>(&DataKey::CommitmentCreatedBucketDays)
+            .unwrap_or(Vec::new(e));
+        bucket_days.push_back(bucket_day);
+        e.storage()
+            .instance()
+            .set(&DataKey::CommitmentCreatedBucketDays, &bucket_days);
+    }
+
+    bucket_ids.push_back(commitment.commitment_id.clone());
+    e.storage().instance().set(&bucket_key, &bucket_ids);
 }
 
 /// Helper function to call NFT contract mint function.
@@ -596,6 +631,7 @@ impl CommitmentCoreContract {
         e.storage()
             .instance()
             .set(&DataKey::AllCommitmentIds, &all_ids);
+        add_commitment_to_created_bucket(&e, &commitment);
 
         let contract_address = e.current_contract_address();
         transfer_assets(&e, &owner, &contract_address, &asset_address, amount);
@@ -712,16 +748,34 @@ impl CommitmentCoreContract {
 
     /// Get commitment IDs created between two timestamps (inclusive).
     pub fn get_commitments_created_between(e: Env, from_ts: u64, to_ts: u64) -> Vec<String> {
-        let all_ids = e
+        if from_ts > to_ts {
+            return Vec::new(&e);
+        }
+
+        let from_bucket = created_bucket_day(from_ts);
+        let to_bucket = created_bucket_day(to_ts);
+        let bucket_days = e
             .storage()
             .instance()
-            .get::<_, Vec<String>>(&DataKey::AllCommitmentIds)
+            .get::<_, Vec<u64>>(&DataKey::CommitmentCreatedBucketDays)
             .unwrap_or(Vec::new(&e));
         let mut out = Vec::new(&e);
-        for id in all_ids.iter() {
-            if let Some(c) = read_commitment(&e, &id) {
-                if c.created_at >= from_ts && c.created_at <= to_ts {
-                    out.push_back(id.clone());
+
+        for bucket_day in bucket_days.iter() {
+            if bucket_day < from_bucket || bucket_day > to_bucket {
+                continue;
+            }
+
+            let bucket_ids = e
+                .storage()
+                .instance()
+                .get::<_, Vec<String>>(&DataKey::CommitmentsCreatedInBucket(bucket_day))
+                .unwrap_or(Vec::new(&e));
+            for id in bucket_ids.iter() {
+                if let Some(c) = read_commitment(&e, &id) {
+                    if c.created_at >= from_ts && c.created_at <= to_ts {
+                        out.push_back(id.clone());
+                    }
                 }
             }
         }

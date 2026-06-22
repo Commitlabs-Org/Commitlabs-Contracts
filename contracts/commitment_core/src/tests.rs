@@ -355,6 +355,48 @@ fn store_commitment(e: &Env, contract_id: &Address, commitment: &Commitment) {
     });
 }
 
+fn store_commitment_with_created_indexes(e: &Env, contract_id: &Address, commitment: &Commitment) {
+    e.as_contract(contract_id, || {
+        set_commitment(e, commitment);
+
+        let mut all_ids = e
+            .storage()
+            .instance()
+            .get::<_, Vec<String>>(&DataKey::AllCommitmentIds)
+            .unwrap_or(Vec::new(e));
+        all_ids.push_back(commitment.commitment_id.clone());
+        e.storage()
+            .instance()
+            .set(&DataKey::AllCommitmentIds, &all_ids);
+
+        add_commitment_to_created_bucket(e, commitment);
+    });
+}
+
+fn full_scan_commitments_created_between(
+    e: &Env,
+    contract_id: &Address,
+    from_ts: u64,
+    to_ts: u64,
+) -> Vec<String> {
+    e.as_contract(contract_id, || {
+        let all_ids = e
+            .storage()
+            .instance()
+            .get::<_, Vec<String>>(&DataKey::AllCommitmentIds)
+            .unwrap_or(Vec::new(e));
+        let mut out = Vec::new(e);
+        for id in all_ids.iter() {
+            if let Some(c) = read_commitment(e, &id) {
+                if c.created_at >= from_ts && c.created_at <= to_ts {
+                    out.push_back(id.clone());
+                }
+            }
+        }
+        out
+    })
+}
+
 #[test]
 fn test_create_commitment_passes_core_contract_as_nft_caller() {
     let e = Env::default();
@@ -1198,8 +1240,21 @@ fn test_create_commitment_updates_storage_layout() {
             .get::<_, Vec<String>>(&DataKey::AllCommitmentIds)
             .unwrap()
     });
+    let bucket_day = created_bucket_day(e.ledger().timestamp());
+    let bucket_days = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, Vec<u64>>(&DataKey::CommitmentCreatedBucketDays)
+            .unwrap()
+    });
+    let bucket_ids = e.as_contract(&contract_id, || {
+        e.storage()
+            .instance()
+            .get::<_, Vec<String>>(&DataKey::CommitmentsCreatedInBucket(bucket_day))
+            .unwrap()
+    });
 
-    assert_eq!(created_id, String::from_str(&e, "c_0"));
+    assert_eq!(created_id, String::from_str(&e, "COMMIT_0"));
     assert_eq!(commitment.commitment_id, created_id);
     assert_eq!(commitment.owner, owner);
     assert_eq!(commitment.asset_address, asset_address.clone());
@@ -1216,9 +1271,103 @@ fn test_create_commitment_updates_storage_layout() {
     assert_eq!(total_commitments, 1);
     assert_eq!(total_value_locked, amount);
     assert_eq!(all_ids, vec![&e, created_id.clone()]);
+    assert_eq!(bucket_days, vec![&e, bucket_day]);
+    assert_eq!(bucket_ids, vec![&e, created_id.clone()]);
     assert_eq!(client.get_collected_fees(&asset_address), 0);
     assert_eq!(token_client.balance(&owner), amount);
     assert_eq!(token_client.balance(&contract_id), amount);
+}
+
+#[test]
+fn test_get_commitments_created_between_uses_empty_bucket_index() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    assert_eq!(client.get_commitments_created_between(&0, &u64::MAX).len(), 0);
+    assert_eq!(client.get_commitments_created_between(&100, &99).len(), 0);
+}
+
+#[test]
+fn test_get_commitments_created_between_reads_single_bucket_boundaries() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let owner = Address::generate(&e);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    let start = 2 * COMMITMENT_CREATED_BUCKET_SECONDS;
+    let first = create_test_commitment(&e, "first", &owner, 1000, 1000, 10, 30, start);
+    let middle = create_test_commitment(&e, "middle", &owner, 1000, 1000, 10, 30, start + 10);
+    let last = create_test_commitment(
+        &e,
+        "last",
+        &owner,
+        1000,
+        1000,
+        10,
+        30,
+        start + COMMITMENT_CREATED_BUCKET_SECONDS - 1,
+    );
+    store_commitment_with_created_indexes(&e, &contract_id, &first);
+    store_commitment_with_created_indexes(&e, &contract_id, &middle);
+    store_commitment_with_created_indexes(&e, &contract_id, &last);
+
+    assert_eq!(
+        client.get_commitments_created_between(
+            &start,
+            &(start + COMMITMENT_CREATED_BUCKET_SECONDS - 1)
+        ),
+        vec![&e, first.commitment_id, middle.commitment_id, last.commitment_id]
+    );
+}
+
+#[test]
+fn test_get_commitments_created_between_reads_multiple_relevant_buckets() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let owner = Address::generate(&e);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    let day = COMMITMENT_CREATED_BUCKET_SECONDS;
+    let before = create_test_commitment(&e, "before", &owner, 1000, 1000, 10, 30, day - 1);
+    let day_one = create_test_commitment(&e, "day_one", &owner, 1000, 1000, 10, 30, day);
+    let day_two = create_test_commitment(&e, "day_two", &owner, 1000, 1000, 10, 30, day * 2 + 5);
+    let after = create_test_commitment(&e, "after", &owner, 1000, 1000, 10, 30, day * 3);
+    store_commitment_with_created_indexes(&e, &contract_id, &before);
+    store_commitment_with_created_indexes(&e, &contract_id, &day_one);
+    store_commitment_with_created_indexes(&e, &contract_id, &day_two);
+    store_commitment_with_created_indexes(&e, &contract_id, &after);
+
+    assert_eq!(
+        client.get_commitments_created_between(&day, &(day * 2 + 5)),
+        vec![&e, day_one.commitment_id, day_two.commitment_id]
+    );
+}
+
+#[test]
+fn test_get_commitments_created_between_matches_full_scan_order() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, CommitmentCoreContract);
+    let owner = Address::generate(&e);
+    let client = CommitmentCoreContractClient::new(&e, &contract_id);
+
+    for (id, created_at) in [
+        ("c0", 10),
+        ("c1", COMMITMENT_CREATED_BUCKET_SECONDS + 1),
+        ("c2", COMMITMENT_CREATED_BUCKET_SECONDS * 2),
+        ("c3", COMMITMENT_CREATED_BUCKET_SECONDS * 2 + 50),
+        ("c4", COMMITMENT_CREATED_BUCKET_SECONDS * 4),
+    ] {
+        let commitment = create_test_commitment(&e, id, &owner, 1000, 1000, 10, 30, created_at);
+        store_commitment_with_created_indexes(&e, &contract_id, &commitment);
+    }
+
+    let from_ts = COMMITMENT_CREATED_BUCKET_SECONDS;
+    let to_ts = COMMITMENT_CREATED_BUCKET_SECONDS * 3;
+    let expected = full_scan_commitments_created_between(&e, &contract_id, from_ts, to_ts);
+    let indexed = client.get_commitments_created_between(&from_ts, &to_ts);
+
+    assert_eq!(indexed, expected);
 }
 
 #[test]
