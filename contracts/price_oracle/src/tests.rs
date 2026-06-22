@@ -52,15 +52,44 @@ fn test_admin_transfer_and_oracle_control() {
     assert_eq!(client.try_add_oracle(&admin1, &oracle), Ok(Ok(())));
     assert!(client.is_oracle_whitelisted(&oracle));
 
-    // Transfer admin
+    // Transfer admin requires propose + accept
     assert_eq!(client.try_set_admin(&admin2, &admin2), Err(Ok(OracleError::Unauthorized)));
     assert_eq!(client.try_set_admin(&admin1, &admin2), Ok(Ok(())));
+    assert_eq!(client.get_admin(), admin1);
+    assert_eq!(client.get_pending_admin(), Some(admin2.clone()));
+    assert_eq!(client.try_accept_admin(&admin1), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_accept_admin(&admin2), Ok(Ok(())));
     assert_eq!(client.get_admin(), admin2);
+    assert_eq!(client.get_pending_admin(), None);
 
     // Now only admin2 can remove
     assert_eq!(client.try_remove_oracle(&admin1, &oracle), Err(Ok(OracleError::Unauthorized)));
     assert_eq!(client.try_remove_oracle(&admin2, &oracle), Ok(Ok(())));
     assert!(!client.is_oracle_whitelisted(&oracle));
+}
+
+#[test]
+fn test_admin_handoff_reproposal_overwrites_pending_admin() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let first_pending = Address::generate(&e);
+    let second_pending = Address::generate(&e);
+    let contract_id = e.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&e, &contract_id);
+
+    e.as_contract(&contract_id, || {
+        PriceOracleContract::initialize(e.clone(), admin.clone()).unwrap();
+    });
+
+    assert_eq!(client.try_propose_admin(&first_pending, &first_pending), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_propose_admin(&admin, &first_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(first_pending.clone()));
+    assert_eq!(client.try_propose_admin(&admin, &second_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(second_pending.clone()));
+    assert_eq!(client.try_accept_admin(&first_pending), Err(Ok(OracleError::Unauthorized)));
+    assert_eq!(client.try_accept_admin(&second_pending), Ok(Ok(())));
+    assert_eq!(client.get_admin(), second_pending);
 }
 
 

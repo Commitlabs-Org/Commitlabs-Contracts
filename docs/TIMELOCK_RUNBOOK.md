@@ -71,6 +71,9 @@ Use for signer rotation, multisig replacement, or governance transfer.
 
 Operational guidance:
 - verify the new admin can authenticate on Soroban before queueing
+- for contracts with two-step admin handoff, queue or execute the proposal first, then require the pending admin to call `accept_admin` from the destination key or multisig before treating the rotation as complete
+- after acceptance, confirm `get_admin()` returns the new address and `get_pending_admin()` is empty
+- if the destination address is wrong or the recipient cannot authenticate, have the current admin re-run the proposal with the corrected address; a new proposal overwrites the pending admin
 - use a longer delay if the change also alters operational processes or key custody
 
 ### `Upgrade`

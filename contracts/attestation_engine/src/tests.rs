@@ -229,6 +229,69 @@ fn test_migrate_rejects_non_admin() {
 }
 
 #[test]
+fn test_admin_handoff_requires_pending_admin_acceptance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let pending = Address::generate(&e);
+    let wrong = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+
+    assert_eq!(
+        client.try_propose_admin(&wrong, &pending),
+        Err(Ok(AttestationError::Unauthorized))
+    );
+    assert_eq!(client.try_set_admin(&admin, &pending), Ok(Ok(())));
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_pending_admin(), Some(pending.clone()));
+    assert_eq!(
+        client.try_add_verifier(&pending, &pending),
+        Err(Ok(AttestationError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_accept_admin(&wrong),
+        Err(Ok(AttestationError::Unauthorized))
+    );
+    assert_eq!(client.try_accept_admin(&pending), Ok(Ok(())));
+    assert_eq!(client.get_admin(), pending.clone());
+    assert_eq!(client.get_pending_admin(), None);
+    assert_eq!(
+        client.try_add_verifier(&admin, &admin),
+        Err(Ok(AttestationError::Unauthorized))
+    );
+    assert_eq!(client.try_add_verifier(&pending, &pending), Ok(Ok(())));
+}
+
+#[test]
+fn test_admin_handoff_reproposal_overwrites_pending_admin() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, AttestationEngineContract);
+    let client = AttestationEngineContractClient::new(&e, &contract_id);
+    let admin = Address::generate(&e);
+    let first_pending = Address::generate(&e);
+    let second_pending = Address::generate(&e);
+    let core = Address::generate(&e);
+
+    client.initialize(&admin, &core);
+
+    assert_eq!(client.try_propose_admin(&admin, &first_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(first_pending.clone()));
+    assert_eq!(client.try_propose_admin(&admin, &second_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(second_pending.clone()));
+    assert_eq!(
+        client.try_accept_admin(&first_pending),
+        Err(Ok(AttestationError::Unauthorized))
+    );
+    assert_eq!(client.try_accept_admin(&second_pending), Ok(Ok(())));
+    assert_eq!(client.get_admin(), second_pending);
+}
+
+#[test]
 fn test_get_health_metrics_cross_reads_commitment_core_state() {
     let e = Env::default();
     let (attestation_id, core_id) = setup_initialized_engine_with_core(&e);

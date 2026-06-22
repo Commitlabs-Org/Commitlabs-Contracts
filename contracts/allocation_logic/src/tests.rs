@@ -147,6 +147,42 @@ fn test_migrate_rejects_non_admin() {
     assert_eq!(client.get_version(), CURRENT_VERSION);
 }
 
+#[test]
+fn test_admin_handoff_requires_pending_admin_acceptance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _core_id, client) = create_contract(&env);
+    let pending = Address::generate(&env);
+    let wrong = Address::generate(&env);
+
+    assert_eq!(client.try_propose_admin(&wrong, &pending), Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.try_set_admin(&admin, &pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(pending.clone()));
+    assert_eq!(client.try_register_pool(&pending, &99, &RiskLevel::Low, &400, &1_000), Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.try_accept_admin(&wrong), Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.try_accept_admin(&pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), None);
+    assert_eq!(client.try_register_pool(&admin, &99, &RiskLevel::Low, &400, &1_000), Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.try_register_pool(&pending, &99, &RiskLevel::Low, &400, &1_000), Ok(Ok(())));
+}
+
+#[test]
+fn test_admin_handoff_reproposal_overwrites_pending_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _core_id, client) = create_contract(&env);
+    let first_pending = Address::generate(&env);
+    let second_pending = Address::generate(&env);
+
+    assert_eq!(client.try_propose_admin(&admin, &first_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(first_pending.clone()));
+    assert_eq!(client.try_propose_admin(&admin, &second_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(second_pending.clone()));
+    assert_eq!(client.try_accept_admin(&first_pending), Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.try_accept_admin(&second_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), None);
+}
+
 // ============================================================================
 // COMPREHENSIVE REBALANCE TESTS - Issue #236
 // Focus: Owner Match, Strategy Persistence, Summary Correctness

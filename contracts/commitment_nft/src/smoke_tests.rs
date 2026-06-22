@@ -25,6 +25,57 @@ fn test_initialize_sets_admin_and_zero_supply() {
 }
 
 #[test]
+fn test_admin_handoff_requires_pending_admin_acceptance() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let pending = Address::generate(&e);
+    let wrong = Address::generate(&e);
+
+    assert_eq!(
+        client.try_propose_admin(&wrong, &pending),
+        Err(Ok(ContractError::NotAuthorized))
+    );
+    assert_eq!(client.try_set_admin(&admin, &pending), Ok(Ok(())));
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_pending_admin(), Some(pending.clone()));
+    assert_eq!(
+        client.try_add_authorized_contract(&pending, &pending),
+        Err(Ok(ContractError::NotAuthorized))
+    );
+    assert_eq!(
+        client.try_accept_admin(&wrong),
+        Err(Ok(ContractError::NotAuthorized))
+    );
+    assert_eq!(client.try_accept_admin(&pending), Ok(Ok(())));
+    assert_eq!(client.get_admin(), pending.clone());
+    assert_eq!(client.get_pending_admin(), None);
+    assert_eq!(
+        client.try_add_authorized_contract(&admin, &admin),
+        Err(Ok(ContractError::NotAuthorized))
+    );
+    assert_eq!(client.try_add_authorized_contract(&pending, &pending), Ok(Ok(())));
+}
+
+#[test]
+fn test_admin_handoff_reproposal_overwrites_pending_admin() {
+    let e = Env::default();
+    let (admin, client) = setup_contract(&e);
+    let first_pending = Address::generate(&e);
+    let second_pending = Address::generate(&e);
+
+    assert_eq!(client.try_propose_admin(&admin, &first_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(first_pending.clone()));
+    assert_eq!(client.try_propose_admin(&admin, &second_pending), Ok(Ok(())));
+    assert_eq!(client.get_pending_admin(), Some(second_pending.clone()));
+    assert_eq!(
+        client.try_accept_admin(&first_pending),
+        Err(Ok(ContractError::NotAuthorized))
+    );
+    assert_eq!(client.try_accept_admin(&second_pending), Ok(Ok(())));
+    assert_eq!(client.get_admin(), second_pending);
+}
+
+#[test]
 fn test_mint_and_settle_as_core_updates_supply_and_activity() {
     let e = Env::default();
     let (admin, client) = setup_contract(&e);

@@ -142,6 +142,7 @@ pub enum DataKey {
     Strategy(String),
     CommitmentCore,
     Admin,
+    PendingAdmin,
     Initialized,
     ReentrancyGuard,
     PoolRegistry,            // Vec<u32> of all pool IDs
@@ -740,12 +741,46 @@ impl AllocationStrategiesContract {
         read_version(&env)
     }
 
-    /// Update admin (admin-only).
-    pub fn set_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
+    /// Return the pending admin, if a handoff has been proposed.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Propose a new admin (admin-only).
+    ///
+    /// The proposed admin must call [`Self::accept_admin`] before control transfers.
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
         caller.require_auth();
         Self::require_initialized(&env)?;
         Self::require_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a pending admin handoff.
+    ///
+    /// Only the pending admin can finalize the transfer.
+    pub fn accept_admin(env: Env, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_initialized(&env)?;
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if caller != pending {
+            return Err(Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    /// Deprecated compatibility wrapper for proposing a new admin.
+    ///
+    /// Does not transfer control until `new_admin` calls [`Self::accept_admin`].
+    pub fn set_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
+        Self::propose_admin(env, caller, new_admin)?;
         Ok(())
     }
 

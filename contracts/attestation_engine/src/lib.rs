@@ -61,6 +61,8 @@ pub enum AttestationError {
 pub enum DataKey {
     /// Admin address
     Admin,
+    /// Proposed admin waiting to accept the handoff.
+    PendingAdmin,
     /// Core contract address
     CoreContract,
     /// Verifier whitelist (Address -> bool)
@@ -499,10 +501,47 @@ impl AttestationEngineContract {
         read_version(&e)
     }
 
-    /// Update admin (admin-only).
-    pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), AttestationError> {
+    /// Return the pending admin, if a handoff has been proposed.
+    pub fn get_pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Propose a new admin (admin-only).
+    ///
+    /// The proposed admin must call [`Self::accept_admin`] before control transfers.
+    pub fn propose_admin(
+        e: Env,
+        caller: Address,
+        new_admin: Address,
+    ) -> Result<(), AttestationError> {
         require_admin(&e, &caller)?;
-        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        e.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a pending admin handoff.
+    ///
+    /// Only the pending admin can finalize the transfer.
+    pub fn accept_admin(e: Env, caller: Address) -> Result<(), AttestationError> {
+        caller.require_auth();
+        let pending: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(AttestationError::Unauthorized)?;
+        if caller != pending {
+            return Err(AttestationError::Unauthorized);
+        }
+        e.storage().instance().set(&DataKey::Admin, &caller);
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    /// Deprecated compatibility wrapper for proposing a new admin.
+    ///
+    /// Does not transfer control until `new_admin` calls [`Self::accept_admin`].
+    pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), AttestationError> {
+        Self::propose_admin(e, caller, new_admin)?;
         Ok(())
     }
 

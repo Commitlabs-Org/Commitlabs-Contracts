@@ -4,6 +4,7 @@
 
 - Admin-only functions in allocation_logic and attestation_engine require `require_auth` and compare caller to stored admin.
 - commitment_nft `set_core_contract` enforces admin auth, and `settle` / `mark_inactive` now require authorization from the configured core contract; `mint` still relies on a caller-supplied address and should remain in audit scope.
+- Admin rotation in `commitment_nft`, `attestation_engine`, `allocation_logic`, and `price_oracle` uses a two-step handoff: the current admin proposes `PendingAdmin`, then the pending admin must authenticate and accept before control changes. Legacy `set_admin` entrypoints are compatibility wrappers for proposing, not finalizing, a transfer.
 - commitment_core state-changing functions (`create_commitment`, `settle`, `early_exit`, `allocate`, `update_value`) do not call `require_auth` and accept caller-provided addresses.
 - Attestation recording requires caller authorization (`is_authorized_verifier`) and `require_auth`.
 

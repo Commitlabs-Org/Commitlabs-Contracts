@@ -64,6 +64,7 @@ pub struct OracleConfig {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     /// Default max age (seconds) for price validity (legacy)
     MaxStalenessSeconds,
     /// Whitelist: set of Address that can call set_price
@@ -340,21 +341,50 @@ impl PriceOracleContract {
         read_admin(&e)
     }
 
+    /// @notice Get the pending admin, if a handoff has been proposed.
+    pub fn get_pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
     /// Get current on-chain version (0 if legacy/uninitialized).
     pub fn get_version(e: Env) -> u32 {
         read_version(&e)
     }
 
-    /// @notice Update admin address (admin-only).
-    /// @dev Transfers control over whitelist management and configuration.
+    /// @notice Propose a new admin address (admin-only).
+    /// @dev The proposed admin must call `accept_admin` before control transfers.
     /// @param e Contract environment.
     /// @param caller Must be the current admin.
     /// @param new_admin Address to set as new admin.
     /// @return Ok(()) on success, Err(Unauthorized) if not admin.
     /// @security Only the admin can transfer admin authority.
-    pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), OracleError> {
+    pub fn propose_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), OracleError> {
         require_admin_result(&e, &caller)?;
-        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        e.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// @notice Accept a pending admin handoff.
+    /// @dev Only the pending admin can finalize the transfer.
+    pub fn accept_admin(e: Env, caller: Address) -> Result<(), OracleError> {
+        caller.require_auth();
+        let pending: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(OracleError::Unauthorized)?;
+        if caller != pending {
+            return Err(OracleError::Unauthorized);
+        }
+        e.storage().instance().set(&DataKey::Admin, &caller);
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    /// @notice Deprecated compatibility wrapper for proposing a new admin.
+    /// @dev Does not transfer control until `accept_admin` is called by `new_admin`.
+    pub fn set_admin(e: Env, caller: Address, new_admin: Address) -> Result<(), OracleError> {
+        Self::propose_admin(e, caller, new_admin)?;
         Ok(())
     }
 
