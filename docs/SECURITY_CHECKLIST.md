@@ -9,6 +9,7 @@
 ## Reentrancy protection
 - [ ] Validate guard set/clear in every state-changing function.
 - [ ] Confirm external calls are performed after state updates.
+- [ ] Verify `commitment_marketplace` malicious-token regression coverage for `buy_nft`, `accept_offer`, `place_bid` previous-bid refund, and `end_auction`; current offer cancellation has no token refund transfer to re-enter.
 
 ## Arithmetic safety
 - [ ] Check for unchecked arithmetic in all contracts.

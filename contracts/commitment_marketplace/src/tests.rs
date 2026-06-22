@@ -20,6 +20,7 @@ extern crate std;
 
 use crate::*;
 use soroban_sdk::{
+    contract, contractimpl, contracttype,
     symbol_short,
     testutils::{Address as _, Events, Ledger},
     vec, Address, Env, IntoVal,
@@ -28,6 +29,153 @@ use soroban_sdk::{
 // ============================================================================
 // Test Setup Helpers
 // ============================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+enum ReentryAction {
+    BuyNft,
+    AcceptOffer,
+    PlaceBid,
+    EndAuction,
+}
+
+#[derive(Clone)]
+#[contracttype]
+enum ReentrantTokenKey {
+    Marketplace,
+    Action,
+    TokenId,
+    Seller,
+    Offerer,
+    Bidder,
+    BidAmount,
+    Enabled,
+    Observed,
+}
+
+#[contract]
+struct ReentrantPaymentToken;
+
+#[contractimpl]
+impl ReentrantPaymentToken {
+    pub fn configure(
+        e: Env,
+        marketplace: Address,
+        action: ReentryAction,
+        token_id: u32,
+        seller: Address,
+        offerer: Address,
+        bidder: Address,
+        bid_amount: i128,
+    ) {
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Marketplace, &marketplace);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Action, &action);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::TokenId, &token_id);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Seller, &seller);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Offerer, &offerer);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Bidder, &bidder);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::BidAmount, &bid_amount);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Enabled, &true);
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Observed, &false);
+    }
+
+    pub fn set_enabled(e: Env, enabled: bool) {
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Enabled, &enabled);
+    }
+
+    pub fn observed_reentrancy(e: Env) -> bool {
+        e.storage()
+            .instance()
+            .get(&ReentrantTokenKey::Observed)
+            .unwrap_or(false)
+    }
+
+    pub fn transfer(e: Env, _from: Address, _to: Address, _amount: i128) {
+        if !e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::Enabled)
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        e.storage()
+            .instance()
+            .set(&ReentrantTokenKey::Enabled, &false);
+
+        let marketplace: Address = e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::Marketplace)
+            .unwrap();
+        let action: ReentryAction = e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::Action)
+            .unwrap();
+        let token_id: u32 = e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::TokenId)
+            .unwrap();
+        let seller: Address = e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::Seller)
+            .unwrap();
+        let offerer: Address = e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::Offerer)
+            .unwrap();
+        let bidder: Address = e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::Bidder)
+            .unwrap();
+        let bid_amount: i128 = e
+            .storage()
+            .instance()
+            .get(&ReentrantTokenKey::BidAmount)
+            .unwrap();
+
+        let client = CommitmentMarketplaceClient::new(&e, &marketplace);
+        let reentry_error = match action {
+            ReentryAction::BuyNft => client.try_buy_nft(&offerer, &token_id),
+            ReentryAction::AcceptOffer => client.try_accept_offer(&seller, &token_id, &offerer),
+            ReentryAction::PlaceBid => client.try_place_bid(&bidder, &token_id, &bid_amount),
+            ReentryAction::EndAuction => client.try_end_auction(&token_id),
+        };
+
+        let observed_reentrancy = reentry_error.is_err();
+        if observed_reentrancy {
+            e.storage()
+                .instance()
+                .set(&ReentrantTokenKey::Observed, &true);
+        }
+    }
+}
 
 /// @notice Helper to deploy and initialize the marketplace contract for tests.
 /// @param e Test environment.
@@ -63,6 +211,25 @@ fn setup_allowed_payment_token(e: &Env, client: &CommitmentMarketplaceClient<'_>
     let payment_token = Address::generate(e);
     client.add_payment_token(&payment_token);
     payment_token
+}
+
+fn setup_reentrant_payment_token<'a>(
+    e: &'a Env,
+    client: &CommitmentMarketplaceClient<'a>,
+) -> (Address, ReentrantPaymentTokenClient<'a>) {
+    let token = e.register_contract(None, ReentrantPaymentToken);
+    let token_client = ReentrantPaymentTokenClient::new(e, &token);
+    client.add_payment_token(&token);
+    (token, token_client)
+}
+
+fn marketplace_guard_active(e: &Env, marketplace: &Address) -> bool {
+    e.as_contract(marketplace, || {
+        e.storage()
+            .instance()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+    })
 }
 
 // ============================================================================
@@ -1035,6 +1202,123 @@ fn test_reentrancy_protection() {
 // ============================================================================
 // Reentrancy Guard Unit Tests (Explicit)
 // ============================================================================
+
+#[test]
+fn test_reentrant_payment_token_buy_nft_is_blocked_and_guard_resets() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let token_id = 1u32;
+    let (payment_token, token_client) = setup_reentrant_payment_token(&e, &client);
+
+    client.list_nft(&seller, &token_id, &1000, &payment_token);
+    token_client.configure(
+        &client.address,
+        &ReentryAction::BuyNft,
+        &token_id,
+        &seller,
+        &buyer,
+        &buyer,
+        &0,
+    );
+
+    client.buy_nft(&buyer, &token_id);
+
+    assert!(token_client.observed_reentrancy());
+    assert!(!marketplace_guard_active(&e, &client.address));
+}
+
+#[test]
+fn test_reentrant_payment_token_accept_offer_is_blocked_and_guard_resets() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let offerer = Address::generate(&e);
+    let token_id = 1u32;
+    let (payment_token, token_client) = setup_reentrant_payment_token(&e, &client);
+
+    client.list_nft(&seller, &token_id, &1000, &payment_token);
+    client.make_offer(&offerer, &token_id, &700, &payment_token);
+    token_client.configure(
+        &client.address,
+        &ReentryAction::AcceptOffer,
+        &token_id,
+        &seller,
+        &offerer,
+        &offerer,
+        &0,
+    );
+
+    client.accept_offer(&seller, &token_id, &offerer);
+
+    assert!(token_client.observed_reentrancy());
+    assert!(!marketplace_guard_active(&e, &client.address));
+}
+
+#[test]
+fn test_reentrant_payment_token_place_bid_refund_path_is_blocked_and_guard_resets() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let first_bidder = Address::generate(&e);
+    let second_bidder = Address::generate(&e);
+    let token_id = 1u32;
+    let (payment_token, token_client) = setup_reentrant_payment_token(&e, &client);
+
+    client.start_auction(&seller, &token_id, &1000, &86400, &payment_token);
+    token_client.set_enabled(&false);
+    client.place_bid(&first_bidder, &token_id, &1100);
+    token_client.configure(
+        &client.address,
+        &ReentryAction::PlaceBid,
+        &token_id,
+        &seller,
+        &first_bidder,
+        &second_bidder,
+        &1300,
+    );
+
+    client.place_bid(&second_bidder, &token_id, &1300);
+
+    assert!(token_client.observed_reentrancy());
+    assert!(!marketplace_guard_active(&e, &client.address));
+}
+
+#[test]
+fn test_reentrant_payment_token_end_auction_is_blocked_and_guard_resets() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let bidder = Address::generate(&e);
+    let token_id = 1u32;
+    let (payment_token, token_client) = setup_reentrant_payment_token(&e, &client);
+
+    client.start_auction(&seller, &token_id, &1000, &10, &payment_token);
+    token_client.set_enabled(&false);
+    client.place_bid(&bidder, &token_id, &1200);
+    token_client.configure(
+        &client.address,
+        &ReentryAction::EndAuction,
+        &token_id,
+        &seller,
+        &bidder,
+        &bidder,
+        &0,
+    );
+    e.ledger().with_mut(|li| {
+        li.timestamp = 11;
+    });
+
+    client.end_auction(&token_id);
+
+    assert!(token_client.observed_reentrancy());
+    assert!(!marketplace_guard_active(&e, &client.address));
+}
 
 /// @notice Test: list_nft fails if reentrancy guard is set.
 #[test]
