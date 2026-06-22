@@ -5,6 +5,7 @@ use super::*;
 use shared_utils::BatchMode;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Map, String, Vec,
 };
 
@@ -582,6 +583,181 @@ fn test_record_fees_records_attestation_and_metrics() {
 
     let metrics = client.get_stored_health_metrics(&commitment_id).unwrap();
     assert_eq!(metrics.fees_generated, 250);
+}
+
+#[test]
+fn test_record_fees_rejects_negative_fee_amount() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "negative_fee_amount");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let result = client.try_record_fees(&admin, &commitment_id, &-1);
+    assert_eq!(result, Err(Ok(AttestationError::InvalidFeeAmount)));
+}
+
+#[test]
+fn test_withdraw_fees_requires_fee_recipient() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    client.initialize(&admin, &core_id);
+
+    let result = client.try_withdraw_fees(&admin, &asset, &1);
+    assert_eq!(result, Err(Ok(AttestationError::FeeRecipientNotSet)));
+}
+
+#[test]
+fn test_withdraw_fees_rejects_non_positive_amounts() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let asset = Address::generate(&e);
+
+    client.initialize(&admin, &core_id);
+    client.set_fee_recipient(&admin, &recipient);
+
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset, &0),
+        Err(Ok(AttestationError::InvalidFeeAmount))
+    );
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset, &-1),
+        Err(Ok(AttestationError::InvalidFeeAmount))
+    );
+}
+
+#[test]
+fn test_attestation_fee_withdrawal_conserves_collected_fees_per_asset() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let verifier = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "fee_conservation");
+
+    let token_contract_a = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_a = token_contract_a.address();
+    let token_admin_client_a = StellarAssetClient::new(&e, &asset_a);
+    let token_client_a = TokenClient::new(&e, &asset_a);
+    token_admin_client_a.mint(&verifier, &1_000);
+
+    let token_contract_b = e.register_stellar_asset_contract_v2(token_admin);
+    let asset_b = token_contract_b.address();
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &verifier);
+    client.set_fee_recipient(&admin, &recipient);
+    client.set_attestation_fee(&admin, &100, &asset_a);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "fee_conservation",
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    client.record_fees(&verifier, &commitment_id, &250);
+
+    assert_eq!(client.get_collected_fees(&asset_a), 100);
+    assert_eq!(client.get_collected_fees(&asset_b), 0);
+    assert_eq!(token_client_a.balance(&attestation_id), 100);
+    assert_eq!(token_client_a.balance(&recipient), 0);
+
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset_a, &101),
+        Err(Ok(AttestationError::InsufficientFees))
+    );
+    assert_eq!(
+        client.try_withdraw_fees(&admin, &asset_b, &1),
+        Err(Ok(AttestationError::InsufficientFees))
+    );
+
+    client.withdraw_fees(&admin, &asset_a, &40);
+
+    assert_eq!(client.get_collected_fees(&asset_a), 60);
+    assert_eq!(client.get_collected_fees(&asset_b), 0);
+    assert_eq!(token_client_a.balance(&attestation_id), 60);
+    assert_eq!(token_client_a.balance(&recipient), 40);
+}
+
+#[test]
+fn test_attestation_fee_large_accumulation_uses_checked_accounting() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let verifier = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "large_fee_accumulation");
+
+    let token_contract = e.register_stellar_asset_contract_v2(token_admin);
+    let asset = token_contract.address();
+    let token_admin_client = StellarAssetClient::new(&e, &asset);
+    token_admin_client.mint(&verifier, &i128::MAX);
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &verifier);
+    client.set_fee_recipient(&admin, &recipient);
+    client.set_attestation_fee(&admin, &(i128::MAX / 4), &asset);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "large_fee_accumulation",
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    client.record_fees(&verifier, &commitment_id, &1);
+    client.record_fees(&verifier, &commitment_id, &1);
+
+    let expected = (i128::MAX / 4) * 2;
+    assert_eq!(client.get_collected_fees(&asset), expected);
+    client.withdraw_fees(&admin, &asset, &(i128::MAX / 4));
+    assert_eq!(client.get_collected_fees(&asset), i128::MAX / 4);
 }
 
 #[test]

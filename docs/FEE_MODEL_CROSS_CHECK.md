@@ -68,6 +68,19 @@ The previous version of this file listed commitment_core fee infrastructure as *
 | `batch_attest` | Does **not** call `write_attestation`; verification fees are **not** collected on batch path. |
 | `record_drawdown` | May invoke `write_attestation` twice (drawdown + violation), charging verification fee up to twice per call when configured. |
 
+### Fee-accounting invariants
+
+Regression tests in `contracts/attestation_engine/src/tests.rs` pin the protocol
+fee ledger invariant for attestation verification fees:
+
+- withdrawing requires a configured `FeeRecipient`;
+- withdrawal amounts must be positive and cannot exceed `CollectedFees(asset)`;
+- `CollectedFees(asset_a)` is isolated from `CollectedFees(asset_b)`;
+- successful withdrawal preserves `recorded_collected == withdrawn + remaining`
+  and moves the same token amount from the contract to the fee recipient; and
+- large accumulated fee totals use checked addition and remain withdrawable in
+  bounded chunks.
+
 ---
 
 ## `commitment_transformation`
