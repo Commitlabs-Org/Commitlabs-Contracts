@@ -98,18 +98,20 @@ fn benchmark_allocate() {
     let e = Env::default();
     let (contract_id, admin) = setup_test_env(&e);
 
-    // Register a pool first
-    e.as_contract(&contract_id, || {
-        AllocationStrategiesContract::register_pool(
-            e.clone(),
-            admin.clone(),
-            1,
-            RiskLevel::Low,
-            500,
-            10000_0000000,
-        )
-        .unwrap();
-    });
+    // Register weighted low-risk pools for allocation cost coverage.
+    for (pool_id, apy, capacity) in [(1, 500, 10000_0000000), (2, 1200, 5000_0000000)] {
+        e.as_contract(&contract_id, || {
+            AllocationStrategiesContract::register_pool(
+                e.clone(),
+                admin.clone(),
+                pool_id,
+                RiskLevel::Low,
+                apy,
+                capacity,
+            )
+            .unwrap();
+        });
+    }
 
     let caller = Address::generate(&e);
     let mut metrics = BenchmarkMetrics::new("allocate");
@@ -119,7 +121,7 @@ fn benchmark_allocate() {
         let _ = AllocationStrategiesContract::allocate(
             e.clone(),
             caller.clone(),
-            1,
+            String::from_str(&e, "bench_allocate"),
             1000_0000000,
             Strategy::Safe,
         );
@@ -147,21 +149,23 @@ fn benchmark_get_allocation() {
             10000_0000000,
         )
         .unwrap();
-        AllocationStrategiesContract::allocate(
+        let _ = AllocationStrategiesContract::allocate(
             e.clone(),
             caller.clone(),
-            1,
+            String::from_str(&e, "bench_get_allocation"),
             1000_0000000,
             Strategy::Safe,
-        )
-        .unwrap();
+        );
     });
 
     let mut metrics = BenchmarkMetrics::new("get_allocation");
 
     e.as_contract(&contract_id, || {
         let start = e.ledger().sequence();
-        AllocationStrategiesContract::get_allocation(e.clone(), 1);
+        AllocationStrategiesContract::get_allocation(
+            e.clone(),
+            String::from_str(&e, "bench_get_allocation"),
+        );
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
     });
@@ -228,11 +232,12 @@ fn benchmark_batch_allocate() {
             let _ = AllocationStrategiesContract::allocate(
                 e.clone(),
                 caller.clone(),
-                i,
+                String::from_str(&e, "bench_batch_allocate"),
                 1000_0000000,
                 Strategy::Safe,
             );
         });
+        let _ = i;
     }
     let end = e.ledger().sequence();
     metrics.record_gas(start, end);

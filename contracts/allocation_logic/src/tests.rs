@@ -90,6 +90,108 @@ fn setup_test_pools(_env: &Env, client: &AllocationStrategiesContractClient, adm
     client.register_pool(admin, &5, &RiskLevel::High, &2500, &500_000_000);
 }
 
+fn allocation_amount(summary: &crate::AllocationSummary, pool_id: u32) -> i128 {
+    for allocation in summary.allocations.iter() {
+        if allocation.pool_id == pool_id {
+            return allocation.amount;
+        }
+    }
+    0
+}
+
+#[test]
+fn test_allocate_weights_safe_pools_by_apy_and_headroom() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    let user = Address::generate(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &100, &1_000);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &300, &1_000);
+    create_mock_commitment(&env, &core_id, "weighted_safe", 400, "active");
+
+    let summary = client.allocate(
+        &user,
+        &String::from_str(&env, "weighted_safe"),
+        &400,
+        &Strategy::Safe,
+    );
+
+    assert_eq!(summary.total_allocated, 400);
+    assert_eq!(allocation_amount(&summary, 0), 100);
+    assert_eq!(allocation_amount(&summary, 1), 300);
+}
+
+#[test]
+fn test_allocate_weighted_distribution_respects_headroom() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    let user = Address::generate(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &1000, &100);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &100, &1_000);
+    create_mock_commitment(&env, &core_id, "weighted_headroom", 200, "active");
+
+    let summary = client.allocate(
+        &user,
+        &String::from_str(&env, "weighted_headroom"),
+        &200,
+        &Strategy::Safe,
+    );
+
+    assert_eq!(summary.total_allocated, 200);
+    assert_eq!(allocation_amount(&summary, 0), 100);
+    assert_eq!(allocation_amount(&summary, 1), 100);
+    assert_eq!(client.get_pool(&0).total_liquidity, 100);
+}
+
+#[test]
+fn test_allocate_zero_apy_falls_back_to_headroom_weights() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    let user = Address::generate(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &0, &100);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &0, &300);
+    create_mock_commitment(&env, &core_id, "zero_apy", 200, "active");
+
+    let summary = client.allocate(
+        &user,
+        &String::from_str(&env, "zero_apy"),
+        &200,
+        &Strategy::Safe,
+    );
+
+    assert_eq!(summary.total_allocated, 200);
+    assert_eq!(allocation_amount(&summary, 0), 50);
+    assert_eq!(allocation_amount(&summary, 1), 150);
+}
+
+#[test]
+fn test_allocate_weighted_dust_goes_to_largest_remainder() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, core_id, client) = create_contract(&env);
+    let user = Address::generate(&env);
+
+    client.register_pool(&admin, &0, &RiskLevel::Low, &100, &1_000);
+    client.register_pool(&admin, &1, &RiskLevel::Low, &200, &1_000);
+    create_mock_commitment(&env, &core_id, "weighted_dust", 10, "active");
+
+    let summary = client.allocate(
+        &user,
+        &String::from_str(&env, "weighted_dust"),
+        &10,
+        &Strategy::Safe,
+    );
+
+    assert_eq!(summary.total_allocated, 10);
+    assert_eq!(allocation_amount(&summary, 0), 3);
+    assert_eq!(allocation_amount(&summary, 1), 7);
+}
+
 #[test]
 fn test_migrate_rejects_wrong_from_version_without_mutating_state() {
     let env = Env::default();

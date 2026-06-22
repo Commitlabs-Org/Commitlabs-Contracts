@@ -1140,22 +1140,65 @@ impl AllocationStrategiesContract {
             return Err(Error::PoolCapacityExceeded);
         }
 
-        // Base allocation with deterministic remainder.
-        let base = amount / pool_count as i128;
-        let remainder = amount % pool_count as i128;
-
         let mut allocations = Vec::<i128>::new(env);
         let mut leftover_capacity = Vec::<i128>::new(env);
+        let mut weights = Vec::<i128>::new(env);
+        let mut remainders = Vec::<i128>::new(env);
+        let mut total_weight: i128 = 0;
 
-        let mut allocated_total: i128 = 0;
-        for (i, pool) in pools.iter().enumerate() {
+        for pool in pools.iter() {
             let available_capacity = pool
                 .max_capacity
                 .checked_sub(pool.total_liquidity)
                 .ok_or(Error::ArithmeticOverflow)?;
 
-            // target_i sums to `amount` across all pools (before capping).
-            let target = base + if (i as i128) < remainder { 1 } else { 0 };
+            let apy_weight = (pool.apy as i128)
+                .checked_mul(available_capacity)
+                .ok_or(Error::ArithmeticOverflow)?;
+            weights.push_back(apy_weight);
+            total_weight = total_weight
+                .checked_add(apy_weight)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        // If every eligible pool has zero APY, fall back to headroom-only weights
+        // so capacity can still be used deterministically.
+        if total_weight == 0 {
+            weights = Vec::<i128>::new(env);
+            for pool in pools.iter() {
+                let available_capacity = pool
+                    .max_capacity
+                    .checked_sub(pool.total_liquidity)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                weights.push_back(available_capacity);
+                total_weight = total_weight
+                    .checked_add(available_capacity)
+                    .ok_or(Error::ArithmeticOverflow)?;
+            }
+        }
+
+        if total_weight <= 0 {
+            return Err(Error::PoolCapacityExceeded);
+        }
+
+        let mut allocated_total: i128 = 0;
+        for i in 0..pool_count {
+            let pool = pools.get(i).unwrap();
+            let available_capacity = pool
+                .max_capacity
+                .checked_sub(pool.total_liquidity)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let weight = weights.get(i).unwrap();
+            let weighted_amount = amount
+                .checked_mul(weight)
+                .ok_or(Error::ArithmeticOverflow)?;
+
+            let target = weighted_amount
+                .checked_div(total_weight)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let remainder = weighted_amount
+                .checked_rem(total_weight)
+                .ok_or(Error::ArithmeticOverflow)?;
 
             let alloc = if target > available_capacity {
                 available_capacity
@@ -1169,19 +1212,58 @@ impl AllocationStrategiesContract {
 
             allocations.push_back(alloc);
             leftover_capacity.push_back(available_capacity - alloc);
+            remainders.push_back(remainder);
         }
 
-        // Redistribute any shortfall caused by per-pool caps, filling pools in deterministic registry order.
+        // Redistribute integer-division dust to the largest fractional remainders first.
         let mut shortfall = amount
             .checked_sub(allocated_total)
             .ok_or(Error::ArithmeticOverflow)?;
+        if shortfall > 0 {
+            for _ in 0..pool_count {
+                if shortfall == 0 {
+                    break;
+                }
+
+                let mut best_index: Option<u32> = None;
+                let mut best_remainder: i128 = -1;
+                for candidate in 0..pool_count {
+                    let left = leftover_capacity.get(candidate).unwrap();
+                    let remainder = remainders.get(candidate).unwrap();
+                    if left > 0 && remainder > best_remainder {
+                        best_index = Some(candidate);
+                        best_remainder = remainder;
+                    }
+                }
+
+                let Some(best_index) = best_index else {
+                    break;
+                };
+                if best_remainder <= 0 {
+                    break;
+                }
+
+                let prev = allocations.get(best_index).unwrap();
+                let left = leftover_capacity.get(best_index).unwrap();
+                let new_alloc = prev.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+                let new_left = left.checked_sub(1).ok_or(Error::ArithmeticOverflow)?;
+                allocations.set(best_index, new_alloc);
+                leftover_capacity.set(best_index, new_left);
+                remainders.set(best_index, -1);
+                shortfall = shortfall
+                    .checked_sub(1)
+                    .ok_or(Error::ArithmeticOverflow)?;
+            }
+        }
+
+        // Any larger shortfall is caused by capped pools; fill remaining capacity
+        // in deterministic registry order after the weighted targets are exhausted.
         if shortfall > 0 {
             for i in 0..pool_count {
                 if shortfall == 0 {
                     break;
                 }
 
-                let pool = pools.get(i).unwrap();
                 let prev = allocations.get(i).unwrap();
                 let left = leftover_capacity.get(i).unwrap();
 
@@ -1194,9 +1276,6 @@ impl AllocationStrategiesContract {
                 shortfall = shortfall
                     .checked_sub(extra)
                     .ok_or(Error::ArithmeticOverflow)?;
-
-                // We don't write to the allocation_map yet; we finalize below.
-                let _ = pool;
             }
         }
 

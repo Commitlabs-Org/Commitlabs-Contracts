@@ -68,13 +68,27 @@ Validation and invariants:
 - `Balanced`: `Low` + `Medium` + `High`
 - `Aggressive`: `Medium` + `High`
 
-## Allocation Rounding, Determinism, and Capacity Failure
+## Weighted Allocation, Rounding, and Capacity Failure
 
 All allocations use integer arithmetic and are deterministic given the same on-chain state.
 
-### Deterministic Remainder Handling
+### APY and Headroom Weighting
 
-When an amount is split across pools (or across risk-level buckets and then pools), integer division can produce a remainder. The contract assigns remainder units deterministically in the same order pools are iterated (registry order after filtering for strategy and `active`).
+Within each eligible risk bucket, allocation is weighted by both yield and available capacity:
+
+`pool_weight = pool.apy * (pool.max_capacity - pool.total_liquidity)`
+
+Each pool receives:
+
+`floor(bucket_amount * pool_weight / total_bucket_weight)`
+
+If all pools in a bucket have `apy == 0`, the contract falls back to headroom-only weights so otherwise usable capacity is not stranded:
+
+`pool_weight = pool.max_capacity - pool.total_liquidity`
+
+Checked arithmetic is used for the weight and allocation products. If the eligible pools cannot fully satisfy the requested amount, allocation fails with `Error::PoolCapacityExceeded`.
+
+### Strategy Risk Buckets
 
 Balanced strategy risk split:
 
@@ -88,6 +102,10 @@ Aggressive strategy risk split:
 - High bucket: remainder so that `medium + high == amount`
 
 Within each bucket, the bucket amount is distributed across pools with the same deterministic remainder behavior.
+
+### Deterministic Remainder Handling
+
+When weighted integer division creates dust, remainder units are assigned to pools with the largest fractional remainder first, with registry order as the deterministic tie-breaker. If pool caps still leave a shortfall after weighted targets are exhausted, remaining capacity is filled in registry order.
 
 ### Capacity Enforcement and Failure Mode
 
