@@ -7,7 +7,7 @@ End-to-end reference for protocol revenue across all fee-collecting contracts. E
 | Fee | Contract | Collection entrypoint | Rate key | Rate validation | Recipient key | Accumulation | Withdrawal |
 |-----|----------|----------------------|----------|-----------------|---------------|--------------|------------|
 | Commitment creation | `commitment_core` | `create_commitment` | `CreationFeeBps` | 0–10000 bps (`set_creation_fee_bps`) | `FeeRecipient` | `CollectedFees(asset)` | `withdraw_fees` (Treasurer/Admin) |
-| Early exit penalty | `commitment_core` | `early_exit` | `rules.early_exit_penalty` (per-commitment, percent 0–100) | Validated at creation by commitment type | `FeeRecipient` | `CollectedFees(asset)` | `withdraw_fees` (Treasurer/Admin) |
+| Early exit penalty | `commitment_core` | `early_exit` | `rules.early_exit_penalty` (per-commitment, percent 0–100, prorated by remaining duration) | Validated at creation by commitment type | `FeeRecipient` | `CollectedFees(asset)` | `withdraw_fees` (Treasurer/Admin) |
 | Attestation verification | `attestation_engine` | `write_attestation` (via `record_fees`, `record_drawdown`, `_attest_internal`) | `AttestationFeeAmount` + `AttestationFeeAsset` | `amount >= 0` (`set_attestation_fee`); `0` disables | `FeeRecipient` | `CollectedFees(asset)` | `withdraw_fees` (Admin) |
 | Transformation | `commitment_transformation` | `create_tranches` | `TransformationFeeBps` | 0–10000 bps (`set_transformation_fee`) | `FeeRecipient` | `CollectedFees(fee_asset)` | `withdraw_fees` (Admin) |
 | Marketplace sale | `commitment_marketplace` | `buy_nft`, `accept_offer`, `end_auction` | `MarketplaceFee` | **No validation on set**; `end_auction` caps at 10000 bps at settlement | `FeeRecipient` | Direct transfer (no `CollectedFees`) | N/A — paid to recipient at sale time |
@@ -40,12 +40,12 @@ Used by: `commitment_core` (creation fee), `commitment_transformation` (transfor
 
 Early exit uses **whole-number percent** (0–100), not basis points:
 
-```rust
-penalty = SafeMath::penalty_amount(current_value, early_exit_penalty)
-        = (current_value * early_exit_penalty) / 100
+```text
+max_penalty = (current_value * early_exit_penalty) / 100
+penalty = ceil(max_penalty * remaining_duration / total_duration)
 ```
 
-Integer division truncates toward zero. Small `current_value` values can yield a zero penalty (documented in `commitment_core::early_exit` rustdoc).
+The maximum penalty is prorated by the unserved portion of the commitment. Ceiling division rounds fractional penalties up by one stroop, so rounding cannot reduce protocol solvency; the result is still bounded to `0..=max_penalty`. See [EARLY_EXIT.md](EARLY_EXIT.md).
 
 ### Dust and tranche rounding (`commitment_transformation`)
 
@@ -69,7 +69,7 @@ Both round toward zero (floor for positive values). The sum of tranche amounts c
 | Fee | When | Calculation | Token flow |
 |-----|------|-------------|------------|
 | Creation | `create_commitment` | `fees::fee_from_bps(amount, CreationFeeBps)`; default bps `0` | Owner transfers full `amount` to contract; `creation_fee` credited to `CollectedFees(asset_address)`; NFT minted with `net_amount = amount - creation_fee`; TVL incremented by `net_amount` |
-| Early exit | `early_exit` | `SafeMath::penalty_amount(current_value, rules.early_exit_penalty)` | Penalty added to `CollectedFees(asset)`; `returned = current_value - penalty` transferred to owner when `returned > 0` |
+| Early exit | `early_exit` | `ceil(max_penalty * remaining_duration / total_duration)` where `max_penalty = current_value * rules.early_exit_penalty / 100` | Penalty added to `CollectedFees(asset)`; `returned = current_value - penalty` transferred to owner when `returned > 0` |
 
 #### Storage keys
 

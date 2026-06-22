@@ -31,6 +31,8 @@ pub mod fuzzing;
 
 /// Maximum page size for paginated owner-commitment queries.
 const MAX_PAGE_SIZE: u32 = 50;
+const BPS_SCALE: i128 = 10_000;
+const PERCENT_TO_BPS: u32 = 100;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -345,6 +347,62 @@ fn remove_from_owner_commitments(e: &Env, owner: &Address, commitment_id: &Strin
             .instance()
             .set(&DataKey::OwnerCommitments(owner.clone()), &commitments);
     }
+}
+
+fn ceil_div_positive(numerator: i128, denominator: i128) -> i128 {
+    SafeMath::div(
+        SafeMath::add(numerator, SafeMath::sub(denominator, 1)),
+        denominator,
+    )
+}
+
+fn u64_to_i128(value: u64) -> i128 {
+    if value > i128::MAX as u64 {
+        panic!("Math: u64 to i128 overflow");
+    }
+    value as i128
+}
+
+fn compute_prorata_penalty(
+    elapsed: u64,
+    duration: u64,
+    principal: i128,
+    penalty_bps: u32,
+) -> i128 {
+    if principal <= 0 || penalty_bps == 0 || duration == 0 || elapsed >= duration {
+        return 0;
+    }
+
+    let remaining = duration - elapsed;
+    let penalty_bps_i128 = penalty_bps as i128;
+    let duration_i128 = u64_to_i128(duration);
+    let remaining_i128 = u64_to_i128(remaining);
+
+    let max_penalty = SafeMath::div(SafeMath::mul(principal, penalty_bps_i128), BPS_SCALE);
+    let scaled = SafeMath::mul(SafeMath::mul(principal, penalty_bps_i128), remaining_i128);
+    let denominator = SafeMath::mul(BPS_SCALE, duration_i128);
+    let prorated = ceil_div_positive(scaled, denominator);
+
+    let bounded_to_max = if prorated > max_penalty {
+        max_penalty
+    } else {
+        prorated
+    };
+
+    if bounded_to_max > principal {
+        principal
+    } else {
+        bounded_to_max
+    }
+}
+
+fn elapsed_ratio_bps(elapsed: u64, duration: u64) -> u32 {
+    if duration == 0 || elapsed >= duration {
+        return BPS_SCALE as u32;
+    }
+
+    let scaled = SafeMath::mul(u64_to_i128(elapsed), BPS_SCALE);
+    SafeMath::div(scaled, u64_to_i128(duration)) as u32
 }
 
 #[contract]
@@ -1107,20 +1165,20 @@ impl CommitmentCoreContract {
     /// * `caller` - Must be the commitment owner; `require_auth` is enforced.
     ///
     /// # Penalty arithmetic
-    /// `penalty = SafeMath::penalty_amount(current_value, early_exit_penalty)`
-    /// which computes `(current_value * early_exit_penalty) / 100` using checked
-    /// integer arithmetic. Division truncates toward zero, so small values (e.g.
-    /// `current_value < 100 / early_exit_penalty`) may yield a zero penalty.
-    /// The penalty is credited to `CollectedFees(asset_address)` as protocol revenue.
+    /// `max_penalty = current_value * early_exit_penalty / 100`
+    /// `penalty = ceil(max_penalty * remaining_duration / total_duration)`
+    /// using checked integer arithmetic. Ceiling division prevents rounding from
+    /// reducing protocol solvency, and the result is bounded to
+    /// `0..=max_penalty`. The penalty is credited to
+    /// `CollectedFees(asset_address)` as protocol revenue for later
+    /// `FeeRecipient` withdrawal.
     /// `returned = current_value - penalty` is transferred back to the owner only
     /// when `returned > 0`; a 100% penalty results in no transfer.
     ///
     /// # Overflow safety
-    /// `SafeMath::mul(current_value, early_exit_penalty as i128)` panics with
-    /// `"Math: multiplication overflow"` if the intermediate product exceeds `i128::MAX`.
-    /// Callers must ensure `current_value * early_exit_penalty <= i128::MAX`.
-    /// In practice `early_exit_penalty <= 100`, so values up to `i128::MAX / 100`
-    /// are safe.
+    /// The prorated numerator multiplies current value, penalty bps, and
+    /// remaining duration with `SafeMath::mul`, so malformed or extreme stored
+    /// values fail instead of wrapping.
     ///
     /// # Trust boundaries
     /// - Only the commitment owner (verified via `require_auth` + owner equality check)
@@ -1163,10 +1221,26 @@ impl CommitmentCoreContract {
             fail(&e, CommitmentError::NotActive, "exit");
         }
 
-        let penalty = SafeMath::penalty_amount(
+        let now = e.ledger().timestamp();
+        let duration = commitment
+            .expires_at
+            .checked_sub(commitment.created_at)
+            .unwrap_or_else(|| {
+                set_reentrancy_guard(&e, false);
+                fail(&e, CommitmentError::ArithmeticOverflow, "early_exit")
+            });
+        let elapsed = if now <= commitment.created_at {
+            0
+        } else {
+            now - commitment.created_at
+        };
+        let penalty = compute_prorata_penalty(
+            elapsed,
+            duration,
             commitment.current_value,
-            commitment.rules.early_exit_penalty,
+            commitment.rules.early_exit_penalty * PERCENT_TO_BPS,
         );
+        let elapsed_ratio = elapsed_ratio_bps(elapsed, duration);
         let returned = SafeMath::sub(commitment.current_value, penalty);
         let original_val = commitment.current_value;
 
@@ -1176,7 +1250,7 @@ impl CommitmentCoreContract {
             let current_fees: i128 = e.storage().instance().get(&fee_key).unwrap_or(0);
             e.storage()
                 .instance()
-                .set(&fee_key, &(current_fees + penalty));
+                .set(&fee_key, &SafeMath::add(current_fees, penalty));
         }
 
         commitment.status = String::from_str(&e, "early_exit");
@@ -1190,7 +1264,7 @@ impl CommitmentCoreContract {
             .unwrap_or(0);
         e.storage()
             .instance()
-            .set(&DataKey::TotalValueLocked, &(tvl - original_val));
+            .set(&DataKey::TotalValueLocked, &SafeMath::sub(tvl, original_val));
 
         if returned > 0 {
             transfer_assets(
@@ -1219,7 +1293,11 @@ impl CommitmentCoreContract {
         set_reentrancy_guard(&e, false);
         e.events().publish(
             (symbol_short!("EarlyExt"), commitment_id, caller),
-            (penalty, returned, e.ledger().timestamp()),
+            (penalty, returned, now),
+        );
+        e.events().publish(
+            (Symbol::new(&e, "early_exit_settled"),),
+            (original_val, penalty, elapsed_ratio),
         );
     }
 

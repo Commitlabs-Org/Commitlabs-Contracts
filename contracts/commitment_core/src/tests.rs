@@ -2643,7 +2643,7 @@ fn test_early_exit_state_update() {
 
 #[test]
 fn test_early_exit_penalty_values() {
-    // Test penalty calculation logic with boundary and representative values
+    // Test maximum penalty calculation logic with boundary and representative values.
     let test_cases = [
         (1000i128, 10u32, 100i128, 900i128),  // 10% of 1000
         (1000i128, 5u32, 50i128, 950i128),    // 5% of 1000
@@ -2667,6 +2667,44 @@ fn test_early_exit_penalty_values() {
 }
 
 #[test]
+fn test_prorata_early_exit_penalty_full_at_start() {
+    let penalty = compute_prorata_penalty(0, 100, 1000, 1000);
+    assert_eq!(penalty, 100);
+}
+
+#[test]
+fn test_prorata_early_exit_penalty_halfway() {
+    let penalty = compute_prorata_penalty(50, 100, 1000, 1000);
+    assert_eq!(penalty, 50);
+}
+
+#[test]
+fn test_prorata_early_exit_penalty_near_expiry_rounds_up() {
+    let penalty = compute_prorata_penalty(99, 100, 1000, 1000);
+    assert_eq!(penalty, 1);
+}
+
+#[test]
+fn test_prorata_early_exit_penalty_at_expiry_zero() {
+    let penalty = compute_prorata_penalty(100, 100, 1000, 1000);
+    assert_eq!(penalty, 0);
+}
+
+#[test]
+fn test_prorata_early_exit_elapsed_ratio_boundaries() {
+    assert_eq!(elapsed_ratio_bps(0, 100), 0);
+    assert_eq!(elapsed_ratio_bps(50, 100), 5000);
+    assert_eq!(elapsed_ratio_bps(100, 100), 10000);
+    assert_eq!(elapsed_ratio_bps(150, 100), 10000);
+}
+
+#[test]
+#[should_panic(expected = "Math: multiplication overflow")]
+fn test_prorata_early_exit_penalty_overflow_rejects() {
+    compute_prorata_penalty(0, 100, i128::MAX, 10_000);
+}
+
+#[test]
 fn test_early_exit_penalty_zero_current_value() {
     let current_value = 0i128;
     let test_penalties = [0u32, 50u32, 100u32];
@@ -2686,19 +2724,20 @@ fn test_early_exit_penalty_with_loss() {
     let _e = Env::default();
 
     // Simulate commitment that has lost value
-    // Initial: 1000, Current: 800 (20% loss)
-    // Penalty on current: 800 * 10% = 80
-    // Returned: 800 - 80 = 720
+    // Initial: 1000, Current: 800 (20% loss), halfway through the term.
+    // Max penalty on current: 800 * 10% = 80
+    // Prorated penalty: 80 * 50% remaining = 40
+    // Returned: 800 - 40 = 760
 
     let _initial_amount = 1000i128;
     let current_value = 800i128;
-    let penalty_percent = 10u32;
+    let penalty_bps = 1000u32;
 
-    let penalty = (current_value * (penalty_percent as i128)) / 100;
+    let penalty = compute_prorata_penalty(50, 100, current_value, penalty_bps);
     let returned = current_value - penalty;
 
-    assert_eq!(penalty, 80);
-    assert_eq!(returned, 720);
+    assert_eq!(penalty, 40);
+    assert_eq!(returned, 760);
     assert_eq!(penalty + returned, current_value);
 }
 
@@ -2708,9 +2747,9 @@ fn test_early_exit_penalty_small_amounts() {
 
     // Test with small amounts where rounding might occur
     let current_value = 10i128;
-    let penalty_percent = 10u32;
+    let penalty_bps = 1000u32;
 
-    let penalty = (current_value * (penalty_percent as i128)) / 100;
+    let penalty = compute_prorata_penalty(0, 100, current_value, penalty_bps);
     let returned = current_value - penalty;
 
     assert_eq!(penalty, 1);
@@ -2753,10 +2792,10 @@ fn test_early_exit_after_value_reduction() {
     // (e.g., through allocation or loss)
     let _initial_amount = 1000i128;
     let current_value = 700i128; // Reduced from 1000
-    let penalty_percent = 10u32;
+    let penalty_bps = 1000u32;
 
     // Early exit penalty applies to current_value (700), not initial (1000)
-    let penalty = (current_value * (penalty_percent as i128)) / 100;
+    let penalty = compute_prorata_penalty(0, 100, current_value, penalty_bps);
     let returned = current_value - penalty;
 
     assert_eq!(penalty, 70); // 10% of 700
@@ -2780,9 +2819,13 @@ fn test_early_exit_different_commitment_types() {
 
         commitment.rules.commitment_type = String::from_str(&e, commitment_type);
 
-        // Verify penalty calculation is independent of type
-        let penalty =
-            (commitment.current_value * (commitment.rules.early_exit_penalty as i128)) / 100;
+        // Verify maximum penalty calculation is independent of type.
+        let penalty = compute_prorata_penalty(
+            0,
+            100,
+            commitment.current_value,
+            commitment.rules.early_exit_penalty * 100,
+        );
         assert_eq!(penalty, 100); // Always 10% of 1000
     }
 }
@@ -2808,7 +2851,12 @@ fn test_early_exit_zero_penalty() {
         0, // 0% penalty
     );
 
-    let penalty = (commitment.current_value * (commitment.rules.early_exit_penalty as i128)) / 100;
+    let penalty = compute_prorata_penalty(
+        0,
+        100,
+        commitment.current_value,
+        commitment.rules.early_exit_penalty * 100,
+    );
     let returned = commitment.current_value - penalty;
 
     assert_eq!(penalty, 0);
@@ -2832,7 +2880,12 @@ fn test_early_exit_high_penalty() {
         50, // 50% penalty
     );
 
-    let penalty = (commitment.current_value * (commitment.rules.early_exit_penalty as i128)) / 100;
+    let penalty = compute_prorata_penalty(
+        0,
+        100,
+        commitment.current_value,
+        commitment.rules.early_exit_penalty * 100,
+    );
     let returned = commitment.current_value - penalty;
 
     assert_eq!(penalty, 500);
@@ -2853,7 +2906,7 @@ fn test_early_exit_conservation_invariant() {
     ];
 
     for (current_value, penalty_percent) in test_values.iter() {
-        let penalty = (current_value * (*penalty_percent as i128)) / 100;
+        let penalty = compute_prorata_penalty(0, 100, *current_value, *penalty_percent * 100);
         let returned = current_value - penalty;
 
         // Conservation invariant

@@ -63,7 +63,7 @@ cargo test
 
 ## Fee Structure
 
-Protocol fee collection (creation, attestation, transformation, early exit) is documented in [docs/FEES.md](docs/FEES.md).
+Protocol fee collection (creation, attestation, transformation, early exit) is documented in [docs/FEES.md](docs/FEES.md). Early-exit penalty decay and events are documented in [docs/EARLY_EXIT.md](docs/EARLY_EXIT.md).
 
 ## Documentation
 
