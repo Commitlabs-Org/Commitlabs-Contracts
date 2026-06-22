@@ -69,6 +69,10 @@ pub enum DataKey {
     Attestations(String),
     /// Health metrics for a commitment (commitment_id -> HealthMetrics)
     HealthMetrics(String),
+    /// Marks HealthMetrics entries written by the incremental aggregate updater.
+    HealthMetricsCacheInitialized(String),
+    /// Whether cached health metrics have seen at least one drawdown attestation.
+    HealthMetricsHasDrawdown(String),
     /// Attestation counter for a commitment (commitment_id -> u64)
     AttestationCounter(String),
     /// Reentrancy guard
@@ -641,12 +645,15 @@ impl AttestationEngineContract {
     // Health Metrics Update
     // ========================================================================
 
-    /// Update cached health metrics after an attestation.
+    /// Update cached health metrics from the newly written attestation.
     ///
-    /// Recomputes aggregate fee and volatility fields from the stored
-    /// attestation history so cached metrics stay aligned with read-time
-    /// aggregation.
-    fn update_health_metrics(e: &Env, commitment_id: &String, attestation: &Attestation) {
+    /// Maintains the per-commitment aggregate incrementally so cached reads do
+    /// not need to reduce the full attestation history.
+    fn update_health_metrics(
+        e: &Env,
+        commitment_id: &String,
+        attestation: &Attestation,
+    ) -> Result<(), AttestationError> {
         // Get or create health metrics
         let key = DataKey::HealthMetrics(commitment_id.clone());
         let mut metrics: HealthMetrics =
@@ -664,33 +671,50 @@ impl AttestationEngineContract {
                     compliance_score: 100,
                 });
 
-        let attestation_key = DataKey::Attestations(commitment_id.clone());
-        let attestations: Vec<Attestation> = e
-            .storage()
-            .persistent()
-            .get(&attestation_key)
-            .unwrap_or_else(|| Vec::new(e));
-        let aggregates = Self::aggregate_attestation_metrics(e, &attestations);
-
-        metrics.last_attestation = aggregates.last_attestation;
-        metrics.fees_generated = aggregates.fees_generated;
-        metrics.volatility_exposure = aggregates.volatility_exposure;
-        if let Some(drawdown_percent) = aggregates.latest_drawdown_percent {
-            metrics.drawdown_percent = drawdown_percent;
-        }
-
         // Update type-specific metrics that depend on the latest attestation.
         let fee_generation = String::from_str(e, "fee_generation");
+        let drawdown = String::from_str(e, "drawdown");
         let violation = String::from_str(e, "violation");
+        let has_drawdown_key = DataKey::HealthMetricsHasDrawdown(commitment_id.clone());
+        let had_previous_drawdown = e
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&has_drawdown_key)
+            .unwrap_or(false);
 
         if attestation.attestation_type == fee_generation {
             let fee_amount_key = String::from_str(e, "fee_amount");
             if let Some(fee_str) = attestation.data.get(fee_amount_key) {
                 if let Some(fee_amount) = Self::parse_i128_from_string(e, &fee_str) {
+                    metrics.fees_generated = metrics
+                        .fees_generated
+                        .checked_add(fee_amount)
+                        .ok_or(AttestationError::StorageError)?;
+
                     let total_fees: i128 =
                         e.storage().instance().get(&DataKey::TotalFees).unwrap_or(0);
-                    let new_total = total_fees.checked_add(fee_amount).unwrap_or(total_fees);
+                    let new_total = total_fees
+                        .checked_add(fee_amount)
+                        .ok_or(AttestationError::StorageError)?;
                     e.storage().instance().set(&DataKey::TotalFees, &new_total);
+                }
+            }
+        } else if attestation.attestation_type == drawdown {
+            let drawdown_percent_key = String::from_str(e, "drawdown_percent");
+            if let Some(drawdown_str) = attestation.data.get(drawdown_percent_key) {
+                if let Some(drawdown_percent) = Self::parse_i128_from_string(e, &drawdown_str) {
+                    if had_previous_drawdown {
+                        if let Some(delta) =
+                            Self::absolute_difference(drawdown_percent, metrics.drawdown_percent)
+                        {
+                            metrics.volatility_exposure = metrics
+                                .volatility_exposure
+                                .checked_add(delta)
+                                .ok_or(AttestationError::StorageError)?;
+                        }
+                    }
+                    metrics.drawdown_percent = drawdown_percent;
+                    e.storage().persistent().set(&has_drawdown_key, &true);
                 }
             }
         } else if attestation.attestation_type == violation {
@@ -720,8 +744,17 @@ impl AttestationEngineContract {
                 core::cmp::min(100, metrics.compliance_score.saturating_add(1));
         }
 
+        if attestation.timestamp > metrics.last_attestation {
+            metrics.last_attestation = attestation.timestamp;
+        }
+
         // Store updated metrics
         e.storage().persistent().set(&key, &metrics);
+        e.storage().persistent().set(
+            &DataKey::HealthMetricsCacheInitialized(commitment_id.clone()),
+            &true,
+        );
+        Ok(())
     }
 
     fn aggregate_attestation_metrics(
@@ -979,7 +1012,7 @@ impl AttestationEngineContract {
         e.storage().persistent().set(&key, &attestations);
 
         // 10. Update health metrics
-        Self::update_health_metrics(e, &commitment_id, &attestation);
+        Self::update_health_metrics(e, &commitment_id, &attestation)?;
 
         // 11. Increment attestation counter
         let counter_key = DataKey::AttestationCounter(commitment_id.clone());
@@ -1305,21 +1338,73 @@ impl AttestationEngineContract {
             0
         };
 
-        let attestations = Self::load_attestations_from_storage(&e, &commitment_id);
-        let aggregates = Self::aggregate_attestation_metrics(&e, &attestations);
+        let cached_metrics = e
+            .storage()
+            .persistent()
+            .get::<DataKey, HealthMetrics>(&DataKey::HealthMetrics(commitment_id.clone()));
+        let cache_initialized = e
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::HealthMetricsCacheInitialized(
+                commitment_id.clone(),
+            ))
+            .unwrap_or(false);
 
-        let compliance_score = Self::calculate_compliance_score(e.clone(), commitment_id.clone());
+        let (fees_generated, volatility_exposure, last_attestation, metric_drawdown, compliance_score) =
+            if cache_initialized {
+                let metrics = cached_metrics.clone().unwrap_or_else(|| HealthMetrics {
+                    commitment_id: commitment_id.clone(),
+                    current_value: 0,
+                    initial_value: 0,
+                    drawdown_percent: 0,
+                    fees_generated: 0,
+                    volatility_exposure: 0,
+                    last_attestation: 0,
+                    compliance_score: 100,
+                });
+                let has_drawdown = e
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, bool>(&DataKey::HealthMetricsHasDrawdown(
+                        commitment_id.clone(),
+                    ))
+                    .unwrap_or(false);
+                (
+                    metrics.fees_generated,
+                    metrics.volatility_exposure,
+                    metrics.last_attestation,
+                    if has_drawdown {
+                        Some(metrics.drawdown_percent)
+                    } else {
+                        None
+                    },
+                    metrics.compliance_score,
+                )
+            } else {
+                let fallback_attestations = Self::load_attestations_from_storage(&e, &commitment_id);
+                let fallback_aggregates =
+                    Self::aggregate_attestation_metrics(&e, &fallback_attestations);
+                (
+                    fallback_aggregates.fees_generated,
+                    fallback_aggregates.volatility_exposure,
+                    fallback_aggregates.last_attestation,
+                    fallback_aggregates.latest_drawdown_percent,
+                    cached_metrics
+                        .map(|metrics| metrics.compliance_score)
+                        .unwrap_or_else(|| {
+                            Self::calculate_compliance_score(e.clone(), commitment_id.clone())
+                        }),
+                )
+            };
 
         HealthMetrics {
             commitment_id,
             current_value,
             initial_value,
-            drawdown_percent: aggregates
-                .latest_drawdown_percent
-                .unwrap_or(drawdown_percent),
-            fees_generated: aggregates.fees_generated,
-            volatility_exposure: aggregates.volatility_exposure,
-            last_attestation: aggregates.last_attestation,
+            drawdown_percent: metric_drawdown.unwrap_or(drawdown_percent),
+            fees_generated,
+            volatility_exposure,
+            last_attestation,
             compliance_score,
         }
     }
@@ -1564,12 +1649,21 @@ impl AttestationEngineContract {
     pub fn calculate_compliance_score(e: Env, commitment_id: String) -> u32 {
         // First check if we have stored metrics with a compliance score
         let metrics_key = DataKey::HealthMetrics(commitment_id.clone());
-        if let Some(stored_metrics) = e
+        let cache_initialized = e
             .storage()
             .persistent()
-            .get::<DataKey, HealthMetrics>(&metrics_key)
-        {
-            return stored_metrics.compliance_score;
+            .get::<DataKey, bool>(&DataKey::HealthMetricsCacheInitialized(
+                commitment_id.clone(),
+            ))
+            .unwrap_or(false);
+        if cache_initialized {
+            if let Some(stored_metrics) =
+                e.storage()
+                    .persistent()
+                    .get::<DataKey, HealthMetrics>(&metrics_key)
+            {
+                return stored_metrics.compliance_score;
+            }
         }
 
         // Get commitment from core contract
@@ -2021,7 +2115,25 @@ impl AttestationEngineContract {
             e.storage().persistent().set(&key, &attestations);
 
             // Update health metrics
-            Self::update_health_metrics(&e, &params.commitment_id, &attestation);
+            if let Err(err) = Self::update_health_metrics(&e, &params.commitment_id, &attestation)
+            {
+                if mode == BatchMode::Atomic {
+                    e.storage().instance().remove(&DataKey::ReentrancyGuard);
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: err as u32,
+                        context: String::from_str(&e, "health_metrics_update"),
+                    });
+                    return BatchResultVoid::failure(&e, errors);
+                } else {
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: err as u32,
+                        context: String::from_str(&e, "health_metrics_update"),
+                    });
+                    continue;
+                }
+            }
 
             // Increment attestation counter
             let counter_key = DataKey::AttestationCounter(params.commitment_id.clone());

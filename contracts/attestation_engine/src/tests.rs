@@ -627,6 +627,57 @@ fn test_record_drawdown_within_max_loss_records_drawdown() {
 }
 
 #[test]
+fn test_incremental_health_metrics_match_full_recomputation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(&e, &attestation_id);
+
+    let admin = Address::generate(&e);
+    let commitment_id = String::from_str(&e, "commitment_incremental_metrics");
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "commitment_incremental_metrics",
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    client.record_fees(&admin, &commitment_id, &100);
+    client.record_drawdown(&admin, &commitment_id, &2);
+    client.record_drawdown(&admin, &commitment_id, &7);
+    client.record_fees(&admin, &commitment_id, &40);
+
+    let cached = client.get_stored_health_metrics(&commitment_id).unwrap();
+    let attestations = client.get_attestations(&commitment_id);
+    let full = e.as_contract(&attestation_id, || {
+        AttestationEngineContract::aggregate_attestation_metrics(&e, &attestations)
+    });
+    let public_metrics = client.get_health_metrics(&commitment_id);
+
+    assert_eq!(cached.fees_generated, full.fees_generated);
+    assert_eq!(cached.drawdown_percent, full.latest_drawdown_percent.unwrap());
+    assert_eq!(cached.volatility_exposure, full.volatility_exposure);
+    assert_eq!(cached.last_attestation, full.last_attestation);
+    assert_eq!(public_metrics.fees_generated, cached.fees_generated);
+    assert_eq!(public_metrics.drawdown_percent, cached.drawdown_percent);
+    assert_eq!(public_metrics.volatility_exposure, cached.volatility_exposure);
+    assert_eq!(client.calculate_compliance_score(&commitment_id), cached.compliance_score);
+}
+
+#[test]
 fn test_get_attestations_page_logic() {
     let e = Env::default();
     e.mock_all_auths();
