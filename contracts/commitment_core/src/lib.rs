@@ -1560,6 +1560,12 @@ mod fee_tests;
 #[cfg(test)]
 mod fuzz_tests;
 
+/// Bounded deterministic stateful invariant model for the commitment lifecycle
+/// (issue #554): seeded command sequences over create/update/settle/exit/allocate/
+/// fee flows, verified against a reference model after every step.
+#[cfg(test)]
+mod lifecycle_model_tests;
+
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;
 
