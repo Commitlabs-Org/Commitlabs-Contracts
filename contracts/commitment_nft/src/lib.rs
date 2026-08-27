@@ -108,6 +108,10 @@ pub enum ContractError {
     InvalidCommitmentId = 21,
     /// Given address is a zero/invalid address
     InvalidAddress = 22,
+    /// The legacy storage keys required for a safe migration are incomplete.
+    MigrationSchemaMismatch = 23,
+    /// The stored version is not a schema version understood by this binary.
+    UnsupportedStorageVersion = 24,
 }
 
 // ============================================================================
@@ -209,6 +213,8 @@ mod tests;
 
 #[cfg(test)]
 mod smoke_tests;
+#[cfg(test)]
+mod migration_guard_tests;
 
 // ============================================================================
 // Contract Implementation
@@ -283,6 +289,9 @@ impl CommitmentNFTContract {
         e.storage()
             .instance()
             .set(&Pausable::paused_key(&e), &false);
+        e.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
 
         Ok(())
     }
@@ -607,17 +616,23 @@ impl CommitmentNFTContract {
         if stored_version == CURRENT_VERSION {
             return Err(ContractError::AlreadyMigrated);
         }
-        if from_version != stored_version || from_version > CURRENT_VERSION {
+        if !matches!(stored_version, 0 | 1) {
+            return Err(ContractError::UnsupportedStorageVersion);
+        }
+        if from_version != stored_version {
             return Err(ContractError::InvalidVersion);
         }
 
-        // Ensure essential counters are initialized
-        if !e.storage().instance().has(&DataKey::TokenCounter) {
-            e.storage().instance().set(&DataKey::TokenCounter, &0u32);
-        }
+        // Validate the complete source schema before writing any destination
+        // keys. In particular, an old v1 deployment stored TokenIds in
+        // instance storage; treating that key as absent would erase the
+        // discoverability index for existing NFTs.
+        let legacy_token_ids = validate_migration_source(&e)?;
+
         if !e.storage().persistent().has(&DataKey::TokenIds) {
-            let token_ids: Vec<u32> = Vec::new(&e);
-            e.storage().persistent().set(&DataKey::TokenIds, &token_ids);
+            e.storage()
+                .persistent()
+                .set(&DataKey::TokenIds, &legacy_token_ids);
         }
         if !e.storage().instance().has(&DataKey::ReentrancyGuard) {
             e.storage()
@@ -1334,6 +1349,34 @@ fn read_version(e: &Env) -> u32 {
         .instance()
         .get::<_, u32>(&DataKey::Version)
         .unwrap_or(0)
+}
+
+/// Validate the keys that make up the pre-v2 NFT schema and return its token
+/// index without changing storage.
+///
+/// The token index moved from instance to persistent storage after v1. Both
+/// locations are accepted as source fixtures, but at least one must exist.
+/// The admin and counter are required because fabricating either value can
+/// change authority or cause the next mint to reuse an existing token ID.
+fn validate_migration_source(e: &Env) -> Result<Vec<u32>, ContractError> {
+    if !e.storage().instance().has(&DataKey::Admin)
+        || !e.storage().instance().has(&DataKey::TokenCounter)
+    {
+        return Err(ContractError::MigrationSchemaMismatch);
+    }
+
+    if let Some(token_ids) = e
+        .storage()
+        .persistent()
+        .get::<DataKey, Vec<u32>>(&DataKey::TokenIds)
+    {
+        return Ok(token_ids);
+    }
+
+    e.storage()
+        .instance()
+        .get::<DataKey, Vec<u32>>(&DataKey::TokenIds)
+        .ok_or(ContractError::MigrationSchemaMismatch)
 }
 
 fn require_admin(e: &Env, caller: &Address) -> Result<(), ContractError> {
