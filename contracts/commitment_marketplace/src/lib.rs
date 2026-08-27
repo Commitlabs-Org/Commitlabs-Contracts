@@ -1,4 +1,3 @@
-
 //! # Commitment Marketplace Contract
 //!
 //! Soroban smart contract for NFT marketplace operations (listings, offers, auctions) with reentrancy guard and fee logic.
@@ -12,7 +11,7 @@
 //! - See [`MarketplaceError`] for all error codes.
 //!
 //! ## Storage
-//! 
+//!
 //! - See [`DataKey`] for all storage keys mutated by each entry point.
 //!
 //! ## Audit Notes
@@ -21,11 +20,11 @@
 
 #![no_std]
 
+use shared_utils::math::SafeMath;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
-use shared_utils::math::SafeMath;
 
 // ============================================================================
 // Error Types
@@ -80,6 +79,14 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// Marketplace is paused; new/risky mutations are disabled
+    Paused = 23,
+    /// Marketplace is already paused
+    AlreadyPaused = 24,
+    /// Marketplace is not paused
+    NotPaused = 25,
+    /// Caller is not the marketplace administrator
+    Unauthorized = 26,
 }
 
 // ============================================================================
@@ -150,6 +157,8 @@ pub enum DataKey {
     ActiveAuctions,
     /// Reentrancy guard
     ReentrancyGuard,
+    /// Emergency pause state
+    Paused,
 }
 
 #[cfg(test)]
@@ -167,6 +176,20 @@ fn read_admin(e: &Env) -> Result<Address, MarketplaceError> {
         .instance()
         .get(&DataKey::Admin)
         .ok_or(MarketplaceError::NotInitialized)
+}
+
+fn is_paused(e: &Env) -> bool {
+    e.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(e: &Env) -> Result<(), MarketplaceError> {
+    if is_paused(e) {
+        return Err(MarketplaceError::Paused);
+    }
+    Ok(())
 }
 
 fn read_allowed_payment_tokens(e: &Env) -> Vec<Address> {
@@ -189,10 +212,7 @@ fn is_allowed_payment_token(e: &Env, payment_token: &Address) -> bool {
         .unwrap_or(false)
 }
 
-fn require_allowed_payment_token(
-    e: &Env,
-    payment_token: &Address,
-) -> Result<(), MarketplaceError> {
+fn require_allowed_payment_token(e: &Env, payment_token: &Address) -> Result<(), MarketplaceError> {
     if !is_allowed_payment_token(e, payment_token) {
         return Err(MarketplaceError::PaymentTokenNotAllowed);
     }
@@ -252,6 +272,7 @@ impl CommitmentMarketplace {
         e.storage()
             .instance()
             .set(&DataKey::AllowedPaymentTokens, &allowed_payment_tokens);
+        e.storage().instance().set(&DataKey::Paused, &false);
 
         Ok(())
     }
@@ -263,6 +284,44 @@ impl CommitmentMarketplace {
         read_admin(&e)
     }
 
+    /// Pause risky marketplace mutations while preserving cancellation and
+    /// auction-ending recovery paths for already-created commitments.
+    pub fn pause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        if is_paused(&e) {
+            return Err(MarketplaceError::AlreadyPaused);
+        }
+        e.storage().instance().set(&DataKey::Paused, &true);
+        e.events()
+            .publish((symbol_short!("Pause"),), e.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Resume normal marketplace mutations after an emergency review.
+    pub fn unpause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        if !is_paused(&e) {
+            return Err(MarketplaceError::NotPaused);
+        }
+        e.storage().instance().set(&DataKey::Paused, &false);
+        e.events()
+            .publish((symbol_short!("Unpause"),), e.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Return whether the marketplace is in emergency pause mode.
+    pub fn is_paused(e: Env) -> bool {
+        is_paused(&e)
+    }
+
     /// @notice Update the marketplace fee (basis points).
     /// @param fee_basis_points New fee in basis points.
     /// @dev Only callable by admin.
@@ -271,6 +330,7 @@ impl CommitmentMarketplace {
     pub fn update_fee(e: Env, fee_basis_points: u32) -> Result<(), MarketplaceError> {
         let admin: Address = Self::get_admin(e.clone())?;
         admin.require_auth();
+        require_not_paused(&e)?;
 
         e.storage()
             .instance()
@@ -295,6 +355,7 @@ impl CommitmentMarketplace {
     pub fn add_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
         let admin = read_admin(&e)?;
         admin.require_auth();
+        require_not_paused(&e)?;
 
         if is_allowed_payment_token(&e, &payment_token) {
             return Ok(());
@@ -326,6 +387,7 @@ impl CommitmentMarketplace {
     pub fn remove_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
         let admin = read_admin(&e)?;
         admin.require_auth();
+        require_not_paused(&e)?;
 
         e.storage()
             .persistent()
@@ -374,6 +436,7 @@ impl CommitmentMarketplace {
         price: i128,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -542,6 +605,7 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if contract not initialized.
     /// @security Only callable by `buyer` (require_auth).
     pub fn buy_nft(e: Env, buyer: Address, token_id: u32) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -611,8 +675,10 @@ impl CommitmentMarketplace {
 
         // Calculate fee and seller proceeds safely using basis points (bps)
         let fee_basis_points_i128: i128 = fee_basis_points as i128;
-        let marketplace_fee =
-            SafeMath::div(SafeMath::mul(listing.price, fee_basis_points_i128), 10_000_i128);
+        let marketplace_fee = SafeMath::div(
+            SafeMath::mul(listing.price, fee_basis_points_i128),
+            10_000_i128,
+        );
         let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
 
         // EFFECTS
@@ -717,6 +783,7 @@ impl CommitmentMarketplace {
         amount: i128,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -829,6 +896,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         offerer: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1017,6 +1085,7 @@ impl CommitmentMarketplace {
         duration_seconds: u64,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1062,7 +1131,9 @@ impl CommitmentMarketplace {
         // EFFECTS
         let started_at = e.ledger().timestamp();
         let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             MarketplaceError::InvalidDuration
         })?;
 
@@ -1121,6 +1192,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         bid_amount: i128,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1312,8 +1384,10 @@ impl CommitmentMarketplace {
                 fee_basis_points
             };
             let fee_bps_i128 = fee_bps as i128;
-            let marketplace_fee =
-                SafeMath::div(SafeMath::mul(auction.current_bid, fee_bps_i128), 10_000_i128);
+            let marketplace_fee = SafeMath::div(
+                SafeMath::mul(auction.current_bid, fee_bps_i128),
+                10_000_i128,
+            );
             let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
