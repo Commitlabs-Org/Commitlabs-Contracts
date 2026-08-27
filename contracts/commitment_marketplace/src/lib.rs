@@ -1,4 +1,3 @@
-
 //! # Commitment Marketplace Contract
 //!
 //! Soroban smart contract for NFT marketplace operations (listings, offers, auctions) with reentrancy guard and fee logic.
@@ -12,7 +11,7 @@
 //! - See [`MarketplaceError`] for all error codes.
 //!
 //! ## Storage
-//! 
+//!
 //! - See [`DataKey`] for all storage keys mutated by each entry point.
 //!
 //! ## Audit Notes
@@ -21,11 +20,11 @@
 
 #![no_std]
 
+use shared_utils::math::SafeMath;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
-use shared_utils::math::SafeMath;
 
 // ============================================================================
 // Error Types
@@ -80,6 +79,14 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// Royalty basis points exceed the marketplace policy maximum
+    RoyaltyTooHigh = 23,
+    /// Seller, fee, and royalty payouts cannot be represented safely
+    PayoutOverflow = 24,
+    /// The configured fee and royalty cannot be paid from the sale amount
+    PayoutExceedsSale = 25,
+    /// Caller is not authorized to change royalty configuration
+    UnauthorizedRoyaltyUpdate = 26,
 }
 
 // ============================================================================
@@ -123,6 +130,17 @@ pub struct Auction {
     pub ended: bool,
 }
 
+/// Royalty configuration applied to a token sale.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoyaltyConfig {
+    pub recipient: Address,
+    pub basis_points: u32,
+}
+
+/// Maximum royalty policy: 10% of the sale price.
+pub const MAX_ROYALTY_BASIS_POINTS: u32 = 1_000;
+
 /// Storage keys
 #[contracttype]
 pub enum DataKey {
@@ -150,6 +168,8 @@ pub enum DataKey {
     ActiveAuctions,
     /// Reentrancy guard
     ReentrancyGuard,
+    /// Royalty configuration for a token ID
+    Royalty(u32),
 }
 
 #[cfg(test)]
@@ -189,15 +209,62 @@ fn is_allowed_payment_token(e: &Env, payment_token: &Address) -> bool {
         .unwrap_or(false)
 }
 
-fn require_allowed_payment_token(
-    e: &Env,
-    payment_token: &Address,
-) -> Result<(), MarketplaceError> {
+fn require_allowed_payment_token(e: &Env, payment_token: &Address) -> Result<(), MarketplaceError> {
     if !is_allowed_payment_token(e, payment_token) {
         return Err(MarketplaceError::PaymentTokenNotAllowed);
     }
 
     Ok(())
+}
+
+fn royalty_for(e: &Env, token_id: u32) -> Option<RoyaltyConfig> {
+    e.storage().persistent().get(&DataKey::Royalty(token_id))
+}
+
+fn calculate_sale_payouts(
+    e: &Env,
+    token_id: u32,
+    sale_amount: i128,
+) -> Result<(i128, i128, i128, Option<Address>), MarketplaceError> {
+    let fee_basis_points: u32 = e
+        .storage()
+        .instance()
+        .get(&DataKey::MarketplaceFee)
+        .unwrap_or(0);
+    let royalty = royalty_for(e, token_id);
+    let royalty_bps = royalty
+        .as_ref()
+        .map(|config| config.basis_points)
+        .unwrap_or(0);
+    if fee_basis_points > 10_000 {
+        return Err(MarketplaceError::PayoutExceedsSale);
+    }
+    if royalty_bps > MAX_ROYALTY_BASIS_POINTS {
+        return Err(MarketplaceError::RoyaltyTooHigh);
+    }
+    let fee = sale_amount
+        .checked_mul(fee_basis_points as i128)
+        .ok_or(MarketplaceError::PayoutOverflow)?
+        / 10_000;
+    let royalty_amount = sale_amount
+        .checked_mul(royalty_bps as i128)
+        .ok_or(MarketplaceError::PayoutOverflow)?
+        / 10_000;
+    let deductions = fee
+        .checked_add(royalty_amount)
+        .ok_or(MarketplaceError::PayoutOverflow)?;
+    let seller_proceeds = sale_amount
+        .checked_sub(deductions)
+        .ok_or(MarketplaceError::PayoutOverflow)?;
+    if seller_proceeds < 0 {
+        return Err(MarketplaceError::PayoutExceedsSale);
+    }
+    Ok((
+        seller_proceeds,
+        fee,
+        royalty_amount,
+        royalty.map(|config| config.recipient),
+    ))
 }
 
 #[contractimpl]
@@ -223,6 +290,9 @@ impl CommitmentMarketplace {
     ) -> Result<(), MarketplaceError> {
         if e.storage().instance().has(&DataKey::Admin) {
             return Err(MarketplaceError::AlreadyInitialized);
+        }
+        if fee_basis_points > 10_000 {
+            return Err(MarketplaceError::PayoutExceedsSale);
         }
 
         admin.require_auth();
@@ -271,6 +341,9 @@ impl CommitmentMarketplace {
     pub fn update_fee(e: Env, fee_basis_points: u32) -> Result<(), MarketplaceError> {
         let admin: Address = Self::get_admin(e.clone())?;
         admin.require_auth();
+        if fee_basis_points > 10_000 {
+            return Err(MarketplaceError::PayoutExceedsSale);
+        }
 
         e.storage()
             .instance()
@@ -280,6 +353,46 @@ impl CommitmentMarketplace {
             .publish((Symbol::new(&e, "FeeUpdated"),), fee_basis_points);
 
         Ok(())
+    }
+
+    /// Set or replace royalty configuration for an active listing.
+    /// Only the listing seller may authorize its recipient and basis points.
+    pub fn set_royalty(
+        e: Env,
+        seller: Address,
+        token_id: u32,
+        recipient: Address,
+        basis_points: u32,
+    ) -> Result<(), MarketplaceError> {
+        seller.require_auth();
+        if basis_points > MAX_ROYALTY_BASIS_POINTS {
+            return Err(MarketplaceError::RoyaltyTooHigh);
+        }
+        let listing: Listing = e
+            .storage()
+            .persistent()
+            .get(&DataKey::Listing(token_id))
+            .ok_or(MarketplaceError::ListingNotFound)?;
+        if listing.seller != seller {
+            return Err(MarketplaceError::UnauthorizedRoyaltyUpdate);
+        }
+        e.storage().persistent().set(
+            &DataKey::Royalty(token_id),
+            &RoyaltyConfig {
+                recipient,
+                basis_points,
+            },
+        );
+        e.events().publish(
+            (symbol_short!("RoyaltySet"), token_id),
+            (recipient, basis_points),
+        );
+        Ok(())
+    }
+
+    /// Return the configured royalty for a token, if one exists.
+    pub fn get_royalty(e: Env, token_id: u32) -> Option<RoyaltyConfig> {
+        royalty_for(&e, token_id)
     }
 
     /// Add a token contract to the payment-token allowlist.
@@ -507,6 +620,7 @@ impl CommitmentMarketplace {
         // EFFECTS
         // Remove listing
         e.storage().persistent().remove(&DataKey::Listing(token_id));
+        e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
         // Remove from active listings
         let mut active_listings: Vec<u32> = e
@@ -581,12 +695,6 @@ impl CommitmentMarketplace {
             return Err(err);
         }
 
-        let fee_basis_points: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::MarketplaceFee)
-            .unwrap_or(0);
-
         let fee_recipient: Address = e
             .storage()
             .instance()
@@ -609,15 +717,14 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        // Calculate fee and seller proceeds safely using basis points (bps)
-        let fee_basis_points_i128: i128 = fee_basis_points as i128;
-        let marketplace_fee =
-            SafeMath::div(SafeMath::mul(listing.price, fee_basis_points_i128), 10_000_i128);
-        let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
+        // Calculate seller, fee, and royalty amounts before changing state.
+        let (seller_proceeds, marketplace_fee, royalty_amount, royalty_recipient) =
+            calculate_sale_payouts(&e, token_id, listing.price)?;
 
         // EFFECTS
         // Remove listing first (prevent reentrancy)
         e.storage().persistent().remove(&DataKey::Listing(token_id));
+        e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
         // Remove from active listings
         let mut active_listings: Vec<u32> = e
@@ -640,6 +747,12 @@ impl CommitmentMarketplace {
         // Transfer marketplace fee if applicable
         if marketplace_fee > 0 {
             payment_token_client.transfer(&buyer, &fee_recipient, &marketplace_fee);
+        }
+
+        if royalty_amount > 0 {
+            if let Some(recipient) = royalty_recipient {
+                payment_token_client.transfer(&buyer, &recipient, &royalty_amount);
+            }
         }
 
         // Transfer NFT from seller to buyer
@@ -874,12 +987,6 @@ impl CommitmentMarketplace {
 
         let offer = offers.get(offer_index as u32).unwrap();
 
-        let fee_basis_points: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::MarketplaceFee)
-            .unwrap_or(0);
-
         let fee_recipient: Address = e
             .storage()
             .instance()
@@ -898,9 +1005,9 @@ impl CommitmentMarketplace {
             return Err(err);
         }
 
-        // Calculate fee and seller proceeds
-        let marketplace_fee = (offer.amount * fee_basis_points as i128) / 10000;
-        let seller_proceeds = offer.amount - marketplace_fee;
+        // Calculate fee, royalty, and seller proceeds before changing state.
+        let (seller_proceeds, marketplace_fee, royalty_amount, royalty_recipient) =
+            calculate_sale_payouts(&e, token_id, offer.amount)?;
 
         // EFFECTS
         // Remove all offers for this token
@@ -909,6 +1016,7 @@ impl CommitmentMarketplace {
         // Remove listing if exists
         if e.storage().persistent().has(&DataKey::Listing(token_id)) {
             e.storage().persistent().remove(&DataKey::Listing(token_id));
+            e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
             let mut active_listings: Vec<u32> = e
                 .storage()
@@ -930,6 +1038,12 @@ impl CommitmentMarketplace {
 
         if marketplace_fee > 0 {
             payment_token_client.transfer(&offerer, &fee_recipient, &marketplace_fee);
+        }
+
+        if royalty_amount > 0 {
+            if let Some(recipient) = royalty_recipient {
+                payment_token_client.transfer(&offerer, &recipient, &royalty_amount);
+            }
         }
 
         // Transfer NFT
@@ -1062,7 +1176,9 @@ impl CommitmentMarketplace {
         // EFFECTS
         let started_at = e.ledger().timestamp();
         let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             MarketplaceError::InvalidDuration
         })?;
 
@@ -1258,12 +1374,6 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::AuctionEnded);
         }
 
-        let fee_basis_points: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::MarketplaceFee)
-            .unwrap_or(0);
-
         let fee_recipient: Address = e
             .storage()
             .instance()
@@ -1305,16 +1415,8 @@ impl CommitmentMarketplace {
 
         // INTERACTIONS
         if let Some(winner) = auction.highest_bidder {
-            // Calculate fees safely using basis points (bps, /10_000)
-            let fee_bps = if fee_basis_points > 10_000 {
-                10_000
-            } else {
-                fee_basis_points
-            };
-            let fee_bps_i128 = fee_bps as i128;
-            let marketplace_fee =
-                SafeMath::div(SafeMath::mul(auction.current_bid, fee_bps_i128), 10_000_i128);
-            let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
+            let (seller_proceeds, marketplace_fee, royalty_amount, royalty_recipient) =
+                calculate_sale_payouts(&e, token_id, auction.current_bid)?;
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
 
@@ -1334,6 +1436,18 @@ impl CommitmentMarketplace {
                 );
             }
 
+            if royalty_amount > 0 {
+                if let Some(recipient) = royalty_recipient {
+                    payment_token_client.transfer(
+                        &e.current_contract_address(),
+                        &recipient,
+                        &royalty_amount,
+                    );
+                }
+            }
+
+            e.storage().persistent().remove(&DataKey::Royalty(token_id));
+
             // Transfer NFT to winner
             // Note: Use NFT contract client in production
 
@@ -1349,6 +1463,7 @@ impl CommitmentMarketplace {
             );
         } else {
             // No bids - return NFT to seller
+            e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
             // Clear reentrancy guard
             e.storage()
