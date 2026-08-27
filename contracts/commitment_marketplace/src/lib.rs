@@ -20,11 +20,11 @@
 
 #![no_std]
 
-use shared_utils::math::SafeMath;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
+use shared_utils::fee_invariants;
 
 // ============================================================================
 // Error Types
@@ -79,6 +79,8 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// Configured fee cannot be represented as a safe accounting split.
+    InvalidFeeConfiguration = 34,
     /// No administrator handover is currently pending
     NoPendingAdmin = 31,
     /// Caller is not the nominated administrator
@@ -274,14 +276,20 @@ fn calculate_sale_payouts(
     if royalty_bps > MAX_ROYALTY_BASIS_POINTS {
         return Err(MarketplaceError::RoyaltyTooHigh);
     }
-    let fee = sale_amount
-        .checked_mul(fee_basis_points as i128)
-        .ok_or(MarketplaceError::PayoutOverflow)?
-        / 10_000;
-    let royalty_amount = sale_amount
-        .checked_mul(royalty_bps as i128)
-        .ok_or(MarketplaceError::PayoutOverflow)?
-        / 10_000;
+    let fee_split = fee_invariants::split_bps(sale_amount, fee_basis_points).map_err(|error| {
+        match error {
+            fee_invariants::FeeError::InvalidRate => MarketplaceError::PayoutExceedsSale,
+            _ => MarketplaceError::PayoutOverflow,
+        }
+    })?;
+    let royalty_split = fee_invariants::split_bps(sale_amount, royalty_bps).map_err(|error| {
+        match error {
+            fee_invariants::FeeError::InvalidRate => MarketplaceError::RoyaltyTooHigh,
+            _ => MarketplaceError::PayoutOverflow,
+        }
+    })?;
+    let fee = fee_split.fee;
+    let royalty_amount = royalty_split.fee;
     let deductions = fee
         .checked_add(royalty_amount)
         .ok_or(MarketplaceError::PayoutOverflow)?;
