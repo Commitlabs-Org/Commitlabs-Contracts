@@ -28,6 +28,11 @@ use soroban_sdk::{
 };
 
 pub mod fuzzing;
+pub mod identity_policy;
+#[cfg(test)]
+mod identity_policy_matrix;
+#[cfg(test)]
+mod identity_policy_fuzz_cases;
 
 /// Maximum page size for paginated owner-commitment queries.
 const MAX_PAGE_SIZE: u32 = 50;
@@ -1561,6 +1566,12 @@ mod fee_tests;
 
 #[cfg(test)]
 mod fuzz_tests;
+
+/// Bounded deterministic stateful invariant model for the commitment lifecycle
+/// (issue #554): seeded command sequences over create/update/settle/exit/allocate/
+/// fee flows, verified against a reference model after every step.
+#[cfg(test)]
+mod lifecycle_model_tests;
 
 #[cfg(all(test, feature = "benchmark"))]
 mod benchmarks;

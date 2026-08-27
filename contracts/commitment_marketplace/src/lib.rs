@@ -1,4 +1,3 @@
-
 //! # Commitment Marketplace Contract
 //!
 //! Soroban smart contract for NFT marketplace operations (listings, offers, auctions) with reentrancy guard and fee logic.
@@ -12,7 +11,7 @@
 //! - See [`MarketplaceError`] for all error codes.
 //!
 //! ## Storage
-//! 
+//!
 //! - See [`DataKey`] for all storage keys mutated by each entry point.
 //!
 //! ## Audit Notes
@@ -25,7 +24,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
-use shared_utils::{fee_invariants, math::SafeMath};
+use shared_utils::fee_invariants;
 
 // ============================================================================
 // Error Types
@@ -81,7 +80,29 @@ pub enum MarketplaceError {
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
     /// Configured fee cannot be represented as a safe accounting split.
-    InvalidFeeConfiguration = 23,
+    InvalidFeeConfiguration = 34,
+    /// No administrator handover is currently pending
+    NoPendingAdmin = 31,
+    /// Caller is not the nominated administrator
+    NotPendingAdmin = 32,
+    /// The current administrator cannot nominate itself
+    CannotNominateCurrentAdmin = 33,
+    /// Royalty basis points exceed the marketplace policy maximum
+    RoyaltyTooHigh = 27,
+    /// Seller, fee, and royalty payouts cannot be represented safely
+    PayoutOverflow = 28,
+    /// The configured fee and royalty cannot be paid from the sale amount
+    PayoutExceedsSale = 29,
+    /// Caller is not authorized to change royalty configuration
+    UnauthorizedRoyaltyUpdate = 30,
+    /// Marketplace is paused; new/risky mutations are disabled
+    Paused = 23,
+    /// Marketplace is already paused
+    AlreadyPaused = 24,
+    /// Marketplace is not paused
+    NotPaused = 25,
+    /// Caller is not the marketplace administrator
+    Unauthorized = 26,
 }
 
 // ============================================================================
@@ -125,11 +146,24 @@ pub struct Auction {
     pub ended: bool,
 }
 
+/// Royalty configuration applied to a token sale.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoyaltyConfig {
+    pub recipient: Address,
+    pub basis_points: u32,
+}
+
+/// Maximum royalty policy: 10% of the sale price.
+pub const MAX_ROYALTY_BASIS_POINTS: u32 = 1_000;
+
 /// Storage keys
 #[contracttype]
 pub enum DataKey {
     /// Admin address
     Admin,
+    /// Address nominated to become admin
+    PendingAdmin,
     /// NFT contract address
     NFTContract,
     /// Marketplace fee percentage (basis points, e.g., 250 = 2.5%)
@@ -152,6 +186,10 @@ pub enum DataKey {
     ActiveAuctions,
     /// Reentrancy guard
     ReentrancyGuard,
+    /// Royalty configuration for a token ID
+    Royalty(u32),
+    /// Emergency pause state
+    Paused,
 }
 
 #[cfg(test)]
@@ -169,6 +207,20 @@ fn read_admin(e: &Env) -> Result<Address, MarketplaceError> {
         .instance()
         .get(&DataKey::Admin)
         .ok_or(MarketplaceError::NotInitialized)
+}
+
+fn is_paused(e: &Env) -> bool {
+    e.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(e: &Env) -> Result<(), MarketplaceError> {
+    if is_paused(e) {
+        return Err(MarketplaceError::Paused);
+    }
+    Ok(())
 }
 
 fn read_allowed_payment_tokens(e: &Env) -> Vec<Address> {
@@ -191,15 +243,68 @@ fn is_allowed_payment_token(e: &Env, payment_token: &Address) -> bool {
         .unwrap_or(false)
 }
 
-fn require_allowed_payment_token(
-    e: &Env,
-    payment_token: &Address,
-) -> Result<(), MarketplaceError> {
+fn require_allowed_payment_token(e: &Env, payment_token: &Address) -> Result<(), MarketplaceError> {
     if !is_allowed_payment_token(e, payment_token) {
         return Err(MarketplaceError::PaymentTokenNotAllowed);
     }
 
     Ok(())
+}
+
+fn royalty_for(e: &Env, token_id: u32) -> Option<RoyaltyConfig> {
+    e.storage().persistent().get(&DataKey::Royalty(token_id))
+}
+
+fn calculate_sale_payouts(
+    e: &Env,
+    token_id: u32,
+    sale_amount: i128,
+) -> Result<(i128, i128, i128, Option<Address>), MarketplaceError> {
+    let fee_basis_points: u32 = e
+        .storage()
+        .instance()
+        .get(&DataKey::MarketplaceFee)
+        .unwrap_or(0);
+    let royalty = royalty_for(e, token_id);
+    let royalty_bps = royalty
+        .as_ref()
+        .map(|config| config.basis_points)
+        .unwrap_or(0);
+    if fee_basis_points > 10_000 {
+        return Err(MarketplaceError::PayoutExceedsSale);
+    }
+    if royalty_bps > MAX_ROYALTY_BASIS_POINTS {
+        return Err(MarketplaceError::RoyaltyTooHigh);
+    }
+    let fee_split = fee_invariants::split_bps(sale_amount, fee_basis_points).map_err(|error| {
+        match error {
+            fee_invariants::FeeError::InvalidRate => MarketplaceError::PayoutExceedsSale,
+            _ => MarketplaceError::PayoutOverflow,
+        }
+    })?;
+    let royalty_split = fee_invariants::split_bps(sale_amount, royalty_bps).map_err(|error| {
+        match error {
+            fee_invariants::FeeError::InvalidRate => MarketplaceError::RoyaltyTooHigh,
+            _ => MarketplaceError::PayoutOverflow,
+        }
+    })?;
+    let fee = fee_split.fee;
+    let royalty_amount = royalty_split.fee;
+    let deductions = fee
+        .checked_add(royalty_amount)
+        .ok_or(MarketplaceError::PayoutOverflow)?;
+    let seller_proceeds = sale_amount
+        .checked_sub(deductions)
+        .ok_or(MarketplaceError::PayoutOverflow)?;
+    if seller_proceeds < 0 {
+        return Err(MarketplaceError::PayoutExceedsSale);
+    }
+    Ok((
+        seller_proceeds,
+        fee,
+        royalty_amount,
+        royalty.map(|config| config.recipient),
+    ))
 }
 
 #[contractimpl]
@@ -225,6 +330,9 @@ impl CommitmentMarketplace {
     ) -> Result<(), MarketplaceError> {
         if e.storage().instance().has(&DataKey::Admin) {
             return Err(MarketplaceError::AlreadyInitialized);
+        }
+        if fee_basis_points > 10_000 {
+            return Err(MarketplaceError::PayoutExceedsSale);
         }
 
         admin.require_auth();
@@ -254,6 +362,7 @@ impl CommitmentMarketplace {
         e.storage()
             .instance()
             .set(&DataKey::AllowedPaymentTokens, &allowed_payment_tokens);
+        e.storage().instance().set(&DataKey::Paused, &false);
 
         Ok(())
     }
@@ -265,6 +374,104 @@ impl CommitmentMarketplace {
         read_admin(&e)
     }
 
+    /// Nominate an administrator. The current administrator remains in
+    /// control until the nominee explicitly accepts the handover.
+    pub fn nominate_admin(e: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+        if new_admin == admin {
+            return Err(MarketplaceError::CannotNominateCurrentAdmin);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        e.events()
+            .publish((symbol_short!("AdminNom"),), (admin, new_admin));
+        Ok(())
+    }
+
+    /// Cancel a pending administrator handover.
+    pub fn cancel_admin_transfer(e: Env) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+        if e.storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+            .is_none()
+        {
+            return Err(MarketplaceError::NoPendingAdmin);
+        }
+
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        e.events().publish((symbol_short!("AdminCan"),), admin);
+        Ok(())
+    }
+
+    /// Accept the pending administrator role. Only the nominated address can
+    /// call this entry point, and authority changes atomically at acceptance.
+    pub fn accept_admin_transfer(e: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let pending = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+            .ok_or(MarketplaceError::NoPendingAdmin)?;
+        if pending != new_admin {
+            return Err(MarketplaceError::NotPendingAdmin);
+        }
+        new_admin.require_auth();
+
+        let old_admin = read_admin(&e)?;
+        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        e.events()
+            .publish((symbol_short!("AdminAcc"),), (old_admin, new_admin));
+        Ok(())
+    }
+
+    /// Return the pending administrator, if a handover is awaiting acceptance.
+    pub fn get_pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Pause risky marketplace mutations while preserving cancellation and
+    /// auction-ending recovery paths for already-created commitments.
+    pub fn pause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        if is_paused(&e) {
+            return Err(MarketplaceError::AlreadyPaused);
+        }
+        e.storage().instance().set(&DataKey::Paused, &true);
+        e.events()
+            .publish((symbol_short!("Pause"),), e.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Resume normal marketplace mutations after an emergency review.
+    pub fn unpause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        if !is_paused(&e) {
+            return Err(MarketplaceError::NotPaused);
+        }
+        e.storage().instance().set(&DataKey::Paused, &false);
+        e.events()
+            .publish((symbol_short!("Unpause"),), e.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Return whether the marketplace is in emergency pause mode.
+    pub fn is_paused(e: Env) -> bool {
+        is_paused(&e)
+    }
+
     /// @notice Update the marketplace fee (basis points).
     /// @param fee_basis_points New fee in basis points.
     /// @dev Only callable by admin.
@@ -273,6 +480,10 @@ impl CommitmentMarketplace {
     pub fn update_fee(e: Env, fee_basis_points: u32) -> Result<(), MarketplaceError> {
         let admin: Address = Self::get_admin(e.clone())?;
         admin.require_auth();
+        if fee_basis_points > 10_000 {
+            return Err(MarketplaceError::PayoutExceedsSale);
+        }
+        require_not_paused(&e)?;
 
         e.storage()
             .instance()
@@ -282,6 +493,46 @@ impl CommitmentMarketplace {
             .publish((Symbol::new(&e, "FeeUpdated"),), fee_basis_points);
 
         Ok(())
+    }
+
+    /// Set or replace royalty configuration for an active listing.
+    /// Only the listing seller may authorize its recipient and basis points.
+    pub fn set_royalty(
+        e: Env,
+        seller: Address,
+        token_id: u32,
+        recipient: Address,
+        basis_points: u32,
+    ) -> Result<(), MarketplaceError> {
+        seller.require_auth();
+        if basis_points > MAX_ROYALTY_BASIS_POINTS {
+            return Err(MarketplaceError::RoyaltyTooHigh);
+        }
+        let listing: Listing = e
+            .storage()
+            .persistent()
+            .get(&DataKey::Listing(token_id))
+            .ok_or(MarketplaceError::ListingNotFound)?;
+        if listing.seller != seller {
+            return Err(MarketplaceError::UnauthorizedRoyaltyUpdate);
+        }
+        e.storage().persistent().set(
+            &DataKey::Royalty(token_id),
+            &RoyaltyConfig {
+                recipient,
+                basis_points,
+            },
+        );
+        e.events().publish(
+            (symbol_short!("RoyaltySet"), token_id),
+            (recipient, basis_points),
+        );
+        Ok(())
+    }
+
+    /// Return the configured royalty for a token, if one exists.
+    pub fn get_royalty(e: Env, token_id: u32) -> Option<RoyaltyConfig> {
+        royalty_for(&e, token_id)
     }
 
     /// Add a token contract to the payment-token allowlist.
@@ -297,6 +548,7 @@ impl CommitmentMarketplace {
     pub fn add_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
         let admin = read_admin(&e)?;
         admin.require_auth();
+        require_not_paused(&e)?;
 
         if is_allowed_payment_token(&e, &payment_token) {
             return Ok(());
@@ -307,8 +559,11 @@ impl CommitmentMarketplace {
             .set(&DataKey::AllowedPaymentToken(payment_token.clone()), &true);
 
         let mut allowed_payment_tokens = read_allowed_payment_tokens(&e);
-        allowed_payment_tokens.push_back(payment_token);
+        allowed_payment_tokens.push_back(payment_token.clone());
         write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+
+        e.events()
+            .publish((symbol_short!("TokenAdd"), payment_token.clone()), admin);
 
         Ok(())
     }
@@ -328,6 +583,7 @@ impl CommitmentMarketplace {
     pub fn remove_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
         let admin = read_admin(&e)?;
         admin.require_auth();
+        require_not_paused(&e)?;
 
         e.storage()
             .persistent()
@@ -340,6 +596,9 @@ impl CommitmentMarketplace {
         {
             allowed_payment_tokens.remove(index as u32);
             write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+
+            e.events()
+                .publish((symbol_short!("TokenRem"), payment_token.clone()), admin);
         }
 
         Ok(())
@@ -376,6 +635,7 @@ impl CommitmentMarketplace {
         price: i128,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -509,6 +769,7 @@ impl CommitmentMarketplace {
         // EFFECTS
         // Remove listing
         e.storage().persistent().remove(&DataKey::Listing(token_id));
+        e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
         // Remove from active listings
         let mut active_listings: Vec<u32> = e
@@ -544,6 +805,7 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if contract not initialized.
     /// @security Only callable by `buyer` (require_auth).
     pub fn buy_nft(e: Env, buyer: Address, token_id: u32) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -583,12 +845,6 @@ impl CommitmentMarketplace {
             return Err(err);
         }
 
-        let fee_basis_points: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::MarketplaceFee)
-            .unwrap_or(0);
-
         let fee_recipient: Address = e
             .storage()
             .instance()
@@ -611,17 +867,14 @@ impl CommitmentMarketplace {
                 MarketplaceError::NotInitialized
             })?;
 
-        // Calculate fee and seller proceeds safely using basis points (bps)
-        let fee_split = fee_invariants::split_bps(listing.price, fee_basis_points).map_err(|_| {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
-            MarketplaceError::InvalidFeeConfiguration
-        })?;
-        let marketplace_fee = fee_split.fee;
-        let seller_proceeds = fee_split.net;
+        // Calculate seller, fee, and royalty amounts before changing state.
+        let (seller_proceeds, marketplace_fee, royalty_amount, royalty_recipient) =
+            calculate_sale_payouts(&e, token_id, listing.price)?;
 
         // EFFECTS
         // Remove listing first (prevent reentrancy)
         e.storage().persistent().remove(&DataKey::Listing(token_id));
+        e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
         // Remove from active listings
         let mut active_listings: Vec<u32> = e
@@ -644,6 +897,12 @@ impl CommitmentMarketplace {
         // Transfer marketplace fee if applicable
         if marketplace_fee > 0 {
             payment_token_client.transfer(&buyer, &fee_recipient, &marketplace_fee);
+        }
+
+        if royalty_amount > 0 {
+            if let Some(recipient) = royalty_recipient {
+                payment_token_client.transfer(&buyer, &recipient, &royalty_amount);
+            }
         }
 
         // Transfer NFT from seller to buyer
@@ -721,6 +980,7 @@ impl CommitmentMarketplace {
         amount: i128,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -833,6 +1093,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         offerer: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -878,12 +1139,6 @@ impl CommitmentMarketplace {
 
         let offer = offers.get(offer_index as u32).unwrap();
 
-        let fee_basis_points: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::MarketplaceFee)
-            .unwrap_or(0);
-
         let fee_recipient: Address = e
             .storage()
             .instance()
@@ -902,13 +1157,9 @@ impl CommitmentMarketplace {
             return Err(err);
         }
 
-        // Calculate fee and seller proceeds
-        let fee_split = fee_invariants::split_bps(offer.amount, fee_basis_points).map_err(|_| {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
-            MarketplaceError::InvalidFeeConfiguration
-        })?;
-        let marketplace_fee = fee_split.fee;
-        let seller_proceeds = fee_split.net;
+        // Calculate fee, royalty, and seller proceeds before changing state.
+        let (seller_proceeds, marketplace_fee, royalty_amount, royalty_recipient) =
+            calculate_sale_payouts(&e, token_id, offer.amount)?;
 
         // EFFECTS
         // Remove all offers for this token
@@ -917,6 +1168,7 @@ impl CommitmentMarketplace {
         // Remove listing if exists
         if e.storage().persistent().has(&DataKey::Listing(token_id)) {
             e.storage().persistent().remove(&DataKey::Listing(token_id));
+            e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
             let mut active_listings: Vec<u32> = e
                 .storage()
@@ -938,6 +1190,12 @@ impl CommitmentMarketplace {
 
         if marketplace_fee > 0 {
             payment_token_client.transfer(&offerer, &fee_recipient, &marketplace_fee);
+        }
+
+        if royalty_amount > 0 {
+            if let Some(recipient) = royalty_recipient {
+                payment_token_client.transfer(&offerer, &recipient, &royalty_amount);
+            }
         }
 
         // Transfer NFT
@@ -1025,6 +1283,7 @@ impl CommitmentMarketplace {
         duration_seconds: u64,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1070,7 +1329,9 @@ impl CommitmentMarketplace {
         // EFFECTS
         let started_at = e.ledger().timestamp();
         let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             MarketplaceError::InvalidDuration
         })?;
 
@@ -1129,6 +1390,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         bid_amount: i128,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1266,12 +1528,6 @@ impl CommitmentMarketplace {
             return Err(MarketplaceError::AuctionEnded);
         }
 
-        let fee_basis_points: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::MarketplaceFee)
-            .unwrap_or(0);
-
         let fee_recipient: Address = e
             .storage()
             .instance()
@@ -1313,15 +1569,8 @@ impl CommitmentMarketplace {
 
         // INTERACTIONS
         if let Some(winner) = auction.highest_bidder {
-            // Use the same checked, conservation-preserving split as listings
-            // and offers. Invalid configuration must fail closed, not clamp.
-            let fee_split = fee_invariants::split_bps(auction.current_bid, fee_basis_points)
-                .map_err(|_| {
-                    e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
-                    MarketplaceError::InvalidFeeConfiguration
-                })?;
-            let marketplace_fee = fee_split.fee;
-            let seller_proceeds = fee_split.net;
+            let (seller_proceeds, marketplace_fee, royalty_amount, royalty_recipient) =
+                calculate_sale_payouts(&e, token_id, auction.current_bid)?;
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
 
@@ -1341,6 +1590,18 @@ impl CommitmentMarketplace {
                 );
             }
 
+            if royalty_amount > 0 {
+                if let Some(recipient) = royalty_recipient {
+                    payment_token_client.transfer(
+                        &e.current_contract_address(),
+                        &recipient,
+                        &royalty_amount,
+                    );
+                }
+            }
+
+            e.storage().persistent().remove(&DataKey::Royalty(token_id));
+
             // Transfer NFT to winner
             // Note: Use NFT contract client in production
 
@@ -1356,6 +1617,7 @@ impl CommitmentMarketplace {
             );
         } else {
             // No bids - return NFT to seller
+            e.storage().persistent().remove(&DataKey::Royalty(token_id));
 
             // Clear reentrancy guard
             e.storage()

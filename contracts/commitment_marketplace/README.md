@@ -397,6 +397,35 @@ fn get_admin(e: Env) -> Result<Address, MarketplaceError>
 
 Get admin address.
 
+#### Two-step administrator rotation
+
+```rust
+fn nominate_admin(e: Env, new_admin: Address) -> Result<(), MarketplaceError>
+fn cancel_admin_transfer(e: Env) -> Result<(), MarketplaceError>
+fn accept_admin_transfer(e: Env, new_admin: Address) -> Result<(), MarketplaceError>
+fn get_pending_admin(e: Env) -> Option<Address>
+```
+
+Only the current administrator can nominate or cancel a handover. A nomination
+replaces any previous pending nominee, while the current administrator retains
+all authority until the nominated address authenticates an acceptance. Successful
+nomination, cancellation, and acceptance emit `AdminNom`, `AdminCan`, and
+`AdminAcc` events. A failed or replayed acceptance cannot change authority.
+
+#### `add_payment_token` / `remove_payment_token`
+
+```rust
+fn add_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError>
+fn remove_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError>
+```
+
+Manage the payment-token allowlist. Both operations require the current admin's
+authorization and are idempotent. An allowlisted token is required before a
+listing, offer, auction, or settlement can use it. Removing a token does not
+rewrite existing listings or commitments; it prevents new use and settlement
+until the token is restored. Successful changes emit `TokenAdd` or `TokenRem`
+events containing the token and administrator for auditability.
+
 ## Data Structures
 
 ### Listing
