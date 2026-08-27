@@ -80,13 +80,21 @@ pub enum MarketplaceError {
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
     /// Royalty basis points exceed the marketplace policy maximum
-    RoyaltyTooHigh = 23,
+    RoyaltyTooHigh = 27,
     /// Seller, fee, and royalty payouts cannot be represented safely
-    PayoutOverflow = 24,
+    PayoutOverflow = 28,
     /// The configured fee and royalty cannot be paid from the sale amount
-    PayoutExceedsSale = 25,
+    PayoutExceedsSale = 29,
     /// Caller is not authorized to change royalty configuration
-    UnauthorizedRoyaltyUpdate = 26,
+    UnauthorizedRoyaltyUpdate = 30,
+    /// Marketplace is paused; new/risky mutations are disabled
+    Paused = 23,
+    /// Marketplace is already paused
+    AlreadyPaused = 24,
+    /// Marketplace is not paused
+    NotPaused = 25,
+    /// Caller is not the marketplace administrator
+    Unauthorized = 26,
 }
 
 // ============================================================================
@@ -170,6 +178,8 @@ pub enum DataKey {
     ReentrancyGuard,
     /// Royalty configuration for a token ID
     Royalty(u32),
+    /// Emergency pause state
+    Paused,
 }
 
 #[cfg(test)]
@@ -187,6 +197,20 @@ fn read_admin(e: &Env) -> Result<Address, MarketplaceError> {
         .instance()
         .get(&DataKey::Admin)
         .ok_or(MarketplaceError::NotInitialized)
+}
+
+fn is_paused(e: &Env) -> bool {
+    e.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(e: &Env) -> Result<(), MarketplaceError> {
+    if is_paused(e) {
+        return Err(MarketplaceError::Paused);
+    }
+    Ok(())
 }
 
 fn read_allowed_payment_tokens(e: &Env) -> Vec<Address> {
@@ -322,6 +346,7 @@ impl CommitmentMarketplace {
         e.storage()
             .instance()
             .set(&DataKey::AllowedPaymentTokens, &allowed_payment_tokens);
+        e.storage().instance().set(&DataKey::Paused, &false);
 
         Ok(())
     }
@@ -331,6 +356,44 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if not initialized.
     pub fn get_admin(e: Env) -> Result<Address, MarketplaceError> {
         read_admin(&e)
+    }
+
+    /// Pause risky marketplace mutations while preserving cancellation and
+    /// auction-ending recovery paths for already-created commitments.
+    pub fn pause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        if is_paused(&e) {
+            return Err(MarketplaceError::AlreadyPaused);
+        }
+        e.storage().instance().set(&DataKey::Paused, &true);
+        e.events()
+            .publish((symbol_short!("Pause"),), e.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Resume normal marketplace mutations after an emergency review.
+    pub fn unpause(e: Env, caller: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        caller.require_auth();
+        if caller != admin {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        if !is_paused(&e) {
+            return Err(MarketplaceError::NotPaused);
+        }
+        e.storage().instance().set(&DataKey::Paused, &false);
+        e.events()
+            .publish((symbol_short!("Unpause"),), e.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Return whether the marketplace is in emergency pause mode.
+    pub fn is_paused(e: Env) -> bool {
+        is_paused(&e)
     }
 
     /// @notice Update the marketplace fee (basis points).
@@ -344,6 +407,7 @@ impl CommitmentMarketplace {
         if fee_basis_points > 10_000 {
             return Err(MarketplaceError::PayoutExceedsSale);
         }
+        require_not_paused(&e)?;
 
         e.storage()
             .instance()
@@ -408,6 +472,7 @@ impl CommitmentMarketplace {
     pub fn add_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
         let admin = read_admin(&e)?;
         admin.require_auth();
+        require_not_paused(&e)?;
 
         if is_allowed_payment_token(&e, &payment_token) {
             return Ok(());
@@ -418,8 +483,11 @@ impl CommitmentMarketplace {
             .set(&DataKey::AllowedPaymentToken(payment_token.clone()), &true);
 
         let mut allowed_payment_tokens = read_allowed_payment_tokens(&e);
-        allowed_payment_tokens.push_back(payment_token);
+        allowed_payment_tokens.push_back(payment_token.clone());
         write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+
+        e.events()
+            .publish((symbol_short!("TokenAdd"), payment_token.clone()), admin);
 
         Ok(())
     }
@@ -439,6 +507,7 @@ impl CommitmentMarketplace {
     pub fn remove_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError> {
         let admin = read_admin(&e)?;
         admin.require_auth();
+        require_not_paused(&e)?;
 
         e.storage()
             .persistent()
@@ -451,6 +520,9 @@ impl CommitmentMarketplace {
         {
             allowed_payment_tokens.remove(index as u32);
             write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+
+            e.events()
+                .publish((symbol_short!("TokenRem"), payment_token.clone()), admin);
         }
 
         Ok(())
@@ -487,6 +559,7 @@ impl CommitmentMarketplace {
         price: i128,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -656,6 +729,7 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if contract not initialized.
     /// @security Only callable by `buyer` (require_auth).
     pub fn buy_nft(e: Env, buyer: Address, token_id: u32) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -830,6 +904,7 @@ impl CommitmentMarketplace {
         amount: i128,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -942,6 +1017,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         offerer: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1131,6 +1207,7 @@ impl CommitmentMarketplace {
         duration_seconds: u64,
         payment_token: Address,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()
@@ -1237,6 +1314,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         bid_amount: i128,
     ) -> Result<(), MarketplaceError> {
+        require_not_paused(&e)?;
         // Reentrancy protection
         let guard: bool = e
             .storage()

@@ -397,6 +397,20 @@ fn get_admin(e: Env) -> Result<Address, MarketplaceError>
 
 Get admin address.
 
+#### `add_payment_token` / `remove_payment_token`
+
+```rust
+fn add_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError>
+fn remove_payment_token(e: Env, payment_token: Address) -> Result<(), MarketplaceError>
+```
+
+Manage the payment-token allowlist. Both operations require the current admin's
+authorization and are idempotent. An allowlisted token is required before a
+listing, offer, auction, or settlement can use it. Removing a token does not
+rewrite existing listings or commitments; it prevents new use and settlement
+until the token is restored. Successful changes emit `TokenAdd` or `TokenRem`
+events containing the token and administrator for auditability.
+
 ## Data Structures
 
 ### Listing
