@@ -1,4 +1,3 @@
-
 //! # Commitment Marketplace Contract Tests
 //!
 //! Unit tests for the CommitmentMarketplace Soroban contract.
@@ -372,8 +371,6 @@ fn test_accept_offer_own_listing_fails() {
     client.accept_offer(&seller, &1, &seller); // Seller accepting own offer
 }
 
-
-
 #[test]
 fn test_multiple_offers_same_token() {
     let e = Env::default();
@@ -555,7 +552,13 @@ fn test_auction_duration_boundary() {
     let starting_price = 1000i128;
 
     // Auction starts at timestamp 0, ends_at = 0 + duration = 86400
-    client.start_auction(&seller, &token_id, &starting_price, &duration, &payment_token);
+    client.start_auction(
+        &seller,
+        &token_id,
+        &starting_price,
+        &duration,
+        &payment_token,
+    );
 
     // At timestamp 0 (start), bidding equal-to-current is rejected with BidTooLow, not AuctionEnded.
     // This proves the time check passes (auction is active) but bid check fails.
@@ -653,7 +656,7 @@ fn test_auction_active_vs_ended() {
     // Should NOT be in active auctions
     let auctions_after = client.get_all_auctions();
     assert_eq!(auctions_after.len(), 0);
-    
+
     // But still retrievable via get_auction
     let auction = client.get_auction(&token_id);
     assert!(auction.ended);
@@ -697,7 +700,7 @@ fn test_make_duplicate_offer_same_token_different_amount_fails() {
 
     // Make first offer
     client.make_offer(&offerer, &token_id, &500, &payment_token);
-    
+
     // Try to make another offer with different amount - should fail
     client.make_offer(&offerer, &token_id, &1000, &payment_token);
 }
@@ -716,10 +719,10 @@ fn test_make_duplicate_offer_different_tokens_same_user_fails() {
 
     // Make offer on token 1
     client.make_offer(&offerer, &1, &500, &payment_token1);
-    
+
     // Make offer on token 2 - should work (different token)
     client.make_offer(&offerer, &2, &600, &payment_token2);
-    
+
     // Try to make another offer on token 1 - should fail
     client.make_offer(&offerer, &1, &700, &payment_token1);
 }
@@ -770,7 +773,7 @@ fn test_cancel_offer_removes_correct_offer_only() {
 
     let offers = client.get_offers(&token_id);
     assert_eq!(offers.len(), 2);
-    
+
     // Verify correct offers remain
     let mut found_500 = false;
     let mut found_700 = false;
@@ -800,7 +803,7 @@ fn test_cancel_last_offer_removes_storage() {
 
     // Make offer
     client.make_offer(&offerer, &token_id, &500, &payment_token);
-    
+
     // Verify offer exists
     let offers = client.get_offers(&token_id);
     assert_eq!(offers.len(), 1);
@@ -872,7 +875,7 @@ fn test_non_maker_cannot_cancel_offer() {
 
     // Make offer
     client.make_offer(&offerer, &token_id, &500, &payment_token);
-    
+
     // Try to cancel with different address - should fail
     client.cancel_offer(&non_maker, &token_id);
 }
@@ -913,10 +916,10 @@ fn test_maker_can_cancel_own_offer_multiple_exist() {
     // Make offers from different users
     client.make_offer(&offerer1, &token_id, &500, &payment_token);
     client.make_offer(&offerer2, &token_id, &600, &payment_token);
-    
+
     // offerer1 should be able to cancel their own offer
     client.cancel_offer(&offerer1, &token_id);
-    
+
     let offers = client.get_offers(&token_id);
     assert_eq!(offers.len(), 1);
     assert_eq!(offers.get(0).unwrap().offerer, offerer2);
@@ -959,11 +962,11 @@ fn test_authorization_scenarios_comprehensive() {
     // Each offerer can cancel their own offers
     client.cancel_offer(&offerer1, &1); // Cancels offerer1's offer on token 1
     client.cancel_offer(&offerer1, &2); // Cancels offerer1's offer on token 2
-    
+
     // Verify remaining offers
     assert_eq!(client.get_offers(&1).len(), 1); // Only offerer2's offer remains
-    assert_eq!(client.get_offers(&2).len(), 0);  // offerer1's offer cancelled
-    assert_eq!(client.get_offers(&3).len(), 1);  // offerer3's offer still exists
+    assert_eq!(client.get_offers(&2).len(), 0); // offerer1's offer cancelled
+    assert_eq!(client.get_offers(&3).len(), 1); // offerer3's offer still exists
 
     // Random user cannot cancel any offers
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1212,6 +1215,34 @@ fn test_add_and_remove_payment_token() {
 
     client.remove_payment_token(&payment_token);
     assert!(!client.is_payment_token_allowed(&payment_token));
+    assert_eq!(client.get_allowed_payment_tokens().len(), 0);
+}
+
+#[test]
+fn test_payment_token_allowlist_is_idempotent_and_auditable() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let payment_token = Address::generate(&e);
+    let initial_events = e.events().all().len();
+
+    client.add_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 1);
+
+    // Repeated administration is a no-op: it cannot create duplicate storage
+    // entries or misleading audit events.
+    client.add_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 1);
+    assert_eq!(client.get_allowed_payment_tokens().len(), 1);
+
+    client.remove_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 2);
+    assert!(!client.is_payment_token_allowed(&payment_token));
+
+    // Removing an already absent token is also idempotent.
+    client.remove_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 2);
     assert_eq!(client.get_allowed_payment_tokens().len(), 0);
 }
 
