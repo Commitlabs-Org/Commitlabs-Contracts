@@ -12,6 +12,8 @@ use soroban_sdk::{
 };
 
 const CURRENT_VERSION: u32 = 1;
+const MAX_PERCENT: i128 = 100;
+const MAX_COMPLIANCE_SCORE: u32 = 100;
 
 // ============================================================================
 // Error Types
@@ -616,6 +618,42 @@ impl AttestationEngineContract {
         }
     }
 
+    /// Validate numeric fields before a record is appended to history. This
+    /// keeps every writer (single and convenience entrypoints) on the same
+    /// bounds policy and ensures rejected input cannot affect cached metrics.
+    fn validate_metric_bounds(
+        e: &Env,
+        attestation_type: &String,
+        data: &Map<String, String>,
+    ) -> Result<(), AttestationError> {
+        let fee_generation = String::from_str(e, "fee_generation");
+        let drawdown = String::from_str(e, "drawdown");
+
+        if *attestation_type == fee_generation {
+            let key = String::from_str(e, "fee_amount");
+            let value = data
+                .get(key)
+                .and_then(|raw| Self::parse_i128_from_string(e, &raw))
+                .ok_or(AttestationError::InvalidAttestationData)?;
+            if value < 0 {
+                return Err(AttestationError::InvalidFeeAmount);
+            }
+        }
+
+        if *attestation_type == drawdown {
+            let key = String::from_str(e, "drawdown_percent");
+            let value = data
+                .get(key)
+                .and_then(|raw| Self::parse_i128_from_string(e, &raw))
+                .ok_or(AttestationError::InvalidAttestationData)?;
+            if !(0..=MAX_PERCENT).contains(&value) {
+                return Err(AttestationError::InvalidAttestationData);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Check if commitment exists in core contract
     fn commitment_exists(e: &Env, commitment_id: &String) -> bool {
         let commitment_core: Address = match e.storage().instance().get(&DataKey::CoreContract) {
@@ -646,7 +684,11 @@ impl AttestationEngineContract {
     /// Recomputes aggregate fee and volatility fields from the stored
     /// attestation history so cached metrics stay aligned with read-time
     /// aggregation.
-    fn update_health_metrics(e: &Env, commitment_id: &String, attestation: &Attestation) {
+    fn update_health_metrics(
+        e: &Env,
+        commitment_id: &String,
+        attestation: &Attestation,
+    ) -> Result<(), AttestationError> {
         // Get or create health metrics
         let key = DataKey::HealthMetrics(commitment_id.clone());
         let mut metrics: HealthMetrics =
@@ -689,7 +731,9 @@ impl AttestationEngineContract {
                 if let Some(fee_amount) = Self::parse_i128_from_string(e, &fee_str) {
                     let total_fees: i128 =
                         e.storage().instance().get(&DataKey::TotalFees).unwrap_or(0);
-                    let new_total = total_fees.checked_add(fee_amount).unwrap_or(total_fees);
+                    let new_total = total_fees
+                        .checked_add(fee_amount)
+                        .ok_or(AttestationError::StorageError)?;
                     e.storage().instance().set(&DataKey::TotalFees, &new_total);
                 }
             }
@@ -717,11 +761,15 @@ impl AttestationEngineContract {
         if attestation.is_compliant && attestation.attestation_type != violation {
             // Small bonus for compliant attestations, capped at 100
             metrics.compliance_score =
-                core::cmp::min(100, metrics.compliance_score.saturating_add(1));
+                core::cmp::min(
+                    MAX_COMPLIANCE_SCORE,
+                    metrics.compliance_score.saturating_add(1),
+                );
         }
 
         // Store updated metrics
         e.storage().persistent().set(&key, &metrics);
+        Ok(())
     }
 
     fn aggregate_attestation_metrics(
@@ -932,6 +980,8 @@ impl AttestationEngineContract {
             return Err(AttestationError::InvalidAttestationData);
         }
 
+        Self::validate_metric_bounds(e, &attestation_type, &data)?;
+
         // 7b. Collect attestation verification fee if configured
         let fee_amount: i128 = e
             .storage()
@@ -979,12 +1029,15 @@ impl AttestationEngineContract {
         e.storage().persistent().set(&key, &attestations);
 
         // 10. Update health metrics
-        Self::update_health_metrics(e, &commitment_id, &attestation);
+        Self::update_health_metrics(e, &commitment_id, &attestation)?;
 
         // 11. Increment attestation counter
         let counter_key = DataKey::AttestationCounter(commitment_id.clone());
         let counter: u64 = e.storage().persistent().get(&counter_key).unwrap_or(0);
-        e.storage().persistent().set(&counter_key, &(counter + 1));
+        let next_counter = counter
+            .checked_add(1)
+            .ok_or(AttestationError::StorageError)?;
+        e.storage().persistent().set(&counter_key, &next_counter);
 
         // 11b. Batch update analytics counters
         let total_att: u64 = e
@@ -1000,20 +1053,29 @@ impl AttestationEngineContract {
         let verifier_key = DataKey::VerifierAttestationCount(caller.clone());
         let ver_count: u64 = e.storage().instance().get(&verifier_key).unwrap_or(0u64);
 
+        let next_total_attestations = total_att
+            .checked_add(1)
+            .ok_or(AttestationError::StorageError)?;
         e.storage()
             .instance()
-            .set(&DataKey::TotalAttestations, &(total_att + 1));
+            .set(&DataKey::TotalAttestations, &next_total_attestations);
 
         let violation_type = String::from_str(e, "violation");
         if attestation.attestation_type == violation_type || !attestation.is_compliant {
+            let next_total_violations = total_viol
+                .checked_add(1)
+                .ok_or(AttestationError::StorageError)?;
             e.storage()
                 .instance()
-                .set(&DataKey::TotalViolations, &(total_viol + 1));
+                .set(&DataKey::TotalViolations, &next_total_violations);
         }
 
+        let next_verifier_count = ver_count
+            .checked_add(1)
+            .ok_or(AttestationError::StorageError)?;
         e.storage()
             .instance()
-            .set(&verifier_key, &(ver_count + 1));
+            .set(&verifier_key, &next_verifier_count);
 
         // 12. Emit event
         e.events().publish(
@@ -2000,6 +2062,29 @@ impl AttestationEngineContract {
                 }
             }
 
+            // Apply the same fee and drawdown bounds used by single-record
+            // writes so batch and non-batch histories are equivalent.
+            if let Err(metric_error) =
+                Self::validate_metric_bounds(&e, &params.attestation_type, &params.data)
+            {
+                if mode == BatchMode::Atomic {
+                    e.storage().instance().remove(&DataKey::ReentrancyGuard);
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: metric_error as u32,
+                        context: String::from_str(&e, "metric_bounds"),
+                    });
+                    return BatchResultVoid::failure(&e, errors);
+                } else {
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: metric_error as u32,
+                        context: String::from_str(&e, "metric_bounds"),
+                    });
+                    continue;
+                }
+            }
+
             // Create attestation record
             let attestation = Attestation {
                 commitment_id: params.commitment_id.clone(),
@@ -2021,18 +2106,30 @@ impl AttestationEngineContract {
             e.storage().persistent().set(&key, &attestations);
 
             // Update health metrics
-            Self::update_health_metrics(&e, &params.commitment_id, &attestation);
+            Self::update_health_metrics(&e, &params.commitment_id, &attestation)
+                .expect("metric aggregate invariant");
 
             // Increment attestation counter
             let counter_key = DataKey::AttestationCounter(params.commitment_id.clone());
             let counter: u64 = e.storage().persistent().get(&counter_key).unwrap_or(0);
-            e.storage().persistent().set(&counter_key, &(counter + 1));
+            let next_counter = counter
+                .checked_add(1)
+                .expect("commitment attestation counter overflow");
+            e.storage()
+                .persistent()
+                .set(&counter_key, &next_counter);
 
             // Update analytics counters (in memory)
-            total_attestations = total_attestations.checked_add(1).unwrap();
-            verifier_count = verifier_count.checked_add(1).unwrap();
+            total_attestations = total_attestations
+                .checked_add(1)
+                .expect("total attestation counter overflow");
+            verifier_count = verifier_count
+                .checked_add(1)
+                .expect("verifier attestation counter overflow");
             if attestation.attestation_type == violation_type || !attestation.is_compliant {
-                total_violations = total_violations.checked_add(1).unwrap();
+                total_violations = total_violations
+                    .checked_add(1)
+                    .expect("total violation counter overflow");
             }
 
             results.push_back(());
@@ -2280,3 +2377,5 @@ fn require_valid_wasm_hash(e: &Env, wasm_hash: &BytesN<32>) -> Result<(), Attest
 mod benchmarks;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod metric_consistency_tests;
