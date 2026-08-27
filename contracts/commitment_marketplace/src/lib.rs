@@ -79,6 +79,12 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// No administrator handover is currently pending
+    NoPendingAdmin = 31,
+    /// Caller is not the nominated administrator
+    NotPendingAdmin = 32,
+    /// The current administrator cannot nominate itself
+    CannotNominateCurrentAdmin = 33,
     /// Royalty basis points exceed the marketplace policy maximum
     RoyaltyTooHigh = 27,
     /// Seller, fee, and royalty payouts cannot be represented safely
@@ -154,6 +160,8 @@ pub const MAX_ROYALTY_BASIS_POINTS: u32 = 1_000;
 pub enum DataKey {
     /// Admin address
     Admin,
+    /// Address nominated to become admin
+    PendingAdmin,
     /// NFT contract address
     NFTContract,
     /// Marketplace fee percentage (basis points, e.g., 250 = 2.5%)
@@ -356,6 +364,66 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if not initialized.
     pub fn get_admin(e: Env) -> Result<Address, MarketplaceError> {
         read_admin(&e)
+    }
+
+    /// Nominate an administrator. The current administrator remains in
+    /// control until the nominee explicitly accepts the handover.
+    pub fn nominate_admin(e: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+        if new_admin == admin {
+            return Err(MarketplaceError::CannotNominateCurrentAdmin);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        e.events()
+            .publish((symbol_short!("AdminNom"),), (admin, new_admin));
+        Ok(())
+    }
+
+    /// Cancel a pending administrator handover.
+    pub fn cancel_admin_transfer(e: Env) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+        if e.storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+            .is_none()
+        {
+            return Err(MarketplaceError::NoPendingAdmin);
+        }
+
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        e.events().publish((symbol_short!("AdminCan"),), admin);
+        Ok(())
+    }
+
+    /// Accept the pending administrator role. Only the nominated address can
+    /// call this entry point, and authority changes atomically at acceptance.
+    pub fn accept_admin_transfer(e: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let pending = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+            .ok_or(MarketplaceError::NoPendingAdmin)?;
+        if pending != new_admin {
+            return Err(MarketplaceError::NotPendingAdmin);
+        }
+        new_admin.require_auth();
+
+        let old_admin = read_admin(&e)?;
+        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        e.events()
+            .publish((symbol_short!("AdminAcc"),), (old_admin, new_admin));
+        Ok(())
+    }
+
+    /// Return the pending administrator, if a handover is awaiting acceptance.
+    pub fn get_pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// Pause risky marketplace mutations while preserving cancellation and

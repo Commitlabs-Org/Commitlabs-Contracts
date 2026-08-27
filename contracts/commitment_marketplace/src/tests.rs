@@ -115,6 +115,50 @@ fn test_update_fee() {
     assert_eq!(last_event.0, client.address);
 }
 
+#[test]
+fn test_admin_rotation_requires_nominee_acceptance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (admin, _, client) = setup_marketplace(&e);
+    let nominee = Address::generate(&e);
+
+    client.nominate_admin(&nominee);
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_pending_admin(), Some(nominee.clone()));
+
+    client.accept_admin_transfer(&nominee);
+    assert_eq!(client.get_admin(), nominee);
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+fn test_admin_rotation_replacement_and_cancellation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_admin, _, client) = setup_marketplace(&e);
+    let first = Address::generate(&e);
+    let replacement = Address::generate(&e);
+
+    client.nominate_admin(&first);
+    client.nominate_admin(&replacement);
+    assert_eq!(client.get_pending_admin(), Some(replacement));
+    client.cancel_admin_transfer();
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #32)")]
+fn test_non_nominee_cannot_accept_admin_rotation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_admin, _, client) = setup_marketplace(&e);
+    let nominee = Address::generate(&e);
+    let attacker = Address::generate(&e);
+
+    client.nominate_admin(&nominee);
+    client.accept_admin_transfer(&attacker);
+}
+
 // ============================================================================
 // Listing Tests
 // ============================================================================
