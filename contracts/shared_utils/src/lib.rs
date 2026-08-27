@@ -27,6 +27,7 @@ pub mod storage;
 pub mod time;
 pub mod validation;
 pub mod fee;
+pub mod fee_invariants;
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests;
@@ -44,4 +45,4 @@ pub use pausable::Pausable;
 pub use rate_limiting::RateLimiter;
 pub use time::TimeUtils;
 pub use validation::Validation;
-
+pub use fee_invariants::{FeeError, FeeLedger, FeeSplit, RoundingPolicy};

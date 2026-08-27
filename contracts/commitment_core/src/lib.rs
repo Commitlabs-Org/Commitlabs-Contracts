@@ -19,7 +19,7 @@
 //! [`docs/COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md`](../../../docs/COMMITMENT_CORE_FORMAL_VERIFICATION_SCOPE.md)
 
 use shared_utils::{
-    emit_error_event, fees, EmergencyControl, Pausable, RateLimiter, SafeMath, TimeUtils,
+    emit_error_event, fee_invariants, fees, EmergencyControl, Pausable, RateLimiter, SafeMath, TimeUtils,
     Validation,
 };
 use soroban_sdk::{
@@ -504,15 +504,12 @@ impl CommitmentCoreContract {
             .instance()
             .get(&DataKey::CreationFeeBps)
             .unwrap_or(0);
-        let creation_fee = if creation_fee_bps > 0 {
-            fees::fee_from_bps(amount, creation_fee_bps)
-        } else {
-            0
-        };
-        let net_amount = amount.checked_sub(creation_fee).unwrap_or_else(|| {
+        let creation_split = fee_invariants::split_bps(amount, creation_fee_bps).unwrap_or_else(|_| {
             set_reentrancy_guard(&e, false);
             fail(&e, CommitmentError::ArithmeticOverflow, "create");
         });
+        let creation_fee = creation_split.fee;
+        let net_amount = creation_split.net;
 
         let expires_at = TimeUtils::checked_calculate_expiration(&e, rules.duration_days)
             .unwrap_or_else(|| {
@@ -1163,11 +1160,16 @@ impl CommitmentCoreContract {
             fail(&e, CommitmentError::NotActive, "exit");
         }
 
-        let penalty = SafeMath::penalty_amount(
+        let penalty_split = fee_invariants::split_percent(
             commitment.current_value,
             commitment.rules.early_exit_penalty,
-        );
-        let returned = SafeMath::sub(commitment.current_value, penalty);
+        )
+        .unwrap_or_else(|_| {
+            set_reentrancy_guard(&e, false);
+            fail(&e, CommitmentError::ArithmeticOverflow, "exit");
+        });
+        let penalty = penalty_split.fee;
+        let returned = penalty_split.net;
         let original_val = commitment.current_value;
 
         // Add penalty to collected fees (protocol revenue)

@@ -25,7 +25,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
-use shared_utils::math::SafeMath;
+use shared_utils::{fee_invariants, math::SafeMath};
 
 // ============================================================================
 // Error Types
@@ -80,6 +80,8 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// Configured fee cannot be represented as a safe accounting split.
+    InvalidFeeConfiguration = 23,
 }
 
 // ============================================================================
@@ -610,10 +612,12 @@ impl CommitmentMarketplace {
             })?;
 
         // Calculate fee and seller proceeds safely using basis points (bps)
-        let fee_basis_points_i128: i128 = fee_basis_points as i128;
-        let marketplace_fee =
-            SafeMath::div(SafeMath::mul(listing.price, fee_basis_points_i128), 10_000_i128);
-        let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
+        let fee_split = fee_invariants::split_bps(listing.price, fee_basis_points).map_err(|_| {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            MarketplaceError::InvalidFeeConfiguration
+        })?;
+        let marketplace_fee = fee_split.fee;
+        let seller_proceeds = fee_split.net;
 
         // EFFECTS
         // Remove listing first (prevent reentrancy)
@@ -899,8 +903,12 @@ impl CommitmentMarketplace {
         }
 
         // Calculate fee and seller proceeds
-        let marketplace_fee = (offer.amount * fee_basis_points as i128) / 10000;
-        let seller_proceeds = offer.amount - marketplace_fee;
+        let fee_split = fee_invariants::split_bps(offer.amount, fee_basis_points).map_err(|_| {
+            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            MarketplaceError::InvalidFeeConfiguration
+        })?;
+        let marketplace_fee = fee_split.fee;
+        let seller_proceeds = fee_split.net;
 
         // EFFECTS
         // Remove all offers for this token
@@ -1305,16 +1313,15 @@ impl CommitmentMarketplace {
 
         // INTERACTIONS
         if let Some(winner) = auction.highest_bidder {
-            // Calculate fees safely using basis points (bps, /10_000)
-            let fee_bps = if fee_basis_points > 10_000 {
-                10_000
-            } else {
-                fee_basis_points
-            };
-            let fee_bps_i128 = fee_bps as i128;
-            let marketplace_fee =
-                SafeMath::div(SafeMath::mul(auction.current_bid, fee_bps_i128), 10_000_i128);
-            let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
+            // Use the same checked, conservation-preserving split as listings
+            // and offers. Invalid configuration must fail closed, not clamp.
+            let fee_split = fee_invariants::split_bps(auction.current_bid, fee_basis_points)
+                .map_err(|_| {
+                    e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+                    MarketplaceError::InvalidFeeConfiguration
+                })?;
+            let marketplace_fee = fee_split.fee;
+            let seller_proceeds = fee_split.net;
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
 
