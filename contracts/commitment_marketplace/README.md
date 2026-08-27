@@ -397,6 +397,21 @@ fn get_admin(e: Env) -> Result<Address, MarketplaceError>
 
 Get admin address.
 
+#### Two-step administrator rotation
+
+```rust
+fn nominate_admin(e: Env, new_admin: Address) -> Result<(), MarketplaceError>
+fn cancel_admin_transfer(e: Env) -> Result<(), MarketplaceError>
+fn accept_admin_transfer(e: Env, new_admin: Address) -> Result<(), MarketplaceError>
+fn get_pending_admin(e: Env) -> Option<Address>
+```
+
+Only the current administrator can nominate or cancel a handover. A nomination
+replaces any previous pending nominee, while the current administrator retains
+all authority until the nominated address authenticates an acceptance. Successful
+nomination, cancellation, and acceptance emit `AdminNom`, `AdminCan`, and
+`AdminAcc` events. A failed or replayed acceptance cannot change authority.
+
 ## Data Structures
 
 ### Listing

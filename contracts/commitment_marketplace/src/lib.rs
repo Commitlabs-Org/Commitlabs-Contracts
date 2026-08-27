@@ -1,4 +1,3 @@
-
 //! # Commitment Marketplace Contract
 //!
 //! Soroban smart contract for NFT marketplace operations (listings, offers, auctions) with reentrancy guard and fee logic.
@@ -12,7 +11,7 @@
 //! - See [`MarketplaceError`] for all error codes.
 //!
 //! ## Storage
-//! 
+//!
 //! - See [`DataKey`] for all storage keys mutated by each entry point.
 //!
 //! ## Audit Notes
@@ -21,11 +20,11 @@
 
 #![no_std]
 
+use shared_utils::math::SafeMath;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
-use shared_utils::math::SafeMath;
 
 // ============================================================================
 // Error Types
@@ -80,6 +79,12 @@ pub enum MarketplaceError {
     TransferFailed = 21,
     /// Payment token is not allowlisted for marketplace settlement
     PaymentTokenNotAllowed = 22,
+    /// No administrator handover is currently pending
+    NoPendingAdmin = 23,
+    /// Caller is not the nominated administrator
+    NotPendingAdmin = 24,
+    /// The current administrator cannot nominate itself
+    CannotNominateCurrentAdmin = 25,
 }
 
 // ============================================================================
@@ -128,6 +133,8 @@ pub struct Auction {
 pub enum DataKey {
     /// Admin address
     Admin,
+    /// Address nominated to become admin
+    PendingAdmin,
     /// NFT contract address
     NFTContract,
     /// Marketplace fee percentage (basis points, e.g., 250 = 2.5%)
@@ -189,10 +196,7 @@ fn is_allowed_payment_token(e: &Env, payment_token: &Address) -> bool {
         .unwrap_or(false)
 }
 
-fn require_allowed_payment_token(
-    e: &Env,
-    payment_token: &Address,
-) -> Result<(), MarketplaceError> {
+fn require_allowed_payment_token(e: &Env, payment_token: &Address) -> Result<(), MarketplaceError> {
     if !is_allowed_payment_token(e, payment_token) {
         return Err(MarketplaceError::PaymentTokenNotAllowed);
     }
@@ -261,6 +265,66 @@ impl CommitmentMarketplace {
     /// @error MarketplaceError::NotInitialized if not initialized.
     pub fn get_admin(e: Env) -> Result<Address, MarketplaceError> {
         read_admin(&e)
+    }
+
+    /// Nominate an administrator. The current administrator remains in
+    /// control until the nominee explicitly accepts the handover.
+    pub fn nominate_admin(e: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+        if new_admin == admin {
+            return Err(MarketplaceError::CannotNominateCurrentAdmin);
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        e.events()
+            .publish((symbol_short!("AdminNom"),), (admin, new_admin));
+        Ok(())
+    }
+
+    /// Cancel a pending administrator handover.
+    pub fn cancel_admin_transfer(e: Env) -> Result<(), MarketplaceError> {
+        let admin = read_admin(&e)?;
+        admin.require_auth();
+        if e.storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+            .is_none()
+        {
+            return Err(MarketplaceError::NoPendingAdmin);
+        }
+
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        e.events().publish((symbol_short!("AdminCan"),), admin);
+        Ok(())
+    }
+
+    /// Accept the pending administrator role. Only the nominated address can
+    /// call this entry point, and authority changes atomically at acceptance.
+    pub fn accept_admin_transfer(e: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let pending = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingAdmin)
+            .ok_or(MarketplaceError::NoPendingAdmin)?;
+        if pending != new_admin {
+            return Err(MarketplaceError::NotPendingAdmin);
+        }
+        new_admin.require_auth();
+
+        let old_admin = read_admin(&e)?;
+        e.storage().instance().set(&DataKey::Admin, &new_admin);
+        e.storage().instance().remove(&DataKey::PendingAdmin);
+        e.events()
+            .publish((symbol_short!("AdminAcc"),), (old_admin, new_admin));
+        Ok(())
+    }
+
+    /// Return the pending administrator, if a handover is awaiting acceptance.
+    pub fn get_pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// @notice Update the marketplace fee (basis points).
@@ -611,8 +675,10 @@ impl CommitmentMarketplace {
 
         // Calculate fee and seller proceeds safely using basis points (bps)
         let fee_basis_points_i128: i128 = fee_basis_points as i128;
-        let marketplace_fee =
-            SafeMath::div(SafeMath::mul(listing.price, fee_basis_points_i128), 10_000_i128);
+        let marketplace_fee = SafeMath::div(
+            SafeMath::mul(listing.price, fee_basis_points_i128),
+            10_000_i128,
+        );
         let seller_proceeds = SafeMath::sub(listing.price, marketplace_fee);
 
         // EFFECTS
@@ -1062,7 +1128,9 @@ impl CommitmentMarketplace {
         // EFFECTS
         let started_at = e.ledger().timestamp();
         let ends_at = started_at.checked_add(duration_seconds).ok_or_else(|| {
-            e.storage().instance().set(&DataKey::ReentrancyGuard, &false);
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
             MarketplaceError::InvalidDuration
         })?;
 
@@ -1312,8 +1380,10 @@ impl CommitmentMarketplace {
                 fee_basis_points
             };
             let fee_bps_i128 = fee_bps as i128;
-            let marketplace_fee =
-                SafeMath::div(SafeMath::mul(auction.current_bid, fee_bps_i128), 10_000_i128);
+            let marketplace_fee = SafeMath::div(
+                SafeMath::mul(auction.current_bid, fee_bps_i128),
+                10_000_i128,
+            );
             let seller_proceeds = SafeMath::sub(auction.current_bid, marketplace_fee);
 
             let payment_token_client = token::Client::new(&e, &auction.payment_token);
