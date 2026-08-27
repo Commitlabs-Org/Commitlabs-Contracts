@@ -1219,6 +1219,34 @@ fn test_add_and_remove_payment_token() {
 }
 
 #[test]
+fn test_payment_token_allowlist_is_idempotent_and_auditable() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (_, _, client) = setup_marketplace(&e);
+    let payment_token = Address::generate(&e);
+    let initial_events = e.events().all().len();
+
+    client.add_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 1);
+
+    // Repeated administration is a no-op: it cannot create duplicate storage
+    // entries or misleading audit events.
+    client.add_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 1);
+    assert_eq!(client.get_allowed_payment_tokens().len(), 1);
+
+    client.remove_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 2);
+    assert!(!client.is_payment_token_allowed(&payment_token));
+
+    // Removing an already absent token is also idempotent.
+    client.remove_payment_token(&payment_token);
+    assert_eq!(e.events().all().len(), initial_events + 2);
+    assert_eq!(client.get_allowed_payment_tokens().len(), 0);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #22)")] // PaymentTokenNotAllowed
 fn test_list_nft_with_unallowlisted_token_fails() {
     let e = Env::default();

@@ -366,8 +366,11 @@ impl CommitmentMarketplace {
             .set(&DataKey::AllowedPaymentToken(payment_token.clone()), &true);
 
         let mut allowed_payment_tokens = read_allowed_payment_tokens(&e);
-        allowed_payment_tokens.push_back(payment_token);
+        allowed_payment_tokens.push_back(payment_token.clone());
         write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+
+        e.events()
+            .publish((symbol_short!("TokenAdd"), payment_token.clone()), admin);
 
         Ok(())
     }
@@ -400,6 +403,9 @@ impl CommitmentMarketplace {
         {
             allowed_payment_tokens.remove(index as u32);
             write_allowed_payment_tokens(&e, &allowed_payment_tokens);
+
+            e.events()
+                .publish((symbol_short!("TokenRem"), payment_token.clone()), admin);
         }
 
         Ok(())
