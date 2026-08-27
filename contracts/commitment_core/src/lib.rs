@@ -28,6 +28,11 @@ use soroban_sdk::{
 };
 
 pub mod fuzzing;
+pub mod identity_policy;
+#[cfg(test)]
+mod identity_policy_matrix;
+#[cfg(test)]
+mod identity_policy_fuzz_cases;
 
 /// Maximum page size for paginated owner-commitment queries.
 const MAX_PAGE_SIZE: u32 = 50;
