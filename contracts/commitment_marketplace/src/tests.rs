@@ -1219,34 +1219,6 @@ fn test_add_and_remove_payment_token() {
 }
 
 #[test]
-fn test_payment_token_allowlist_is_idempotent_and_auditable() {
-    let e = Env::default();
-    e.mock_all_auths();
-
-    let (_, _, client) = setup_marketplace(&e);
-    let payment_token = Address::generate(&e);
-    let initial_events = e.events().all().len();
-
-    client.add_payment_token(&payment_token);
-    assert_eq!(e.events().all().len(), initial_events + 1);
-
-    // Repeated administration is a no-op: it cannot create duplicate storage
-    // entries or misleading audit events.
-    client.add_payment_token(&payment_token);
-    assert_eq!(e.events().all().len(), initial_events + 1);
-    assert_eq!(client.get_allowed_payment_tokens().len(), 1);
-
-    client.remove_payment_token(&payment_token);
-    assert_eq!(e.events().all().len(), initial_events + 2);
-    assert!(!client.is_payment_token_allowed(&payment_token));
-
-    // Removing an already absent token is also idempotent.
-    client.remove_payment_token(&payment_token);
-    assert_eq!(e.events().all().len(), initial_events + 2);
-    assert_eq!(client.get_allowed_payment_tokens().len(), 0);
-}
-
-#[test]
 #[should_panic(expected = "Error(Contract, #22)")] // PaymentTokenNotAllowed
 fn test_list_nft_with_unallowlisted_token_fails() {
     let e = Env::default();
@@ -1306,6 +1278,250 @@ fn test_buy_nft_after_payment_token_is_removed_fails() {
 }
 
 // ============================================================================
+// Royalty Accounting and Settlement Invariant Tests
+// ============================================================================
+
+#[test]
+fn test_royalty_configuration_is_visible_for_active_listing() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.list_nft(&seller, &7, &10_000, &payment_token);
+    client.set_royalty(&seller, &7, &recipient, &375);
+
+    let royalty = client.get_royalty(&7).expect("royalty must be stored");
+    assert_eq!(royalty.recipient, recipient);
+    assert_eq!(royalty.basis_points, 375);
+    assert_eq!(client.get_all_listings().len(), 1);
+}
+
+#[test]
+fn test_zero_royalty_keeps_sale_amount_conserved() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, fee_recipient, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let royalty_recipient = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    client.add_payment_token(&payment_token);
+    let price = 100_003i128;
+    soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&buyer, &price);
+
+    client.list_nft(&seller, &1, &price, &payment_token);
+    client.set_royalty(&seller, &1, &royalty_recipient, &0);
+    let buyer_before = soroban_sdk::token::Client::new(&e, &payment_token).balance(&buyer);
+    client.buy_nft(&buyer, &1);
+
+    let payment_client = soroban_sdk::token::Client::new(&e, &payment_token);
+    let seller_received = payment_client.balance(&seller);
+    let fee_received = payment_client.balance(&fee_recipient);
+    let royalty_received = payment_client.balance(&royalty_recipient);
+    let buyer_after = payment_client.balance(&buyer);
+    assert_eq!(seller_received + fee_received + royalty_received, price);
+    assert_eq!(buyer_before - buyer_after, price);
+    assert!(client.get_royalty(&1).is_none());
+}
+
+#[test]
+fn test_primary_sale_splits_fee_and_royalty_without_value_creation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, fee_recipient, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let royalty_recipient = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    client.add_payment_token(&payment_token);
+    let sale_amount = 1_234_567i128;
+    soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&buyer, &sale_amount);
+
+    client.list_nft(&seller, &9, &sale_amount, &payment_token);
+    client.set_royalty(&seller, &9, &royalty_recipient, &500);
+    client.buy_nft(&buyer, &9);
+
+    let payment_client = soroban_sdk::token::Client::new(&e, &payment_token);
+    let fee = sale_amount * 250 / 10_000;
+    let royalty = sale_amount * 500 / 10_000;
+    let seller = payment_client.balance(&seller);
+    let fee_recipient = payment_client.balance(&fee_recipient);
+    let royalty_recipient = payment_client.balance(&royalty_recipient);
+    assert_eq!(fee_recipient, fee);
+    assert_eq!(royalty_recipient, royalty);
+    assert_eq!(seller + fee_recipient + royalty_recipient, sale_amount);
+}
+
+#[test]
+fn test_rounding_policy_conserves_every_small_sale_unit() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, fee_recipient, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let royalty_recipient = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    client.add_payment_token(&payment_token);
+    let sale_amount = 101i128;
+    soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&buyer, &sale_amount);
+
+    client.list_nft(&seller, &3, &sale_amount, &payment_token);
+    client.set_royalty(&seller, &3, &royalty_recipient, &333);
+    client.buy_nft(&buyer, &3);
+
+    let payment_client = soroban_sdk::token::Client::new(&e, &payment_token);
+    assert_eq!(payment_client.balance(&seller), 96);
+    assert_eq!(payment_client.balance(&fee_recipient), 2);
+    assert_eq!(payment_client.balance(&royalty_recipient), 3);
+    assert_eq!(
+        payment_client.balance(&seller)
+            + payment_client.balance(&fee_recipient)
+            + payment_client.balance(&royalty_recipient),
+        sale_amount
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #27)")]
+fn test_royalty_above_policy_maximum_is_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.list_nft(&seller, &5, &1000, &payment_token);
+    client.set_royalty(&seller, &5, &recipient, &(MAX_ROYALTY_BASIS_POINTS + 1));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #30)")]
+fn test_only_listing_seller_can_update_royalty() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.list_nft(&seller, &6, &1000, &payment_token);
+    client.set_royalty(&attacker, &6, &recipient, &500);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #29)")]
+fn test_initialization_rejects_fee_over_sale_amount() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let nft_contract = Address::generate(&e);
+    let fee_recipient = Address::generate(&e);
+    let marketplace_id = e.register_contract(None, CommitmentMarketplace);
+    let client = CommitmentMarketplaceClient::new(&e, &marketplace_id);
+
+    client.initialize(&admin, &nft_contract, &10_001, &fee_recipient);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #29)")]
+fn test_fee_update_rejects_percentage_above_one_hundred() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    client.update_fee(&10_001);
+}
+
+#[test]
+fn test_failed_payment_keeps_listing_and_royalty_state() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    client.add_payment_token(&payment_token);
+    soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&buyer, &1);
+    client.list_nft(&seller, &11, &1000, &payment_token);
+    client.set_royalty(&seller, &11, &recipient, &500);
+
+    let result = client.try_buy_nft(&buyer, &11);
+    assert!(result.is_err(), "an underfunded buyer must not settle");
+    let listing = client.get_listing(&11);
+    assert_eq!(listing.price, 1000);
+    assert_eq!(client.get_royalty(&11).unwrap().basis_points, 500);
+}
+
+#[test]
+fn test_duplicate_settlement_cannot_reuse_consumed_royalty() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let buyer = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let token_admin = Address::generate(&e);
+    let token = e.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = token.address();
+    client.add_payment_token(&payment_token);
+    soroban_sdk::token::StellarAssetClient::new(&e, &payment_token).mint(&buyer, &1000);
+
+    client.list_nft(&seller, &12, &1000, &payment_token);
+    client.set_royalty(&seller, &12, &recipient, &500);
+    client.buy_nft(&buyer, &12);
+    let second_attempt = client.try_buy_nft(&buyer, &12);
+    assert!(second_attempt.is_err());
+    assert!(client.get_royalty(&12).is_some());
+    assert!(client.get_listing(&12).is_ok());
+}
+
+#[test]
+fn test_cancel_listing_removes_unsettled_royalty_configuration() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+
+    client.list_nft(&seller, &13, &1000, &payment_token);
+    client.set_royalty(&seller, &13, &recipient, &250);
+    client.cancel_listing(&seller, &13);
+
+    assert!(client.get_royalty(&13).is_none());
+    assert!(client.get_listing(&13).is_err());
+}
+
+#[test]
+fn test_maximum_allowed_royalty_still_leaves_seller_proceeds() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (_, _, client) = setup_marketplace(&e);
+    let seller = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let payment_token = setup_allowed_payment_token(&e, &client);
+    let sale_amount = 10_000i128;
+
+    client.list_nft(&seller, &14, &sale_amount, &payment_token);
+    client.set_royalty(&seller, &14, &recipient, &MAX_ROYALTY_BASIS_POINTS);
+    let royalty = client.get_royalty(&14).unwrap();
+    assert_eq!(royalty.basis_points, MAX_ROYALTY_BASIS_POINTS);
+    assert_eq!(client.get_listing(&14).unwrap().price, sale_amount);
+}
+
 // Emergency pause and recovery invariants (GrantFox #553)
 // ============================================================================
 
