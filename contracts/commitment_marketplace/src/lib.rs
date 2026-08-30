@@ -195,6 +195,9 @@ pub enum DataKey {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod atomic_settlement_tests;
+
 // ============================================================================
 // Contract Implementation
 // ============================================================================
@@ -871,27 +874,23 @@ impl CommitmentMarketplace {
         let (seller_proceeds, marketplace_fee, royalty_amount, royalty_recipient) =
             calculate_sale_payouts(&e, token_id, listing.price)?;
 
-        // EFFECTS
-        // Remove listing first (prevent reentrancy)
-        e.storage().persistent().remove(&DataKey::Listing(token_id));
-        e.storage().persistent().remove(&DataKey::Royalty(token_id));
-
-        // Remove from active listings
-        let mut active_listings: Vec<u32> = e
-            .storage()
-            .instance()
-            .get(&DataKey::ActiveListings)
-            .unwrap_or(Vec::new(&e));
-        if let Some(index) = active_listings.iter().position(|id| id == token_id) {
-            active_listings.remove(index as u32);
-        }
-        e.storage()
-            .instance()
-            .set(&DataKey::ActiveListings, &active_listings);
-
-        // INTERACTIONS - External calls AFTER state changes
-        // Transfer payment token from buyer to seller
+        // Preflight the total debit before any state mutation. This gives a
+        // deterministic contract error for an underfunded buyer and avoids
+        // relying on a token implementation's panic behavior to preserve the
+        // listing. The amount is the full sale price; the payout split only
+        // determines which recipients receive that debit.
         let payment_token_client = token::Client::new(&e, &listing.payment_token);
+        if payment_token_client.balance(&buyer) < listing.price {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::InsufficientPayment);
+        }
+
+        // INTERACTIONS - all transfers happen while the listing is still
+        // present. Reentrancy remains blocked by the guard, and a failed
+        // external call cannot leave a consumed listing behind. Only after
+        // every transfer succeeds do we commit the listing consumption below.
         payment_token_client.transfer(&buyer, &listing.seller, &seller_proceeds);
 
         // Transfer marketplace fee if applicable
@@ -904,6 +903,25 @@ impl CommitmentMarketplace {
                 payment_token_client.transfer(&buyer, &recipient, &royalty_amount);
             }
         }
+
+        // COMMIT - consume the listing only after every external transfer has
+        // completed successfully. This makes the business state transition
+        // visibly atomic even for token implementations that return errors
+        // instead of panicking.
+        e.storage().persistent().remove(&DataKey::Listing(token_id));
+        e.storage().persistent().remove(&DataKey::Royalty(token_id));
+
+        let mut active_listings: Vec<u32> = e
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveListings)
+            .unwrap_or(Vec::new(&e));
+        if let Some(index) = active_listings.iter().position(|id| id == token_id) {
+            active_listings.remove(index as u32);
+        }
+        e.storage()
+            .instance()
+            .set(&DataKey::ActiveListings, &active_listings);
 
         // Transfer NFT from seller to buyer
         // Note: In production, you'd use the NFT contract client:
