@@ -331,3 +331,15 @@ fn explicit_median_api_matches_batch_consumer_expectation() {
     let batch = f.client.get_batch_prices(&assets, &3600);
     assert_eq!(batch.get(0).unwrap().1.price, 1_010_000);
 }
+
+#[test]
+fn marketplace_price_conversion_propagates_scaling_overflow() {
+    let f = fixture();
+    f.client.set_price(&f.oracle_one, &f.asset, &i128::MAX, &0);
+
+    assert_eq!(
+        f.client
+            .try_get_price_for_marketplace(&f.asset, &Some(1)),
+        Err(Ok(OracleError::ArithmeticOverflow))
+    );
+}

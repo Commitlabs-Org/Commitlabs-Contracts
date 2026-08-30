@@ -740,14 +740,10 @@ impl PriceOracleContract {
                 return Err(OracleError::InvalidPrice);
             }
             
-            // Convert oracle price to 8 decimals for comparison if needed
-            let oracle_price_8dec = if data.decimals == 8 {
-                data.price
-            } else if data.decimals < 8 {
-                data.price * 10i128.pow(8 - data.decimals as u32)
-            } else {
-                data.price / 10i128.pow(data.decimals as u32 - 8)
-            };
+            // Convert oracle price to 8 decimals for comparison if needed.
+            // Reuse the checked conversion path so a large valid oracle value
+            // cannot wrap while a marketplace consumer performs its sanity check.
+            let oracle_price_8dec = normalize_price(data.price, data.decimals, 8)?;
 
             if oracle_price_8dec < min_price {
                 return Err(OracleError::InvalidPrice);
