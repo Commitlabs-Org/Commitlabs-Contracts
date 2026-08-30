@@ -7,11 +7,11 @@
 //! and optional fallback. Used for value calculation, drawdown, compliance, and fees.
 //!
 //! ## Manipulation Resistance Assumptions
-//! This contract is a push-based oracle registry. It assumes:
-//! - Oracle addresses added by the admin are trusted to publish honest prices
-//! - Consumers enforce freshness through `get_price_valid` and `max_staleness_seconds`
-//! - A single whitelisted oracle update can replace the latest value for an asset
-//! - There is no medianization, TWAP, quorum, or cross-source reconciliation on-chain
+//! This contract is a push-based oracle registry. Admin-approved sources publish
+//! observations, and readers can require a quorum of fresh sources. A median is
+//! calculated after checked decimal normalization, which limits the effect of a
+//! single outlier. The admin is still responsible for choosing independent and
+//! trustworthy oracle addresses.
 //!
 //! Integrators should only use this contract when those trust assumptions are acceptable
 //! for their asset and risk model. See:
@@ -23,6 +23,7 @@ use soroban_sdk::{
 };
 
 pub const CURRENT_VERSION: u32 = 1;
+pub const MAX_PRICE_DECIMALS: u32 = 18;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -39,6 +40,11 @@ pub enum OracleError {
     InvalidWasmHash = 9,
     InvalidVersion = 10,
     AlreadyMigrated = 11,
+    InsufficientObservations = 12,
+    InvalidQuorum = 13,
+    InvalidDecimals = 14,
+    DuplicateOracle = 15,
+    ArithmeticOverflow = 16,
 }
 
 #[contracttype]
@@ -72,6 +78,12 @@ pub enum DataKey {
     Price(Address),
     /// Oracle configuration (v1+)
     OracleConfig,
+    /// Ordered source set for an asset.
+    AssetOracles(Address),
+    /// Last observation submitted by a source for an asset.
+    Observation(Address, Address),
+    /// Minimum fresh source count required for an asset.
+    AssetQuorum(Address),
     /// Contract version
     Version,
 }
@@ -129,6 +141,174 @@ fn read_config(e: &Env) -> OracleConfig {
 
 fn write_config(e: &Env, config: &OracleConfig) {
     e.storage().instance().set(&DataKey::OracleConfig, config);
+}
+
+fn read_quorum(e: &Env, asset: &Address) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::AssetQuorum(asset.clone()))
+        .unwrap_or(1)
+}
+
+fn source_index(sources: &Vec<Address>, source: &Address) -> Option<u32> {
+    for (index, existing) in sources.iter().enumerate() {
+        if existing == *source {
+            return Some(index as u32);
+        }
+    }
+    None
+}
+
+fn add_asset_source(e: &Env, asset: &Address, source: &Address) {
+    let mut sources = e
+        .storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::AssetOracles(asset.clone()))
+        .unwrap_or(Vec::new(e));
+    if source_index(&sources, source).is_none() {
+        sources.push_back(source.clone());
+        e.storage()
+            .instance()
+            .set(&DataKey::AssetOracles(asset.clone()), &sources);
+    }
+}
+
+fn pow10_checked(exponent: u32) -> Result<i128, OracleError> {
+    let mut factor = 1i128;
+    let mut index = 0u32;
+    while index < exponent {
+        factor = factor
+            .checked_mul(10)
+            .ok_or(OracleError::ArithmeticOverflow)?;
+        index += 1;
+    }
+    Ok(factor)
+}
+
+fn normalize_price(
+    price: i128,
+    source_decimals: u32,
+    target_decimals: u32,
+) -> Result<i128, OracleError> {
+    if source_decimals > MAX_PRICE_DECIMALS || target_decimals > MAX_PRICE_DECIMALS {
+        return Err(OracleError::InvalidDecimals);
+    }
+    if source_decimals == target_decimals {
+        return Ok(price);
+    }
+    if source_decimals < target_decimals {
+        let factor = pow10_checked(target_decimals - source_decimals)?;
+        price.checked_mul(factor).ok_or(OracleError::ArithmeticOverflow)
+    } else {
+        let factor = pow10_checked(source_decimals - target_decimals)?;
+        Ok(price / factor)
+    }
+}
+
+fn aggregate_fresh_prices(
+    e: &Env,
+    asset: &Address,
+    max_staleness: u64,
+) -> Result<PriceData, OracleError> {
+    let sources = e
+        .storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::AssetOracles(asset.clone()))
+        .ok_or(OracleError::PriceNotFound)?;
+    let quorum = read_quorum(e, asset);
+    if quorum == 0 {
+        return Err(OracleError::InvalidQuorum);
+    }
+
+    let now = e.ledger().timestamp();
+    let mut observations = Vec::new(e);
+    let mut seen = Vec::new(e);
+    let mut had_observation = false;
+    let mut had_invalid_time = false;
+    for source in sources.iter() {
+        if source_index(&seen, &source).is_some() {
+            return Err(OracleError::DuplicateOracle);
+        }
+        seen.push_back(source.clone());
+        if !is_whitelisted(e, &source) {
+            continue;
+        }
+        if let Some(data) = e
+            .storage()
+            .instance()
+            .get::<_, PriceData>(&DataKey::Observation(asset.clone(), source.clone()))
+        {
+            had_observation = true;
+            if data.price < 0 {
+                return Err(OracleError::InvalidPrice);
+            }
+            if data.decimals > MAX_PRICE_DECIMALS {
+                return Err(OracleError::InvalidDecimals);
+            }
+            if now < data.updated_at || now - data.updated_at > max_staleness {
+                had_invalid_time = true;
+                continue;
+            }
+            observations.push_back(data);
+        }
+    }
+
+    if observations.len() < quorum {
+        if quorum == 1 && had_observation && had_invalid_time {
+            return Err(OracleError::StalePrice);
+        }
+        return Err(OracleError::InsufficientObservations);
+    }
+
+    let mut target_decimals = 0u32;
+    let mut oldest_update = now;
+    for data in observations.iter() {
+        if data.decimals > target_decimals {
+            target_decimals = data.decimals;
+        }
+        if data.updated_at < oldest_update {
+            oldest_update = data.updated_at;
+        }
+    }
+
+    let mut normalized = Vec::new(e);
+    for data in observations.iter() {
+        normalized.push_back(normalize_price(
+            data.price,
+            data.decimals,
+            target_decimals,
+        )?);
+    }
+
+    // Insertion sort is deterministic and does not depend on Address ordering.
+    let mut index = 1u32;
+    while index < normalized.len() {
+        let value = normalized.get(index).unwrap();
+        let mut position = index;
+        while position > 0 && normalized.get(position - 1).unwrap() > value {
+            let previous = normalized.get(position - 1).unwrap();
+            normalized.set(position, previous);
+            position -= 1;
+        }
+        normalized.set(position, value);
+        index += 1;
+    }
+
+    let middle = normalized.len() / 2;
+    let median = if normalized.len() % 2 == 1 {
+        normalized.get(middle).unwrap()
+    } else {
+        let lower = normalized.get(middle - 1).unwrap();
+        let upper = normalized.get(middle).unwrap();
+        lower
+            .checked_add((upper - lower) / 2)
+            .ok_or(OracleError::ArithmeticOverflow)?
+    };
+    Ok(PriceData {
+        price: median,
+        updated_at: oldest_update,
+        decimals: target_decimals,
+    })
 }
 
 fn set_max_staleness_internal(e: &Env, seconds: u64) {
@@ -251,20 +431,63 @@ impl PriceOracleContract {
     ) -> Result<(), OracleError> {
         require_whitelisted(&e, &caller);
         Validation::require_non_negative(price);
+        if decimals > MAX_PRICE_DECIMALS {
+            return Err(OracleError::InvalidDecimals);
+        }
         let updated_at = e.ledger().timestamp();
         let data = PriceData {
             price,
             updated_at,
             decimals,
         };
+        // Keep the legacy latest-price key for existing integrations, while
+        // also retaining one independently addressable observation per source.
         e.storage()
             .instance()
             .set(&DataKey::Price(asset.clone()), &data);
+        e.storage().instance().set(
+            &DataKey::Observation(asset.clone(), caller.clone()),
+            &data,
+        );
+        add_asset_source(&e, &asset, &caller);
         e.events().publish(
             (symbol_short!("PriceSet"), asset),
             (price, updated_at, decimals),
         );
         Ok(())
+    }
+
+    /// Configure the minimum number of fresh, whitelisted observations required
+    /// for an asset's aggregated read. A value of one preserves legacy behavior;
+    /// higher values make a single publisher insufficient for settlement.
+    pub fn set_quorum(e: Env, caller: Address, asset: Address, quorum: u32) -> Result<(), OracleError> {
+        require_admin_result(&e, &caller)?;
+        if quorum == 0 {
+            return Err(OracleError::InvalidQuorum);
+        }
+        e.storage()
+            .instance()
+            .set(&DataKey::AssetQuorum(asset), &quorum);
+        Ok(())
+    }
+
+    /// Return the configured minimum source count. Unconfigured assets use the
+    /// compatibility default of one source.
+    pub fn get_quorum(e: Env, asset: Address) -> u32 {
+        read_quorum(&e, &asset)
+    }
+
+    /// Aggregate all fresh observations for an asset using a checked median.
+    /// Decimal conversion uses the greatest observed precision and rejects
+    /// values that would overflow the signed 128-bit price representation.
+    pub fn get_median_price(
+        e: Env,
+        asset: Address,
+        max_staleness_override: Option<u64>,
+    ) -> Result<PriceData, OracleError> {
+        let max_staleness = max_staleness_override
+            .unwrap_or_else(|| read_config(&e).max_staleness_seconds);
+        aggregate_fresh_prices(&e, &asset, max_staleness)
     }
 
     /// Get last price and timestamp for an asset. Returns `(0, 0, 0)` if not set.
@@ -298,6 +521,14 @@ impl PriceOracleContract {
         asset: Address,
         max_staleness_override: Option<u64>,
     ) -> Result<PriceData, OracleError> {
+        let max_staleness = max_staleness_override
+            .unwrap_or_else(|| read_config(&e).max_staleness_seconds);
+        if e.storage()
+            .instance()
+            .has(&DataKey::AssetOracles(asset.clone()))
+        {
+            return aggregate_fresh_prices(&e, &asset, max_staleness);
+        }
         let data = e
             .storage()
             .instance()
@@ -306,8 +537,9 @@ impl PriceOracleContract {
         if data.price < 0 {
             return Err(OracleError::InvalidPrice);
         }
-        let max_staleness =
-            max_staleness_override.unwrap_or_else(|| read_config(&e).max_staleness_seconds);
+        if data.decimals > MAX_PRICE_DECIMALS {
+            return Err(OracleError::InvalidDecimals);
+        }
         let now = e.ledger().timestamp();
         if now < data.updated_at || now - data.updated_at > max_staleness {
             return Err(OracleError::StalePrice);
@@ -650,3 +882,6 @@ pub struct OracleHealth {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod quorum_tests;
