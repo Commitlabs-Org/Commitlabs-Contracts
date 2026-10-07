@@ -2,7 +2,6 @@ target/
 **/*.rs.bk
 
 *.wasm
-.env
 config/deploy.env
 
 # AI & Agent metadata
@@ -30,3 +29,5 @@ issue-requirements.md
 
 *.claude
 *CLAUDE.md
+config.bat
+node_modules
