@@ -13,7 +13,9 @@ A comprehensive secondary market for Commitment NFTs on Soroban/Stellar, featuri
 
 ### 💰 Offer System
 
-- Make offers below listing price
+- Make offers below listing price with an explicit lifetime (`duration` in ledger seconds)
+- Offers expire at an exclusive ledger-time boundary: valid only while `timestamp < expires_at`, matching the auction `ends_at` convention
+- Expired offers cannot be accepted; the offerer may cancel them or replace them with a fresh offer
 - Multiple offers per NFT
 - Accept/reject offers
 - Automatic offer cancellation on sale
@@ -149,7 +151,8 @@ marketplace.make_offer(
     offerer_address,
     token_id,
     amount,
-    payment_token_address
+    payment_token_address,
+    duration_seconds // offer lifetime; expires at created_at + duration_seconds
 )
 ```
 
@@ -281,10 +284,16 @@ fn make_offer(
     token_id: u32,
     amount: i128,
     payment_token: Address,
+    duration: u64,
 ) -> Result<(), MarketplaceError>
 ```
 
-Make an offer on an NFT.
+Make an offer on an NFT that expires `duration` ledger seconds after creation.
+The expiry boundary is exclusive: an offer is valid only while
+`ledger.timestamp() < expires_at`. `duration == 0` or an overflowing
+`created_at + duration` fails with `InvalidDuration`; accepting an offer at or
+past `expires_at` fails with `OfferExpired`. Re-offering after expiry replaces
+the stale offer; while an offer is live a duplicate fails with `OfferExists`.
 
 #### `accept_offer`
 

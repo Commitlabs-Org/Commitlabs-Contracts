@@ -11,8 +11,8 @@ This page documents the public entry points, access control, and security notes 
 | list_nft               | List NFT for sale                            | Seller require_auth   | Fails if price <= 0, listing exists, or not initialized  |
 | cancel_listing         | Cancel NFT listing                           | Seller require_auth   | Fails if not found or not seller                         |
 | buy_nft                | Buy NFT from listing                         | Buyer require_auth    | Fails if not found, self-buy, or not initialized         |
-| make_offer             | Make offer on NFT                            | Offerer require_auth  | Fails if amount <= 0 or duplicate offer                  |
-| accept_offer           | Accept offer on NFT                          | Seller require_auth   | Fails if offer not found or not initialized              |
+| make_offer             | Make offer on NFT, expires after `duration`  | Offerer require_auth  | Fails if amount <= 0, duration == 0/overflows, or a live duplicate offer exists |
+| accept_offer           | Accept offer on NFT                          | Seller require_auth   | Fails if offer not found, expired (`OfferExpired`), or not initialized |
 | cancel_offer           | Cancel offer                                 | Offerer require_auth  | Fails if offer not found                                 |
 | start_auction          | Start auction for NFT                        | Seller require_auth   | Fails if price/duration invalid or auction exists        |
 | place_bid              | Place bid on auction                         | Bidder require_auth   | Fails if bid too low, ended, or self-bid                 |

@@ -103,6 +103,8 @@ pub enum MarketplaceError {
     NotPaused = 25,
     /// Caller is not the marketplace administrator
     Unauthorized = 26,
+    /// Offer has expired: ledger timestamp is at or past `expires_at`
+    OfferExpired = 35,
 }
 
 // ============================================================================
@@ -128,7 +130,12 @@ pub struct Offer {
     pub offerer: Address,
     pub amount: i128,
     pub payment_token: Address,
+    /// Ledger timestamp when the offer was created.
     pub created_at: u64,
+    /// Ledger timestamp at which the offer expires. The boundary is exclusive:
+    /// the offer is valid only while `ledger.timestamp() < expires_at` — the
+    /// same convention used by `Auction::ends_at`. See `is_offer_expired`.
+    pub expires_at: u64,
 }
 
 /// Auction information
@@ -253,6 +260,15 @@ fn require_allowed_payment_token(e: &Env, payment_token: &Address) -> Result<(),
 
 fn royalty_for(e: &Env, token_id: u32) -> Option<RoyaltyConfig> {
     e.storage().persistent().get(&DataKey::Royalty(token_id))
+}
+
+/// Offer expiration policy: the expiry boundary is exclusive. An offer is
+/// valid while `now < expires_at`; at the exact expiry instant
+/// (`now == expires_at`) the offer is already expired. This is the same
+/// convention `place_bid` uses for `Auction::ends_at`, so all offer
+/// lifecycle comparisons route through this single predicate.
+fn is_offer_expired(now: u64, expires_at: u64) -> bool {
+    now >= expires_at
 }
 
 fn calculate_sale_payouts(
@@ -964,14 +980,23 @@ impl CommitmentMarketplace {
     // Offer System
     // ========================================================================
 
-    /// @notice Make an offer on an NFT.
+    /// @notice Make an offer on an NFT. The offer expires at
+    /// `ledger.timestamp() + duration` (checked arithmetic); the boundary is
+    /// exclusive — valid only while `ledger.timestamp() < expires_at`.
     /// @param offerer Offer maker's address (must sign the transaction).
     /// @param token_id NFT token ID to make offer on.
     /// @param amount Offer amount (must be > 0).
     /// @param payment_token Token contract address for payment.
-    /// @dev Reentrancy guard enforced.
+    /// @param duration Offer lifetime in ledger seconds; must be > 0. An
+    /// overflow of `created_at + duration` is rejected with InvalidDuration.
+    /// @dev Reentrancy guard enforced. If `offerer` already has a live offer
+    /// for this token the call fails; if that stored offer is expired the new
+    /// offer replaces it in place (the documented update path).
     /// @error MarketplaceError::InvalidOfferAmount if amount <= 0.
-    /// @error MarketplaceError::OfferExists if offerer already has an offer.
+    /// @error MarketplaceError::InvalidDuration if duration == 0 or
+    /// `created_at + duration` overflows.
+    /// @error MarketplaceError::OfferExists if offerer already has a
+    /// non-expired offer.
     /// @security Only callable by `offerer` (require_auth).
     pub fn make_offer(
         e: Env,
@@ -979,6 +1004,7 @@ impl CommitmentMarketplace {
         token_id: u32,
         amount: i128,
         payment_token: Address,
+        duration: u64,
     ) -> Result<(), MarketplaceError> {
         require_not_paused(&e)?;
         // Reentrancy protection
@@ -1000,6 +1026,13 @@ impl CommitmentMarketplace {
                 .instance()
                 .set(&DataKey::ReentrancyGuard, &false);
             return Err(MarketplaceError::InvalidOfferAmount);
+        }
+
+        if duration == 0 {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::InvalidDuration);
         }
 
         if let Err(err) = require_allowed_payment_token(&e, &payment_token) {
@@ -1036,12 +1069,21 @@ impl CommitmentMarketplace {
         }
 
         // EFFECTS
+        let created_at = e.ledger().timestamp();
+        let expires_at = created_at.checked_add(duration).ok_or_else(|| {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            MarketplaceError::InvalidDuration
+        })?;
+
         let offer = Offer {
             token_id,
             offerer: offerer.clone(),
             amount,
             payment_token: payment_token.clone(),
-            created_at: e.ledger().timestamp(),
+            created_at,
+            expires_at,
         };
 
         let mut offers: Vec<Offer> = e
@@ -1050,9 +1092,15 @@ impl CommitmentMarketplace {
             .get(&DataKey::Offers(token_id))
             .unwrap_or(Vec::new(&e));
 
-        // Check if offerer already has an offer
-        for existing_offer in offers.iter() {
+        // A live offer from the same offerer cannot be mutated; an expired one
+        // is replaced by this fresh offer (the documented update path).
+        let mut replace_at: Option<u32> = None;
+        for (i, existing_offer) in offers.iter().enumerate() {
             if existing_offer.offerer == offerer {
+                if is_offer_expired(created_at, existing_offer.expires_at) {
+                    replace_at = Some(i as u32);
+                    break;
+                }
                 e.storage()
                     .instance()
                     .set(&DataKey::ReentrancyGuard, &false);
@@ -1060,7 +1108,10 @@ impl CommitmentMarketplace {
             }
         }
 
-        offers.push_back(offer);
+        match replace_at {
+            Some(i) => offers.set(i, offer),
+            None => offers.push_back(offer),
+        }
         e.storage()
             .persistent()
             .set(&DataKey::Offers(token_id), &offers);
@@ -1070,10 +1121,10 @@ impl CommitmentMarketplace {
             .instance()
             .set(&DataKey::ReentrancyGuard, &false);
 
-        // Emit event
+        // Emit event with the effective expiry
         e.events().publish(
             (symbol_short!("OfferMade"), token_id),
-            (offerer, amount, payment_token),
+            (offerer, amount, payment_token, expires_at),
         );
 
         Ok(())
@@ -1085,6 +1136,8 @@ impl CommitmentMarketplace {
     /// @param offerer Address of the offer maker.
     /// @dev Reentrancy guard enforced. Handles token transfers. No cross-contract NFT transfer in this implementation.
     /// @error MarketplaceError::OfferNotFound if offer does not exist.
+    /// @error MarketplaceError::OfferExpired if the offer's exclusive expiry
+    /// boundary has been reached (`ledger.timestamp() >= expires_at`).
     /// @error MarketplaceError::NotInitialized if contract not initialized.
     /// @security Only callable by `seller` (require_auth).
     pub fn accept_offer(
@@ -1138,6 +1191,16 @@ impl CommitmentMarketplace {
             })?;
 
         let offer = offers.get(offer_index as u32).unwrap();
+
+        // An offer at or past its expiry boundary cannot be accepted. The
+        // stored offer is left in place: the offerer may cancel it or replace
+        // it via a fresh make_offer.
+        if is_offer_expired(e.ledger().timestamp(), offer.expires_at) {
+            e.storage()
+                .instance()
+                .set(&DataKey::ReentrancyGuard, &false);
+            return Err(MarketplaceError::OfferExpired);
+        }
 
         let fee_recipient: Address = e
             .storage()
@@ -1215,7 +1278,9 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// @notice Cancel an offer made on an NFT.
+    /// @notice Cancel an offer made on an NFT. Cancellation is always safe:
+    /// it is allowed before, at, or after the offer's expiry boundary and is
+    /// also the manual cleanup path for expired offers.
     /// @param offerer Offer maker's address (must sign the transaction).
     /// @param token_id NFT token ID.
     /// @error MarketplaceError::OfferNotFound if offer does not exist.
@@ -1250,7 +1315,9 @@ impl CommitmentMarketplace {
         Ok(())
     }
 
-    /// @notice Get all offers for a specific NFT token.
+    /// @notice Get all stored offers for a specific NFT token, including
+    /// expired ones. Callers determine liveness by comparing each offer's
+    /// `expires_at` against the ledger timestamp (exclusive boundary).
     /// @param token_id NFT token ID.
     /// @return Vec<Offer> of all offers for the token.
     pub fn get_offers(e: Env, token_id: u32) -> Vec<Offer> {
