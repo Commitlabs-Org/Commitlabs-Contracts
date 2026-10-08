@@ -5,11 +5,29 @@ use super::*;
 use shared_utils::BatchMode;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env, Map, String, Vec,
+    Address, BytesN, Env, Map, String, Vec,
 };
 
 fn ts(e: &Env, value: &str) -> String {
     String::from_str(e, value)
+}
+
+/// Deterministic nonzero 32-byte evidence id for tests. `seed` 0 is reserved:
+/// the contract rejects the all-zero hash.
+fn ev(e: &Env, seed: u32) -> BytesN<32> {
+    let mut b = [0u8; 32];
+    b[..4].copy_from_slice(&seed.to_be_bytes());
+    BytesN::from_array(e, &b)
+}
+
+/// Unique nonzero 32-byte evidence id per call (test-only helper).
+fn ev_seq(e: &Env) -> BytesN<32> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(e, &b)
 }
 
 #[test]
@@ -45,18 +63,18 @@ fn test_attest_invalid_types() {
 
     // Empty attestation_type
     let empty_type = String::from_str(&e, "");
-    let result = client.try_attest(&admin, &commitment_id, &empty_type, &data, &true);
+    let result = client.try_attest(&admin, &commitment_id, &empty_type, &data, &true, &ev(&e, 101));
     assert!(result.is_err());
 
     // Unknown attestation_type
     let unknown_type = String::from_str(&e, "unknown");
-    let result = client.try_attest(&admin, &commitment_id, &unknown_type, &data, &true);
+    let result = client.try_attest(&admin, &commitment_id, &unknown_type, &data, &true, &ev(&e, 102));
     assert!(result.is_err());
 
     // Allowed types with required data
     // health_check: no required fields
     let att_type = String::from_str(&e, "health_check");
-    let result = client.try_attest(&admin, &commitment_id, &att_type, &Map::new(&e), &true);
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &Map::new(&e), &true, &ev(&e, 103));
     assert!(result.is_ok(), "attest should succeed for allowed type: health_check");
 
     // violation: requires "violation_type" and "severity"
@@ -64,21 +82,21 @@ fn test_attest_invalid_types() {
     let mut data = Map::new(&e);
     data.set(String::from_str(&e, "violation_type"), String::from_str(&e, "foo"));
     data.set(String::from_str(&e, "severity"), String::from_str(&e, "high"));
-    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true);
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true, &ev(&e, 104));
     assert!(result.is_ok(), "attest should succeed for allowed type: violation");
 
     // fee_generation: requires "fee_amount"
     let att_type = String::from_str(&e, "fee_generation");
     let mut data = Map::new(&e);
     data.set(String::from_str(&e, "fee_amount"), String::from_str(&e, "100"));
-    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true);
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true, &ev(&e, 105));
     assert!(result.is_ok(), "attest should succeed for allowed type: fee_generation");
 
     // drawdown: requires "drawdown_percent"
     let att_type = String::from_str(&e, "drawdown");
     let mut data = Map::new(&e);
     data.set(String::from_str(&e, "drawdown_percent"), String::from_str(&e, "5"));
-    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true);
+    let result = client.try_attest(&admin, &commitment_id, &att_type, &data, &true, &ev(&e, 106));
     assert!(result.is_ok(), "attest should succeed for allowed type: drawdown");
 }
 
@@ -538,7 +556,7 @@ fn test_attest_without_initialize_fails() {
     let attestation_type = String::from_str(&e, "health_check");
     let data = Map::new(&e);
 
-    let result = client.try_attest(&caller, &commitment_id, &attestation_type, &data, &true);
+    let result = client.try_attest(&caller, &commitment_id, &attestation_type, &data, &true, &ev(&e, 107));
     assert!(result.is_err());
 }
 
@@ -571,7 +589,7 @@ fn test_record_fees_records_attestation_and_metrics() {
         );
     });
 
-    client.record_fees(&admin, &commitment_id, &250);
+    client.record_fees(&admin, &commitment_id, &250, &ev(&e, 201));
 
     let attestations = client.get_attestations(&commitment_id);
     assert_eq!(attestations.len(), 1);
@@ -613,7 +631,7 @@ fn test_record_drawdown_within_max_loss_records_drawdown() {
         );
     });
 
-    client.record_drawdown(&admin, &commitment_id, &5);
+    client.record_drawdown(&admin, &commitment_id, &5, &ev(&e, 202));
 
     let attestations = client.get_attestations(&commitment_id);
     assert_eq!(attestations.len(), 1);
@@ -663,10 +681,10 @@ fn test_get_attestations_page_logic() {
 
     let start_ts = e.ledger().timestamp();
     // 2. Add 15 attestations with increasing timestamps
-    for _ in 0..15u32 {
+    for i in 0..15u32 {
         let data = Map::new(&e);
         e.ledger().with_mut(|l| l.timestamp += 1);
-        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true, &ev(&e, i + 1));
     }
 
     // 3. Test first page: offset=0, limit=10
@@ -692,9 +710,9 @@ fn test_get_attestations_page_logic() {
     }
 
     // 5. Test MAX_PAGE_SIZE boundary
-    for _ in 15..150u32 {
+    for i in 15..150u32 {
         let data = Map::new(&e);
-        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true, &ev(&e, i + 1));
     }
 
     let page_max = client.get_attestations_page(&commitment_id, &0, &200);
@@ -776,10 +794,10 @@ fn test_get_attestations_bounded_matches_first_page() {
     });
 
     let start_ts = e.ledger().timestamp();
-    for _ in 0..15u32 {
+    for i in 0..15u32 {
         let data = Map::new(&e);
         e.ledger().with_mut(|l| l.timestamp += 1);
-        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true, &ev(&e, i + 1));
     }
 
     let bounded = client.get_attestations(&commitment_id);
@@ -823,10 +841,10 @@ fn test_get_attestations_bounded_at_cap() {
         );
     });
 
-    for _ in 0..MAX_PAGE_SIZE {
+    for i in 0..MAX_PAGE_SIZE {
         let data = Map::new(&e);
         e.ledger().with_mut(|l| l.timestamp += 1);
-        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true, &ev(&e, i + 1));
     }
 
     let bounded = client.get_attestations(&commitment_id);
@@ -866,10 +884,10 @@ fn test_get_attestations_bounded_above_cap_paging_continuation() {
 
     let total = MAX_PAGE_SIZE + 50;
     let start_ts = e.ledger().timestamp();
-    for _ in 0..total {
+    for i in 0..total {
         let data = Map::new(&e);
         e.ledger().with_mut(|l| l.timestamp += 1);
-        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true);
+        client.attest(&admin, &commitment_id, &String::from_str(&e, "health_check"), &data, &true, &ev(&e, i + 1));
     }
 
     let bounded = client.get_attestations(&commitment_id);
@@ -929,12 +947,13 @@ fn test_batch_attest_unaffected_by_bounded_get_attestations() {
     });
 
     let mut params = Vec::new(&e);
-    for _ in 0..3u32 {
+    for i in 0..3u32 {
         params.push_back(AttestParams {
             commitment_id: commitment_id.clone(),
             attestation_type: String::from_str(&e, "health_check"),
             data: Map::new(&e),
             is_compliant: true,
+            evidence_hash: ev(&e, i + 1),
         });
     }
 
@@ -1239,6 +1258,7 @@ fn test_attestation_types_health_check_validation() {
             String::from_str(&e, "health_check"),
             health_data,
             true,
+                ev_seq(&e.clone()),
         )
     });
     assert_eq!(result, Ok(()));
@@ -1300,6 +1320,7 @@ fn test_attestation_types_violation_validation() {
             String::from_str(&e, "violation"),
             violation_data,
             false,
+                ev_seq(&e.clone()),
         )
     });
     assert_eq!(result, Ok(()));
@@ -1360,6 +1381,7 @@ fn test_attestation_types_violation_missing_required_data_fails() {
             String::from_str(&e, "violation"),
             incomplete_data,
             false,
+                ev_seq(&e.clone()),
         )
     });
     assert_eq!(result, Err(AttestationError::InvalidAttestationData));
@@ -1410,6 +1432,7 @@ fn test_attestation_types_fee_generation_validation() {
             String::from_str(&e, "fee_generation"),
             fee_data,
             true,
+                ev_seq(&e.clone()),
         )
     });
     assert_eq!(result, Ok(()));
@@ -1470,6 +1493,8 @@ fn test_attestation_types_drawdown_validation() {
             String::from_str(&e, "drawdown"),
             drawdown_data,
             false, // 15% exceeds 10% limit
+        
+            ev_seq(&e.clone()),
         )
     });
     assert_eq!(result, Ok(()));
@@ -1527,6 +1552,7 @@ fn test_attestation_types_invalid_type_fails() {
             String::from_str(&e, "invalid_type"),
             data,
             true,
+                ev_seq(&e.clone()),
         )
     });
     assert_eq!(result, Err(AttestationError::InvalidAttestationType));
@@ -1801,6 +1827,7 @@ fn test_compliance_scoring_perfect_score() {
                 String::from_str(&e, "health_check"),
                 health_data,
                 true,
+                ev_seq(&e.clone()),
             )
         }).unwrap();
     }
@@ -1858,6 +1885,7 @@ fn test_compliance_scoring_with_violations() {
             String::from_str(&e, "violation"),
             violation_data,
             false,
+                ev_seq(&e.clone()),
         )
     }).unwrap();
 
@@ -1874,6 +1902,7 @@ fn test_compliance_scoring_with_violations() {
             String::from_str(&e, "violation"),
             violation_data2,
             false,
+                ev_seq(&e.clone()),
         )
     }).unwrap();
 
@@ -1966,6 +1995,7 @@ fn test_compliance_scoring_with_fee_performance() {
             verifier.clone(),
             commitment_id.clone(),
             fee_amount,
+                ev_seq(&e.clone()),
         )
     }).unwrap();
 
@@ -2024,6 +2054,7 @@ fn test_compliance_scoring_minimum_score() {
                 String::from_str(&e, "violation"),
                 violation_data,
                 false,
+                ev_seq(&e.clone()),
             )
         }).unwrap();
     }
@@ -2081,6 +2112,7 @@ fn test_compliance_scoring_stored_metrics_priority() {
             String::from_str(&e, "violation"),
             violation_data,
             false,
+                ev_seq(&e.clone()),
         )
     }).unwrap();
 
@@ -2113,4 +2145,295 @@ fn test_compliance_scoring_stored_metrics_priority() {
 
     assert_eq!(stored_score, 25);
     assert_ne!(stored_score, initial_score);
+}
+
+
+// ============================================================================
+// Attestation Replay & Type-Scope Policy Tests
+// ============================================================================
+
+fn setup_attestation_engine(
+    e: &Env,
+    commitment_label: &str,
+) -> (AttestationEngineContractClient<'_>, Address, String) {
+    let attestation_id = e.register_contract(None, AttestationEngineContract);
+    let core_id = e.register_contract(None, commitment_core::CommitmentCoreContract);
+    let client = AttestationEngineContractClient::new(e, &attestation_id);
+
+    let admin = Address::generate(e);
+    let commitment_id = String::from_str(e, commitment_label);
+
+    client.initialize(&admin, &core_id);
+    client.add_verifier(&admin, &admin);
+
+    let commitment = create_mock_commitment_with_status_internal(
+        e,
+        commitment_label,
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(commitment_id.clone()),
+            &commitment,
+        );
+    });
+
+    (client, admin, commitment_id)
+}
+
+#[test]
+fn test_replay_same_evidence_rejected_and_leaves_no_residue() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "replay_same");
+
+    let health = String::from_str(&e, "health_check");
+    let result = client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1));
+    assert!(result.is_ok());
+
+    // Same verifier re-presenting the same evidence is a duplicate
+    let replay = client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1));
+    assert_eq!(replay, Err(Ok(AttestationError::DuplicateAttestation)));
+
+    // The rejected call rolled back completely: still exactly one record
+    assert_eq!(client.get_attestation_count(&commitment_id), 1);
+    let attestations = client.get_attestations(&commitment_id);
+    assert_eq!(attestations.len(), 1);
+
+    // A different evidence id on the same commitment is a new record
+    let fresh = client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 2));
+    assert!(fresh.is_ok());
+    assert_eq!(client.get_attestation_count(&commitment_id), 2);
+}
+
+#[test]
+fn test_replay_same_evidence_different_verifier_rejected() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "replay_cross");
+
+    let verifier_b = Address::generate(&e);
+    client.add_verifier(&admin, &verifier_b);
+
+    let health = String::from_str(&e, "health_check");
+    let first = client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1));
+    assert!(first.is_ok());
+
+    // Same evidence under a different verifier is still the same evidence
+    let replay = client.try_attest(&verifier_b, &commitment_id, &health, &Map::new(&e), &false, &ev(&e, 1));
+    assert_eq!(replay, Err(Ok(AttestationError::DuplicateAttestation)));
+    assert_eq!(client.get_attestation_count(&commitment_id), 1);
+}
+
+#[test]
+fn test_same_evidence_under_different_commitment_is_independent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "evidence_scope_a");
+
+    // Seed a second commitment in core storage
+    let core_id = e.as_contract(&client.address, || {
+        e.storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::CoreContract)
+            .unwrap()
+    });
+    let other_id = String::from_str(&e, "evidence_scope_b");
+    let commitment = create_mock_commitment_with_status_internal(
+        &e,
+        "evidence_scope_b",
+        "active",
+        1_000,
+        1_000,
+        10,
+    );
+    e.as_contract(&core_id, || {
+        e.storage().instance().set(
+            &commitment_core::DataKey::Commitment(other_id.clone()),
+            &commitment,
+        );
+    });
+
+    let health = String::from_str(&e, "health_check");
+    assert!(client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1)).is_ok());
+    // Same evidence hash, different commitment: a distinct record, not a replay
+    assert!(client.try_attest(&admin, &other_id, &health, &Map::new(&e), &true, &ev(&e, 1)).is_ok());
+}
+
+#[test]
+fn test_zero_evidence_hash_rejected_then_valid_retry_succeeds() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "zero_evidence");
+
+    let health = String::from_str(&e, "health_check");
+    let zero = BytesN::from_array(&e, &[0u8; 32]);
+    let result = client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &zero);
+    assert_eq!(result, Err(Ok(AttestationError::InvalidEvidence)));
+
+    // The malformed attempt recorded nothing and consumed no evidence identity
+    assert_eq!(client.get_attestation_count(&commitment_id), 0);
+    assert!(client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1)).is_ok());
+    assert_eq!(client.get_attestation_count(&commitment_id), 1);
+}
+
+#[test]
+fn test_type_guard_restricts_to_scoped_verifier() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "type_guard");
+
+    let health = String::from_str(&e, "health_check");
+    let scoped = Address::generate(&e);
+    let unscoped = Address::generate(&e);
+    client.add_verifier(&admin, &unscoped);
+
+    // Guard health_check and grant only `scoped` (who is NOT globally whitelisted)
+    client.set_type_verifier(&admin, &health, &scoped, &true);
+
+    // Scoped verifier records the guarded type
+    assert!(client.try_attest(&scoped, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1)).is_ok());
+
+    // Globally whitelisted but not scoped for the type -> rejected
+    let denied = client.try_attest(&unscoped, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 2));
+    assert_eq!(denied, Err(Ok(AttestationError::Unauthorized)));
+
+    // Admin is always authorized for every type
+    assert!(client.try_attest(&admin, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 3)).is_ok());
+
+    // Unguarded types still follow the global whitelist
+    let mut vdata = Map::new(&e);
+    vdata.set(String::from_str(&e, "violation_type"), String::from_str(&e, "foo"));
+    vdata.set(String::from_str(&e, "severity"), String::from_str(&e, "high"));
+    let violation = String::from_str(&e, "violation");
+    assert!(client.try_attest(&unscoped, &commitment_id, &violation, &vdata, &false, &ev(&e, 4)).is_ok());
+}
+
+#[test]
+fn test_type_guard_signer_rotation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "type_rotation");
+
+    let health = String::from_str(&e, "health_check");
+    let old_signer = Address::generate(&e);
+    let new_signer = Address::generate(&e);
+
+    client.set_type_verifier(&admin, &health, &old_signer, &true);
+    assert!(client.try_attest(&old_signer, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1)).is_ok());
+
+    // A scoped verifier cannot manage scopes itself
+    let denied_admin = client.try_set_type_verifier(&old_signer, &health, &new_signer, &true);
+    assert_eq!(denied_admin, Err(Ok(AttestationError::Unauthorized)));
+
+    // Rotate: revoke old, grant new
+    client.set_type_verifier(&admin, &health, &old_signer, &false);
+    client.set_type_verifier(&admin, &health, &new_signer, &true);
+
+    let old_attempt = client.try_attest(&old_signer, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 2));
+    assert_eq!(old_attempt, Err(Ok(AttestationError::Unauthorized)));
+    assert!(client.try_attest(&new_signer, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 3)).is_ok());
+}
+
+#[test]
+fn test_unguard_restores_global_whitelist() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "unguard");
+
+    let health = String::from_str(&e, "health_check");
+    let scoped = Address::generate(&e);
+    let unscoped = Address::generate(&e);
+    client.add_verifier(&admin, &unscoped);
+
+    client.set_type_verifier(&admin, &health, &scoped, &true);
+    let denied = client.try_attest(&unscoped, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 1));
+    assert_eq!(denied, Err(Ok(AttestationError::Unauthorized)));
+
+    // Removing the guard restores the global-whitelist policy; the old
+    // TypeVerifier grant remains stored but no longer applies.
+    client.set_type_guarded(&admin, &health, &false);
+    assert!(client.try_attest(&unscoped, &commitment_id, &health, &Map::new(&e), &true, &ev(&e, 2)).is_ok());
+}
+
+#[test]
+fn test_batch_rejects_duplicate_evidence_per_item() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "batch_dup");
+
+    let health = String::from_str(&e, "health_check");
+    let mut params = Vec::new(&e);
+    for (i, seed) in [1u32, 1, 2].iter().enumerate() {
+        let _ = i;
+        params.push_back(AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: health.clone(),
+            data: Map::new(&e),
+            is_compliant: true,
+            evidence_hash: ev(&e, *seed),
+        });
+    }
+
+    // BestEffort: the middle item duplicates the first item's evidence
+    let result = client.batch_attest(&admin, &params, &BatchMode::BestEffort);
+    assert!(!result.success);
+    assert_eq!(result.success_count, 2);
+    assert_eq!(result.errors.len(), 1);
+    let err = result.errors.get(0).unwrap();
+    assert_eq!(err.index, 1);
+    assert_eq!(err.error_code, AttestationError::DuplicateAttestation as u32);
+    assert_eq!(client.get_attestation_count(&commitment_id), 2);
+}
+
+#[test]
+fn test_batch_atomic_duplicate_aborts_whole_batch() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "batch_atomic_dup");
+
+    let health = String::from_str(&e, "health_check");
+    let mut params = Vec::new(&e);
+    for seed in 1u32..=2 {
+        params.push_back(AttestParams {
+            commitment_id: commitment_id.clone(),
+            attestation_type: health.clone(),
+            data: Map::new(&e),
+            is_compliant: true,
+            evidence_hash: ev(&e, seed),
+        });
+    }
+    // Third item repeats seed 1 -> duplicate inside the same batch
+    params.push_back(AttestParams {
+        commitment_id: commitment_id.clone(),
+        attestation_type: health.clone(),
+        data: Map::new(&e),
+        is_compliant: true,
+        evidence_hash: ev(&e, 1),
+    });
+
+    let result = client.batch_attest(&admin, &params, &BatchMode::Atomic);
+    assert!(!result.success);
+    // Atomic abort left nothing recorded
+    assert_eq!(client.get_attestation_count(&commitment_id), 0);
+}
+
+#[test]
+fn test_drawdown_companion_violation_replay_safe() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, admin, commitment_id) = setup_attestation_engine(&e, "drawdown_replay");
+
+    // 20% drawdown vs 10% max_loss -> drawdown + companion violation records
+    client.record_drawdown(&admin, &commitment_id, &20, &ev(&e, 1));
+    assert_eq!(client.get_attestation_count(&commitment_id), 2);
+
+    // Replaying the same evidence rejects the whole call: neither the drawdown
+    // nor its derived companion violation can be recorded twice.
+    let replay = client.try_record_drawdown(&admin, &commitment_id, &20, &ev(&e, 1));
+    assert_eq!(replay, Err(Ok(AttestationError::DuplicateAttestation)));
+    assert_eq!(client.get_attestation_count(&commitment_id), 2);
 }

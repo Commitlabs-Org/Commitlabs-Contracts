@@ -9,13 +9,24 @@
 use crate::harness::{TestHarness, SECONDS_PER_DAY};
 use soroban_sdk::{
     testutils::{Address as _, Events},
-    Address, Env, String, Symbol, IntoVal, Vec,
+    Address, BytesN, Env, String, Symbol, IntoVal, Vec,
 };
 
 use commitment_core::{CommitmentCoreContract, CommitmentRules};
 use commitment_nft::{CommitmentNFTContract, ContractError as NftContractError};
 use attestation_engine::{AttestationEngineContract, AttestationError, AttestationsPage};
 use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
+
+/// Unique nonzero 32-byte evidence id per call (test-only helper).
+fn ev_seq(e: &Env) -> BytesN<32> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(e, &b)
+}
+
 
 /// Verify compliance integration between commitment_core and attestation_engine.
 ///
@@ -79,6 +90,8 @@ fn test_verify_compliance_uses_core_commitment_data() {
                 verifier.clone(),
                 commitment_id.clone(),
                 20, // 20% drawdown
+            
+                ev_seq(&harness.env.clone()),
             )
             .unwrap();
         });
@@ -245,6 +258,7 @@ fn test_attestation_engine_verifies_commitment_exists() {
                 String::from_str(&harness.env, "health_check"),
                 attestation_data,
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 
@@ -280,6 +294,7 @@ fn test_attestation_fails_for_nonexistent_commitment() {
                 String::from_str(&harness.env, "health_check"),
                 attestation_data,
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 
@@ -312,6 +327,7 @@ fn test_attest_by_random_address_fails_unauthorized() {
                 String::from_str(&harness.env, "health_check"),
                 attestation_data,
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 
@@ -351,6 +367,7 @@ fn test_attest_by_verifier_succeeds() {
                 String::from_str(&harness.env, "health_check"),
                 attestation_data,
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 
@@ -387,6 +404,7 @@ fn test_attest_after_verifier_removed_fails() {
                 String::from_str(&harness.env, "health_check"),
                 harness.health_check_data(),
                 true,
+                ev_seq(&harness.env.clone()),
             )
             .unwrap();
         });
@@ -414,6 +432,7 @@ fn test_attest_after_verifier_removed_fails() {
                 String::from_str(&harness.env, "health_check"),
                 harness.health_check_data(),
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 
@@ -448,6 +467,7 @@ fn test_attestation_succeeds_after_commitment_created() {
                 String::from_str(&harness.env, "health_check"),
                 harness.health_check_data(),
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(result_before, Err(AttestationError::CommitmentNotFound));
@@ -477,6 +497,7 @@ fn test_attestation_succeeds_after_commitment_created() {
                 String::from_str(&harness.env, "health_check"),
                 harness.health_check_data(),
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert!(result_after.is_ok());
@@ -527,6 +548,7 @@ fn test_multiple_attestations_cross_contract() {
                     String::from_str(&harness.env, "health_check"),
                     data,
                     true,
+                ev_seq(&harness.env.clone()),
                 )
                 .unwrap();
             });
@@ -599,6 +621,7 @@ fn test_get_attestations_page_single_page_returns_all() {
                     String::from_str(&harness.env, "health_check"),
                     harness.health_check_data(),
                     true,
+                ev_seq(&harness.env.clone()),
                 )
                 .unwrap();
             });
@@ -643,6 +666,7 @@ fn test_get_attestations_page_multiple_pages_correct_order() {
                     String::from_str(&harness.env, "health_check"),
                     harness.health_check_data(),
                     true,
+                ev_seq(&harness.env.clone()),
                 )
                 .unwrap();
             });
@@ -979,6 +1003,7 @@ fn test_health_metrics_cross_contract_data() {
                 String::from_str(&harness.env, "health_check"),
                 health_data,
                 true,
+                ev_seq(&harness.env.clone()),
             )
             .unwrap();
         });
@@ -996,6 +1021,7 @@ fn test_health_metrics_cross_contract_data() {
                 String::from_str(&harness.env, "fee_generation"),
                 fee_data,
                 true,
+                ev_seq(&harness.env.clone()),
             )
             .unwrap();
         });
@@ -1351,6 +1377,7 @@ fn test_record_fees_record_drawdown_access_control() {
                 random.clone(),
                 commitment_id.clone(),
                 50_000,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(r_fees_random, Err(AttestationError::Unauthorized));
@@ -1364,6 +1391,7 @@ fn test_record_fees_record_drawdown_access_control() {
                 random.clone(),
                 commitment_id.clone(),
                 5,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(r_drawdown_random, Err(AttestationError::Unauthorized));
@@ -1377,6 +1405,7 @@ fn test_record_fees_record_drawdown_access_control() {
                 verifier.clone(),
                 commitment_id.clone(),
                 50_000,
+                ev_seq(&harness.env.clone()),
             )
             .unwrap();
         });
@@ -1390,6 +1419,7 @@ fn test_record_fees_record_drawdown_access_control() {
                 verifier.clone(),
                 commitment_id.clone(),
                 5,
+                ev_seq(&harness.env.clone()),
             )
             .unwrap();
         });
@@ -1424,6 +1454,7 @@ fn test_record_fees_validation() {
                 verifier.clone(),
                 commitment_id.clone(),
                 -1,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(result_negative_one, Err(AttestationError::InvalidFeeAmount));
@@ -1437,6 +1468,7 @@ fn test_record_fees_validation() {
                 verifier.clone(),
                 commitment_id.clone(),
                 0,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(result_zero, Ok(()));
@@ -1450,6 +1482,7 @@ fn test_record_fees_validation() {
                 verifier.clone(),
                 commitment_id.clone(),
                 50_000_000,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(result_positive, Ok(()));
@@ -1463,6 +1496,7 @@ fn test_record_fees_validation() {
                 verifier.clone(),
                 commitment_id.clone(),
                 1_000_000_000_000,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(result_large_positive, Ok(()));
@@ -1476,6 +1510,7 @@ fn test_record_fees_validation() {
                 verifier.clone(),
                 commitment_id.clone(),
                 i128::MIN,
+                ev_seq(&harness.env.clone()),
             )
         });
     assert_eq!(result_min_i128, Err(AttestationError::InvalidFeeAmount));

@@ -194,3 +194,8 @@ fn test_attestation_engine_verifies_commitment_exists() {
 5. If the commitment exists, attestation proceeds normally
 
 This ensures data integrity - attestations can only be created for commitments that actually exist in the core contract.
+
+> **Update (v2):** `attest`, `record_fees`, `record_drawdown`, and batch items now
+> require a caller-supplied `evidence_hash`; duplicate or zero evidence is
+> rejected before fee collection or storage mutation. See
+> `ATTESTATION_TYPES_AND_COMPLIANCE.md` → "Replay protection and type scopes".

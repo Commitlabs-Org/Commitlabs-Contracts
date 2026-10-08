@@ -7,11 +7,11 @@
 //! exposure from recorded attestation history.
 use shared_utils::{BatchError, BatchMode, BatchProcessor, BatchResultVoid, Pausable, RateLimiter};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
-    IntoVal, Map, String, Symbol, TryIntoVal, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Bytes,
+    BytesN, Env, IntoVal, Map, String, Symbol, TryIntoVal, Val, Vec,
 };
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 const MAX_PERCENT: i128 = 100;
 const MAX_COMPLIANCE_SCORE: u32 = 100;
 
@@ -52,6 +52,10 @@ pub enum AttestationError {
     InvalidVersion = 13,
     /// Migration already applied.
     AlreadyMigrated = 14,
+    /// Evidence hash already recorded for this commitment (replay/duplicate)
+    DuplicateAttestation = 15,
+    /// Evidence hash is invalid (must be non-zero 32 bytes)
+    InvalidEvidence = 16,
 }
 
 // ============================================================================
@@ -130,6 +134,27 @@ pub enum DataKey {
     AttestationFeeAsset,
     /// Collected fees per asset (asset -> i128)
     CollectedFees(Address),
+    /// Replay guard: evidence identifiers already recorded for a commitment.
+    ///
+    /// Keyed by (commitment_id, evidence_hash). An attestation's evidence hash is
+    /// the unique identity of the underlying evidence bundle; re-presenting the
+    /// same evidence for the same commitment is rejected as a duplicate
+    /// regardless of which verifier submits it or which write path carries it.
+    ///
+    /// Type: bool marker
+    /// Storage: Persistent storage
+    EvidenceSeen(String, BytesN<32>),
+    /// Per-type verifier scope: (attestation_type, verifier) -> bool.
+    ///
+    /// Only consulted while the type is marked guarded via TypeGuard.
+    /// Grants and revocations are admin-only (set_type_verifier).
+    TypeVerifier(String, Address),
+    /// Marks an attestation type as type-guarded.
+    ///
+    /// When present, only admin or addresses listed under TypeVerifier for the
+    /// type may record attestations of that type. Absent means the global
+    /// verifier whitelist applies (unchanged pre-v2 behavior).
+    TypeGuard(String),
     /// Storage schema version
     Version,
 }
@@ -153,6 +178,8 @@ pub struct AttestParams {
     pub attestation_type: String,
     pub data: Map<String, String>,
     pub is_compliant: bool,
+    /// Unique evidence identifier (non-zero 32 bytes) for replay protection.
+    pub evidence_hash: BytesN<32>,
 }
 
 /// Paginated result for get_attestations_page.
@@ -384,6 +411,93 @@ impl AttestationEngineContract {
         Ok(())
     }
 
+    /// Grant or revoke a verifier's scope for one attestation type.
+    ///
+    /// # Arguments
+    /// * `caller` - Must be admin
+    /// * `attestation_type` - One of the supported type names
+    /// * `verifier` - Address to grant or revoke
+    /// * `allowed` - true to grant the scope, false to revoke it
+    ///
+    /// Granting a scope marks the type guarded (`TypeGuard`), so afterwards only
+    /// admin and `TypeVerifier`-listed addresses may record that type. Revoking a
+    /// scope does not remove the guard; use `set_type_guarded` to restore the
+    /// global-whitelist policy.
+    ///
+    /// # Errors
+    /// * `NotInitialized` - contract not initialized
+    /// * `Unauthorized` - caller is not admin
+    /// * `InvalidAttestationType` - unsupported type name
+    pub fn set_type_verifier(
+        e: Env,
+        caller: Address,
+        attestation_type: String,
+        verifier: Address,
+        allowed: bool,
+    ) -> Result<(), AttestationError> {
+        require_admin(&e, &caller)?;
+        if !Self::is_valid_attestation_type(&e, &attestation_type) {
+            return Err(AttestationError::InvalidAttestationType);
+        }
+
+        if allowed {
+            e.storage()
+                .instance()
+                .set(&DataKey::TypeGuard(attestation_type.clone()), &true);
+            e.storage().instance().set(
+                &DataKey::TypeVerifier(attestation_type.clone(), verifier.clone()),
+                &true,
+            );
+        } else {
+            e.storage().instance().remove(&DataKey::TypeVerifier(
+                attestation_type.clone(),
+                verifier.clone(),
+            ));
+        }
+
+        e.events().publish(
+            (Symbol::new(&e, "TypeVerifSet"), attestation_type),
+            (caller, verifier, allowed, e.ledger().timestamp()),
+        );
+        Ok(())
+    }
+
+    /// Mark or unmark an attestation type as type-guarded.
+    ///
+    /// Guarded types require a `TypeVerifier` scope (or admin); unguarded types
+    /// fall back to the global verifier whitelist. Revoking a guard does not
+    /// delete existing `TypeVerifier` grants; they take effect again if the type
+    /// is re-guarded.
+    ///
+    /// # Errors
+    /// * `NotInitialized` - contract not initialized
+    /// * `Unauthorized` - caller is not admin
+    /// * `InvalidAttestationType` - unsupported type name
+    pub fn set_type_guarded(
+        e: Env,
+        caller: Address,
+        attestation_type: String,
+        guarded: bool,
+    ) -> Result<(), AttestationError> {
+        require_admin(&e, &caller)?;
+        if !Self::is_valid_attestation_type(&e, &attestation_type) {
+            return Err(AttestationError::InvalidAttestationType);
+        }
+
+        let key = DataKey::TypeGuard(attestation_type.clone());
+        if guarded {
+            e.storage().instance().set(&key, &true);
+        } else {
+            e.storage().instance().remove(&key);
+        }
+
+        e.events().publish(
+            (Symbol::new(&e, "TypeGuardSet"), attestation_type),
+            (caller, guarded, e.ledger().timestamp()),
+        );
+        Ok(())
+    }
+
     /// Check if an address is an authorized verifier
     fn is_authorized_verifier(e: &Env, address: &Address) -> bool {
         // Admin is always authorized
@@ -402,6 +516,69 @@ impl AttestationEngineContract {
             .instance()
             .get(&DataKey::Verifier(address.clone()))
             .unwrap_or(false)
+    }
+
+    /// Check if an address may record attestations of a given type.
+    ///
+    /// Policy (single documented rule for all record paths):
+    /// - Admin is always authorized for every type.
+    /// - If the type is guarded (TypeGuard set), only admin or addresses listed
+    ///   in TypeVerifier(type, address) are authorized.
+    /// - Otherwise the global verifier whitelist applies, preserving the
+    ///   pre-v2 behavior for types that never opted into scoping.
+    fn is_authorized_verifier_for_type(e: &Env, address: &Address, attestation_type: &String) -> bool {
+        if let Some(admin) = e
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
+            if *address == admin {
+                return true;
+            }
+        }
+
+        if e.storage()
+            .instance()
+            .has(&DataKey::TypeGuard(attestation_type.clone()))
+        {
+            return e
+                .storage()
+                .instance()
+                .get(&DataKey::TypeVerifier(
+                    attestation_type.clone(),
+                    address.clone(),
+                ))
+                .unwrap_or(false);
+        }
+
+        e.storage()
+            .instance()
+            .get(&DataKey::Verifier(address.clone()))
+            .unwrap_or(false)
+    }
+
+    /// Reject an all-zero evidence hash, then enforce that the evidence has not
+    /// already been recorded for this commitment. On success marks the evidence
+    /// as seen.
+    ///
+    /// Replay rule: (commitment_id, evidence_hash) is the unique identity of a
+    /// recorded evidence bundle. The same hash under a different commitment is a
+    /// distinct record; the same hash under the same commitment is always a
+    /// duplicate, independent of verifier, attestation type, or record content.
+    fn mark_evidence_seen(
+        e: &Env,
+        commitment_id: &String,
+        evidence_hash: &BytesN<32>,
+    ) -> Result<(), AttestationError> {
+        if evidence_hash.to_array() == [0u8; 32] {
+            return Err(AttestationError::InvalidEvidence);
+        }
+        let key = DataKey::EvidenceSeen(commitment_id.clone(), evidence_hash.clone());
+        if e.storage().persistent().has(&key) {
+            return Err(AttestationError::DuplicateAttestation);
+        }
+        e.storage().persistent().set(&key, &true);
+        Ok(())
     }
 
     /// Pause the contract
@@ -890,6 +1067,7 @@ impl AttestationEngineContract {
         attestation_type: String,
         data: Map<String, String>,
         is_compliant: bool,
+        evidence_hash: BytesN<32>,
         require_auth: bool,
     ) -> Result<(), AttestationError> {
         // 1. Authorization check
@@ -903,6 +1081,7 @@ impl AttestationEngineContract {
             attestation_type,
             data,
             is_compliant,
+            evidence_hash,
         )
     }
 
@@ -915,6 +1094,7 @@ impl AttestationEngineContract {
         attestation_type: String,
         data: Map<String, String>,
         is_compliant: bool,
+        evidence_hash: BytesN<32>,
     ) -> Result<(), AttestationError> {
         // 1. Reentrancy protection
         if e.storage().instance().has(&DataKey::ReentrancyGuard) {
@@ -925,8 +1105,8 @@ impl AttestationEngineContract {
         // Check if contract is paused
         Pausable::require_not_paused(&e);
 
-        // 3. Check caller is authorized verifier
-        if !Self::is_authorized_verifier(&e, &caller) {
+        // 3. Check caller is authorized for this attestation type
+        if !Self::is_authorized_verifier_for_type(&e, &caller, &attestation_type) {
             e.storage().instance().remove(&DataKey::ReentrancyGuard);
             return Err(AttestationError::Unauthorized);
         }
@@ -942,6 +1122,7 @@ impl AttestationEngineContract {
             attestation_type,
             data,
             is_compliant,
+            evidence_hash,
         );
 
         // Clear reentrancy guard regardless of outcome
@@ -959,6 +1140,7 @@ impl AttestationEngineContract {
         attestation_type: String,
         data: Map<String, String>,
         is_compliant: bool,
+        evidence_hash: BytesN<32>,
     ) -> Result<(), AttestationError> {
         // 4. Validate commitment_id is not empty
         if commitment_id.len() == 0 {
@@ -981,6 +1163,10 @@ impl AttestationEngineContract {
         }
 
         Self::validate_metric_bounds(e, &attestation_type, &data)?;
+
+        // 7a. Replay guard: check and mark the evidence identity before any fee
+        // collection, storage write, metric update, or event emission.
+        Self::mark_evidence_seen(e, &commitment_id, &evidence_hash)?;
 
         // 7b. Collect attestation verification fee if configured
         let fee_amount: i128 = e
@@ -1084,7 +1270,7 @@ impl AttestationEngineContract {
                 commitment_id,
                 caller.clone(),
             ),
-            (attestation_type, is_compliant, timestamp),
+            (attestation_type, is_compliant, timestamp, evidence_hash),
         );
 
         Ok(())
@@ -1092,6 +1278,10 @@ impl AttestationEngineContract {
 
 
     /// Record a single attestation. Caller must be an authorized verifier.
+    ///
+    /// `evidence_hash` is the unique identity of the evidence bundle backing this
+    /// record. Re-presenting the same hash for the same commitment is rejected
+    /// with `DuplicateAttestation`; an all-zero hash is `InvalidEvidence`.
     pub fn attest(
         e: Env,
         caller: Address,
@@ -1099,6 +1289,7 @@ impl AttestationEngineContract {
         attestation_type: String,
         data: Map<String, String>,
         is_compliant: bool,
+        evidence_hash: BytesN<32>,
     ) -> Result<(), AttestationError> {
         Self::attest_internal(
             e,
@@ -1107,6 +1298,7 @@ impl AttestationEngineContract {
             attestation_type,
             data,
             is_compliant,
+            evidence_hash,
             true,
         )
     }
@@ -1442,11 +1634,14 @@ impl AttestationEngineContract {
     }
 
     /// Convenience wrapper for fee_generation attestations
+    /// `evidence_hash` uniquely identifies the evidence backing this fee record;
+    /// see `attest` for the replay rules.
     pub fn record_fees(
         e: Env,
         caller: Address,
         commitment_id: String,
         fee_amount: i128,
+        evidence_hash: BytesN<32>,
     ) -> Result<(), AttestationError> {
         // Authorization check
         caller.require_auth();
@@ -1469,6 +1664,7 @@ impl AttestationEngineContract {
             String::from_str(&e, "fee_generation"),
             data,
             true,
+            evidence_hash,
         )?;
 
         e.events().publish(
@@ -1478,12 +1674,19 @@ impl AttestationEngineContract {
         Ok(())
     }
 
-    /// Convenience wrapper for drawdown attestations
+    /// Convenience wrapper for drawdown attestations.
+    ///
+    /// `evidence_hash` uniquely identifies the evidence backing the drawdown
+    /// record; see `attest` for the replay rules. When the drawdown breaches the
+    /// commitment's max-loss rule the companion violation record uses
+    /// `sha256(evidence_hash)` as its evidence identity, so a replayed drawdown
+    /// and a replayed violation are both rejected.
     pub fn record_drawdown(
         e: Env,
         caller: Address,
         commitment_id: String,
         drawdown_percent: i128,
+        evidence_hash: BytesN<32>,
     ) -> Result<(), AttestationError> {
         // Reentrancy protection
         if e.storage().instance().has(&DataKey::ReentrancyGuard) {
@@ -1493,9 +1696,11 @@ impl AttestationEngineContract {
 
         Pausable::require_not_paused(&e);
 
-        // Auth: caller must sign and be an authorized verifier
+        // Auth: caller must sign and be authorized for the "drawdown" type.
+        // The companion violation record is written under the same authority.
         caller.require_auth();
-        if !Self::is_authorized_verifier(&e, &caller) {
+        let drawdown_type = String::from_str(&e, "drawdown");
+        if !Self::is_authorized_verifier_for_type(&e, &caller, &drawdown_type) {
             e.storage().instance().remove(&DataKey::ReentrancyGuard);
             return Err(AttestationError::Unauthorized);
         }
@@ -1530,9 +1735,10 @@ impl AttestationEngineContract {
             &e,
             &caller,
             commitment_id.clone(),
-            String::from_str(&e, "drawdown"),
+            drawdown_type.clone(),
             data,
             is_compliant,
+            evidence_hash.clone(),
         )?;
 
         if !is_compliant {
@@ -1546,6 +1752,13 @@ impl AttestationEngineContract {
                 String::from_str(&e, "high"),
             );
 
+            // Companion violation uses a derived evidence identity so it neither
+            // collides with the drawdown record nor shares its replay key.
+            let violation_hash: BytesN<32> = e
+                .crypto()
+                .sha256(&Bytes::from_array(&e, &evidence_hash.to_array()))
+                .to_bytes();
+
             Self::write_attestation(
                 &e,
                 &caller,
@@ -1553,6 +1766,7 @@ impl AttestationEngineContract {
                 String::from_str(&e, "violation"),
                 violation_data,
                 false,
+                violation_hash,
             )?;
 
             e.events().publish(
@@ -1927,17 +2141,10 @@ impl AttestationEngineContract {
         // Verify caller signed the transaction
         caller.require_auth();
 
-        // Check caller is authorized verifier
-        if !Self::is_authorized_verifier(&e, &caller) {
-            e.storage().instance().remove(&DataKey::ReentrancyGuard);
-            let mut errors = Vec::new(&e);
-            errors.push_back(BatchError {
-                index: 0,
-                error_code: AttestationError::Unauthorized as u32,
-                context: String::from_str(&e, "not_authorized_verifier"),
-            });
-            return BatchResultVoid::failure(&e, errors);
-        }
+        // Per-item authorization: each attestation type is checked inside the
+        // loop via `is_authorized_verifier_for_type`, so a scoped verifier is not
+        // required to be globally whitelisted and a global verifier cannot
+        // record guarded types without a scope grant.
 
         // Validate batch size
         let batch_size = params_list.len();
@@ -1977,6 +2184,57 @@ impl AttestationEngineContract {
 
         let timestamp = e.ledger().timestamp();
         let violation_type = String::from_str(&e, "violation");
+
+        // Atomic mode: validate every item before writing any record. A rejected
+        // batch must leave no partial history, evidence marks, or counter deltas;
+        // evidence uniqueness is checked against both stored evidence and earlier
+        // items in this batch.
+        if mode == BatchMode::Atomic {
+            let mut planned_evidence: Vec<BytesN<32>> = Vec::new(&e);
+            for i in 0..batch_size {
+                let params = params_list.get(i).unwrap();
+
+                let rejection: Option<(AttestationError, &str)> = if params.commitment_id.is_empty() {
+                    Some((AttestationError::InvalidCommitmentId, "empty_commitment_id"))
+                } else if !Self::commitment_exists(&e, &params.commitment_id) {
+                    Some((AttestationError::CommitmentNotFound, "commitment_not_found"))
+                } else if !Self::is_valid_attestation_type(&e, &params.attestation_type) {
+                    Some((AttestationError::InvalidAttestationType, "invalid_type"))
+                } else if !Self::validate_attestation_data(&e, &params.attestation_type, &params.data) {
+                    Some((AttestationError::InvalidAttestationData, "invalid_data"))
+                } else if let Err(metric_error) =
+                    Self::validate_metric_bounds(&e, &params.attestation_type, &params.data)
+                {
+                    Some((metric_error, "metric_bounds"))
+                } else if !Self::is_authorized_verifier_for_type(&e, &caller, &params.attestation_type)
+                {
+                    Some((AttestationError::Unauthorized, "type_not_authorized"))
+                } else if params.evidence_hash.to_array() == [0u8; 32] {
+                    Some((AttestationError::InvalidEvidence, "invalid_evidence"))
+                } else if planned_evidence.iter().any(|h| h == params.evidence_hash)
+                    || e.storage().persistent().has(&DataKey::EvidenceSeen(
+                        params.commitment_id.clone(),
+                        params.evidence_hash.clone(),
+                    ))
+                {
+                    Some((AttestationError::DuplicateAttestation, "duplicate_evidence"))
+                } else {
+                    None
+                };
+
+                if let Some((error, context)) = rejection {
+                    e.storage().instance().remove(&DataKey::ReentrancyGuard);
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: error as u32,
+                        context: String::from_str(&e, context),
+                    });
+                    return BatchResultVoid::failure(&e, errors);
+                }
+
+                planned_evidence.push_back(params.evidence_hash.clone());
+            }
+        }
 
         // Process each attestation
         for i in 0..batch_size {
@@ -2085,6 +2343,54 @@ impl AttestationEngineContract {
                 }
             }
 
+            // Per-item authorization for this attestation type
+            if !Self::is_authorized_verifier_for_type(&e, &caller, &params.attestation_type) {
+                if mode == BatchMode::Atomic {
+                    e.storage().instance().remove(&DataKey::ReentrancyGuard);
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: AttestationError::Unauthorized as u32,
+                        context: String::from_str(&e, "type_not_authorized"),
+                    });
+                    return BatchResultVoid::failure(&e, errors);
+                } else {
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: AttestationError::Unauthorized as u32,
+                        context: String::from_str(&e, "type_not_authorized"),
+                    });
+                    continue;
+                }
+            }
+
+            // Replay guard: reject duplicate or malformed evidence identities
+            // before any storage write, metric update, or event emission.
+            if let Err(evidence_error) =
+                Self::mark_evidence_seen(&e, &params.commitment_id, &params.evidence_hash)
+            {
+                let context = if evidence_error == AttestationError::DuplicateAttestation {
+                    String::from_str(&e, "duplicate_evidence")
+                } else {
+                    String::from_str(&e, "invalid_evidence")
+                };
+                if mode == BatchMode::Atomic {
+                    e.storage().instance().remove(&DataKey::ReentrancyGuard);
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: evidence_error as u32,
+                        context,
+                    });
+                    return BatchResultVoid::failure(&e, errors);
+                } else {
+                    errors.push_back(BatchError {
+                        index: i,
+                        error_code: evidence_error as u32,
+                        context,
+                    });
+                    continue;
+                }
+            }
+
             // Create attestation record
             let attestation = Attestation {
                 commitment_id: params.commitment_id.clone(),
@@ -2145,6 +2451,7 @@ impl AttestationEngineContract {
                     params.attestation_type.clone(),
                     params.is_compliant,
                     timestamp,
+                    params.evidence_hash.clone(),
                 ),
             );
         }

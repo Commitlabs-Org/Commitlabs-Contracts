@@ -7,7 +7,7 @@
 
 use super::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{contract, contractimpl, Address, Env, Map, String};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Map, String};
 
 #[contract]
 struct MockCore;
@@ -63,16 +63,25 @@ fn fixture() -> Fixture {
     }
 }
 
+fn evidence_id(fixture: &Fixture, salt: u8, amount: i128) -> BytesN<32> {
+    let mut seed = [0u8; 32];
+    seed[0] = salt;
+    seed[16..].copy_from_slice(&amount.to_be_bytes());
+    BytesN::from_array(&fixture.env, &seed)
+}
+
 fn fee(fixture: &Fixture, amount: i128) {
+    let evidence = evidence_id(fixture, 0xFE, amount);
     fixture
         .client
-        .record_fees(&fixture.admin, &fixture.commitment_id, &amount);
+        .record_fees(&fixture.admin, &fixture.commitment_id, &amount, &evidence);
 }
 
 fn drawdown(fixture: &Fixture, amount: i128) {
+    let evidence = evidence_id(fixture, 0xDD, amount);
     fixture
         .client
-        .record_drawdown(&fixture.admin, &fixture.commitment_id, &amount);
+        .record_drawdown(&fixture.admin, &fixture.commitment_id, &amount, &evidence);
 }
 
 fn violation_data(env: &Env, severity: &str) -> Map<String, String> {
@@ -108,19 +117,19 @@ fn negative_and_out_of_range_records_are_rejected_without_history_changes() {
     assert_eq!(
         fixture
             .client
-            .try_record_fees(&fixture.admin, &fixture.commitment_id, &-1),
+            .try_record_fees(&fixture.admin, &fixture.commitment_id, &-1, &evidence_id(&fixture, 0xFE, -1)),
         Err(Ok(AttestationError::InvalidFeeAmount))
     );
     assert_eq!(
         fixture
             .client
-            .try_record_drawdown(&fixture.admin, &fixture.commitment_id, &101),
+            .try_record_drawdown(&fixture.admin, &fixture.commitment_id, &101, &evidence_id(&fixture, 0xDD, 101)),
         Err(Ok(AttestationError::InvalidAttestationData))
     );
     assert_eq!(
         fixture
             .client
-            .try_record_drawdown(&fixture.admin, &fixture.commitment_id, &-1),
+            .try_record_drawdown(&fixture.admin, &fixture.commitment_id, &-1, &evidence_id(&fixture, 0xDD, -1)),
         Err(Ok(AttestationError::InvalidAttestationData))
     );
     assert_eq!(fixture.client.get_attestation_count(&fixture.commitment_id), 0);
@@ -178,7 +187,7 @@ fn mixed_history_keeps_score_and_percentages_in_documented_bounds() {
     let fixture = fixture();
     drawdown(&fixture, 0);
     drawdown(&fixture, 25);
-    for _ in 0..8 {
+    for i in 0..8u32 {
         let data = violation_data(&fixture.env, "high");
         fixture.client.attest(
             &fixture.admin,
@@ -186,6 +195,7 @@ fn mixed_history_keeps_score_and_percentages_in_documented_bounds() {
             &String::from_str(&fixture.env, "violation"),
             &data,
             &false,
+            &evidence_id(&fixture, 0x11 + i as u8, i as i128),
         );
     }
 
@@ -226,7 +236,7 @@ fn fee_accumulator_overflow_rejects_the_record_atomically() {
     assert_eq!(
         fixture
             .client
-            .try_record_fees(&fixture.admin, &fixture.commitment_id, &1),
+            .try_record_fees(&fixture.admin, &fixture.commitment_id, &1, &evidence_id(&fixture, 0xFE, 1)),
         Err(Ok(AttestationError::StorageError))
     );
     assert_eq!(fixture.client.get_attestation_count(&fixture.commitment_id), 0);
@@ -258,6 +268,7 @@ fn rejected_generic_fee_payload_does_not_change_metrics() {
             &String::from_str(&fixture.env, "fee_generation"),
             &data,
             &true,
+            &evidence_id(&fixture, 0x77, 0),
         ),
         Err(Ok(AttestationError::InvalidFeeAmount))
     );

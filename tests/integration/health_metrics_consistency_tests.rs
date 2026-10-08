@@ -4,7 +4,7 @@
 #![cfg(test)]
 
 use crate::harness::{ TestHarness, SECONDS_PER_DAY };
-use soroban_sdk::{ testutils::{ Address as _, Events, Ledger }, Address, Env, IntoVal, Map, String, Symbol, TryFromVal, Val };
+use soroban_sdk::{ testutils::{ Address as _, Events, Ledger }, Address, BytesN, Env, IntoVal, Map, String, Symbol, TryFromVal, Val };
 
 use attestation_engine::AttestationEngineContract;
 use commitment_core::{ CommitmentCoreContract, CommitmentRules };
@@ -12,11 +12,22 @@ use commitment_nft::CommitmentNFTContract;
 
 fn event_topics_include(env: &Env, topics: &soroban_sdk::Vec<Val>, symbol_name: &str) -> bool {
     let expected = Symbol::new(env, symbol_name);
+
     topics.iter().any(|topic| {
         Symbol::try_from_val(env, &topic)
             .map(|sym| sym == expected)
             .unwrap_or(false)
     })
+}
+
+/// Unique nonzero 32-byte evidence id per call (test-only helper).
+fn ev_seq(e: &Env) -> BytesN<32> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(e, &b)
 }
 
 // ============================================
@@ -50,6 +61,8 @@ fn test_multiple_record_fees_cumulative_sum() {
             verifier.clone(),
             commitment_id.clone(),
             10_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -59,6 +72,8 @@ fn test_multiple_record_fees_cumulative_sum() {
             verifier.clone(),
             commitment_id.clone(),
             20_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -68,6 +83,8 @@ fn test_multiple_record_fees_cumulative_sum() {
             verifier.clone(),
             commitment_id.clone(),
             5_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -105,6 +122,8 @@ fn test_record_fees_zero_amount() {
             verifier.clone(),
             commitment_id.clone(),
             0
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -144,6 +163,8 @@ fn test_record_fees_large_amounts() {
             verifier.clone(),
             commitment_id.clone(),
             large_fee1
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -153,6 +174,8 @@ fn test_record_fees_large_amounts() {
             verifier.clone(),
             commitment_id.clone(),
             large_fee2
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -195,7 +218,8 @@ fn test_multiple_record_drawdown_latest_value() {
             verifier.clone(),
             commitment_id.clone(),
             5
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     harness.env.as_contract(&harness.contracts.attestation_engine, || {
@@ -204,7 +228,8 @@ fn test_multiple_record_drawdown_latest_value() {
             verifier.clone(),
             commitment_id.clone(),
             10
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     harness.env.as_contract(&harness.contracts.attestation_engine, || {
@@ -213,7 +238,8 @@ fn test_multiple_record_drawdown_latest_value() {
             verifier.clone(),
             commitment_id.clone(),
             3
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     // Verify latest drawdown value is stored (not cumulative)
@@ -250,6 +276,8 @@ fn test_record_drawdown_compliance_check() {
             verifier.clone(),
             commitment_id.clone(),
             5
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -330,7 +358,8 @@ fn test_record_drawdown_non_compliant() {
             verifier.clone(),
             commitment_id.clone(),
             15
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
@@ -426,6 +455,8 @@ fn test_compliance_score_updates_after_fees() {
             verifier.clone(),
             commitment_id.clone(),
             10_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -465,7 +496,8 @@ fn test_compliance_score_updates_after_drawdown() {
             verifier.clone(),
             commitment_id.clone(),
             5
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     let metrics_after_compliant = harness.env.as_contract(
@@ -488,7 +520,8 @@ fn test_compliance_score_updates_after_drawdown() {
             verifier.clone(),
             commitment_id.clone(),
             15
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     let metrics_after_non_compliant = harness.env.as_contract(
@@ -543,6 +576,8 @@ fn test_compliance_score_with_violation_attestation() {
             String::from_str(&harness.env, "violation"),
             data.clone(),
             false // Non-compliant
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -585,6 +620,8 @@ fn test_mixed_fees_and_drawdown_operations() {
             verifier.clone(),
             commitment_id.clone(),
             10_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -594,7 +631,8 @@ fn test_mixed_fees_and_drawdown_operations() {
             verifier.clone(),
             commitment_id.clone(),
             5
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     harness.env.as_contract(&harness.contracts.attestation_engine, || {
@@ -603,6 +641,8 @@ fn test_mixed_fees_and_drawdown_operations() {
             verifier.clone(),
             commitment_id.clone(),
             20_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -612,7 +652,8 @@ fn test_mixed_fees_and_drawdown_operations() {
             verifier.clone(),
             commitment_id.clone(),
             8
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     let metrics = harness.env.as_contract(&harness.contracts.attestation_engine, || {
@@ -657,6 +698,8 @@ fn test_health_metrics_persistence() {
             verifier.clone(),
             commitment_id.clone(),
             15_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -666,6 +709,8 @@ fn test_health_metrics_persistence() {
             verifier.clone(),
             commitment_id.clone(),
             7
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -744,6 +789,8 @@ fn test_single_attestation_types() {
             verifier.clone(),
             commitment_id.clone(),
             25_0000000
+        
+            ev_seq(&harness.env.clone()),
         )
     });
 
@@ -772,7 +819,8 @@ fn test_single_attestation_types() {
             verifier.clone(),
             commitment_id2.clone(),
             12
-        ).unwrap()
+        
+            ev_seq(&harness.env.clone()),).unwrap()
     });
 
     let metrics2 = harness.env.as_contract(&harness.contracts.attestation_engine, || {

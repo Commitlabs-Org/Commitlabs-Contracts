@@ -9,7 +9,7 @@
 use crate::harness::{TestHarness, DEFAULT_USER_BALANCE, SECONDS_PER_DAY};
 use soroban_sdk::{
     testutils::{Address as _, Events},
-    Address, Env, String,
+    Address, BytesN, Env, String,
 };
 
 use commitment_core::{CommitmentCoreContract, CommitmentRules};
@@ -17,6 +17,17 @@ use commitment_nft::CommitmentNFTContract;
 use attestation_engine::AttestationEngineContract;
 use allocation_logic::{AllocationStrategiesContract, RiskLevel, Strategy};
 use mock_oracle::MockOracleContract;
+
+/// Unique nonzero 32-byte evidence id per call (test-only helper).
+fn ev_seq(e: &Env) -> BytesN<32> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(e, &b)
+}
+
 
 /// Test: Complete commitment lifecycle (create -> monitor -> settle)
 #[test]
@@ -98,6 +109,7 @@ fn test_e2e_complete_commitment_lifecycle() {
                     String::from_str(&harness.env, "health_check"),
                     health_data,
                     true,
+                ev_seq(&harness.env.clone()),
                 )
                 .unwrap();
             });
@@ -416,6 +428,8 @@ fn test_e2e_violation_detection_flow() {
                 String::from_str(&harness.env, "violation"),
                 violation_data,
                 false, // Not compliant
+            
+                ev_seq(&harness.env.clone()),
             )
             .unwrap();
         });
@@ -563,6 +577,7 @@ fn test_e2e_fee_generation_tracking() {
                     String::from_str(&harness.env, "fee_generation"),
                     fee_data,
                     true,
+                ev_seq(&harness.env.clone()),
                 )
                 .unwrap();
             });

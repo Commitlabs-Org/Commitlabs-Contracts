@@ -40,6 +40,11 @@ The attestation engine supports four core attestation types:
 ### Recording Attestations
 
 #### Direct Attestation
+
+Every record carries a caller-supplied `evidence_hash` (32 non-zero bytes)
+identifying the evidence bundle behind it. See
+[Replay protection](#replay-protection-and-type-scopes) for the policy.
+
 ```rust
 // Basic attestation recording
 AttestationEngineContract::attest(
@@ -49,6 +54,7 @@ AttestationEngineContract::attest(
     "health_check".into(),
     Map::new(&env), // Empty data for health_check
     true, // is_compliant
+    evidence_hash, // BytesN<32> identifying this evidence bundle
 )?;
 ```
 
@@ -59,7 +65,8 @@ AttestationEngineContract::record_fees(
     env,
     verifier_address,
     "commitment_123".into(),
-    1000000 // 1 unit in base units
+    1000000, // 1 unit in base units
+    evidence_hash,
 )?;
 
 // Record drawdown (auto-determines compliance)
@@ -67,9 +74,33 @@ AttestationEngineContract::record_drawdown(
     env,
     verifier_address,
     "commitment_123".into(),
-    1500 // 15% drawdown
+    1500, // 15% drawdown
+    evidence_hash,
 )?;
 ```
+
+### Replay protection and type scopes
+
+**Evidence identity.** `(commitment_id, evidence_hash)` is the unique identity of
+a recorded evidence bundle. Re-presenting the same hash for the same commitment
+fails with `DuplicateAttestation` on every write path (`attest`,
+`record_fees`, `record_drawdown`, `batch_attest`), regardless of which verifier
+submits it. An all-zero hash fails with `InvalidEvidence`. Retry-safe: a retried
+submission with the same hash is rejected instead of creating a second record.
+
+`record_drawdown` may emit a companion violation record when the drawdown
+breaches `max_loss_percent`; its evidence identity is `sha256(evidence_hash)` so
+both records are replay-protected without an extra argument.
+
+**Per-type authorization.** `set_type_verifier(admin, type, verifier, allowed)`
+scopes a verifier to one attestation type and marks the type guarded. For a
+guarded type, only admin and scoped verifiers may record. `set_type_guarded`
+marks or clears the guard. Types never guarded keep the original global
+whitelist behavior.
+
+**Events.** `AttestationRecorded` now carries
+`(attestation_type, is_compliant, timestamp, evidence_hash)` so the effective
+evidence identity is visible off-chain.
 
 ## Compliance Scoring
 

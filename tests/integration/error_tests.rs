@@ -8,13 +8,24 @@
 //! - Expected error assertions
 
 use crate::harness::{TestHarness, DEFAULT_USER_BALANCE, SECONDS_PER_DAY};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String, BytesN};
 
 use commitment_core::{CommitmentCoreContract, CommitmentError, CommitmentRules};
 use commitment_nft::{CommitmentNFTContract, ContractError as NftError};
 use attestation_engine::{AttestationEngineContract, AttestationError};
 use allocation_logic::{AllocationStrategiesContract, Error as AllocationError, RiskLevel, Strategy};
 use mock_oracle::{MockOracleContract, OracleError};
+
+/// Unique nonzero 32-byte evidence id per call (test-only helper).
+fn ev_seq(e: &Env) -> BytesN<32> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(e, &b)
+}
+
 
 // ============================================================================
 // Unauthorized Access Tests
@@ -74,6 +85,7 @@ fn test_error_unauthorized_attestation() {
                 String::from_str(&harness.env, "health_check"),
                 harness.health_check_data(),
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 
@@ -363,6 +375,7 @@ fn test_error_invalid_attestation_type() {
                 String::from_str(&harness.env, "invalid_attestation_type"),
                 harness.health_check_data(),
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 
@@ -385,6 +398,7 @@ fn test_error_empty_commitment_id_attestation() {
                 String::from_str(&harness.env, "health_check"),
                 harness.health_check_data(),
                 true,
+                ev_seq(&harness.env.clone()),
             )
         });
 

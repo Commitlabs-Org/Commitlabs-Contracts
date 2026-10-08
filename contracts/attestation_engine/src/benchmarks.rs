@@ -3,7 +3,7 @@
 
 use super::*;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, testutils::Address as _, Address, Env, Map, String,
+    contract, contractimpl, contracttype, testutils::Address as _, Address, BytesN, Env, Map, String,
 };
 
 #[contract]
@@ -158,6 +158,7 @@ fn benchmark_attest() {
             String::from_str(&e, "health_check"),
             data.clone(),
             true,
+            BytesN::from_array(&e, &[1u8; 32]),
         );
         let end = e.ledger().sequence();
         metrics.record_gas(start, end);
@@ -190,6 +191,7 @@ fn benchmark_get_attestations() {
             String::from_str(&e, "health_check"),
             data.clone(),
             true,
+            BytesN::from_array(&e, &[2u8; 32]),
         );
     });
 
@@ -271,6 +273,9 @@ fn benchmark_batch_attest() {
                 String::from_str(&e, "health_check"),
                 data,
                 true,
+                // Distinct commitments in each loop iteration: a fixed evidence
+                // id is unique per dedup key (commitment_id, evidence_hash).
+                BytesN::from_array(&e, &[3u8; 32]),
             );
         });
     }
